@@ -1,0 +1,14 @@
+{
+  "id": "administrative_tools",
+  "name": "Admin Suite",
+  "version": "1.0.0",
+  "description": "Administrative tools for prices, receipt printing, billing, invoicing, inventory, suppliers, stock movements, and Excel exports.",
+  "entry_point": "main.py:create_page",
+  "nav_entries": [
+    {
+      "entry_id": "admin",
+      "nav_label": "Admin",
+      "workspace": "administrative"
+    }
+  ]
+}

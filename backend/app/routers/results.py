@@ -1,0 +1,551 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+import json
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session, aliased
+
+from app.core.audit import log_audit
+from app.db.session import get_db
+from app.models.models import LabOrder, OrderItem, Patient, Provider, Result, TestCatalog, TestReferenceRange
+from app.routers.common import actor_from_header
+
+router = APIRouter()
+
+
+class ResultEntryOut(BaseModel):
+    order_test_id: str
+    order_id: str
+    order_number: str
+    patient_name: str
+    doctor_name: str | None = None
+    patient_sex: str | None = None
+    patient_age_days: int | None = None
+    test_id: str
+    test_name: str
+    item_type: str = "test"
+    result_kind: str = "text"
+    select_options: str | None = None
+    default_result_value: str | None = None
+    result_value: str | None = None
+    unit: str | None = None
+    lower_value: str | None = None
+    upper_value: str | None = None
+    flag: str | None = None
+    reference_text: str | None = None
+    comments: str | None = None
+    test_status: str
+
+
+class ResultEntryIn(BaseModel):
+    result_value: str = ""
+    unit: str = ""
+    lower_value: str | None = None
+    upper_value: str | None = None
+    reference_text: str = ""
+    comments: str = ""
+    result_kind: str = "text"
+
+
+class InstrumentObservationIn(BaseModel):
+    observation_id: str | None = None
+    instrument_test_code: str = ""
+    instrument_test_name: str | None = None
+    mapped_lis_test_id: str | None = None
+    value_raw: str = ""
+    value_numeric: float | None = None
+    value_text: str | None = None
+    units_raw: str | None = None
+    units_normalized: str | None = None
+    abnormal_flag: str | None = None
+    result_status: str | None = None
+
+
+class InstrumentMessageIn(BaseModel):
+    source_device_id: str = ""
+    source_profile_id: str = ""
+    protocol_type: str = ""
+    transport_type: str = ""
+    received_at: datetime | None = None
+    patient_id: str | None = None
+    accession_id: str | None = None
+    sample_id: str | None = None
+    analyzer_run_id: str | None = None
+    observations: list[InstrumentObservationIn] = []
+
+
+class InstrumentResultIn(BaseModel):
+    capture_id: str | None = None
+    message: InstrumentMessageIn
+    mapping_trace: list[str] = []
+
+
+class InstrumentImportIn(BaseModel):
+    order_id: str | None = None
+    result: InstrumentResultIn
+
+
+class InstrumentImportOut(BaseModel):
+    order_id: str
+    order_number: str
+    matched_by: str
+    imported_count: int
+    unmatched_codes: list[str] = []
+
+
+@router.get('/orders/{order_id}/entries', response_model=list[ResultEntryOut])
+def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID | None = Depends(actor_from_header)):
+    parsed_order_id = _parse_uuid(order_id, field_name='order_id')
+    doctor_provider = aliased(Provider)
+    rows = db.execute(
+        select(
+            OrderItem.id.label('order_item_id'),
+            LabOrder.id.label('order_id'),
+            LabOrder.order_number,
+            Patient.first_name,
+            Patient.last_name,
+            Patient.middle_name,
+            Patient.sex,
+            Patient.dob,
+            Patient.age_value,
+            Patient.age_unit,
+            doctor_provider.legal_name.label('doctor_name'),
+            TestCatalog.id.label('test_id'),
+            TestCatalog.name.label('test_name'),
+            TestCatalog.code.label('test_code'),
+            TestCatalog.unit.label('test_unit'),
+            TestCatalog.result_kind,
+            TestCatalog.select_options,
+            TestCatalog.default_result_value,
+            OrderItem.group_label,
+            Result.value_text,
+            Result.unit,
+            Result.lower_value_text,
+            Result.upper_value_text,
+            Result.flag,
+            Result.reference_text,
+            Result.comments,
+            Result.status.label('result_status'),
+        )
+        .join(LabOrder, LabOrder.id == OrderItem.order_id)
+        .join(Patient, Patient.id == LabOrder.patient_id)
+        .outerjoin(doctor_provider, doctor_provider.id == LabOrder.doctor_id)
+        .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .outerjoin(Result, Result.order_item_id == OrderItem.id)
+        .where(OrderItem.order_id == parsed_order_id)
+        .order_by(OrderItem.id.asc())
+    ).all()
+    entries: list[ResultEntryOut] = []
+    for row in rows:
+        patient_age_days = _age_to_days(row.age_value, row.age_unit, row.dob)
+        reference = _resolve_reference_range(db, row.test_id, row.sex, patient_age_days)
+        result_kind = row.result_kind or 'text'
+        default_result_value = row.default_result_value
+        result_value = row.value_text or default_result_value
+        unit = row.unit or (reference.unit if reference is not None and reference.unit else None) or row.test_unit
+        lower_value = row.lower_value_text or (reference.lower_value_text if reference is not None else None)
+        upper_value = row.upper_value_text or (reference.upper_value_text if reference is not None else None)
+        reference_text = row.reference_text or (reference.reference_text if reference is not None else None)
+        flag = row.flag or _calculate_flag(result_kind, result_value or '', lower_value, upper_value)
+        group_label = (row.group_label or '').strip()
+        if group_label and (not entries or entries[-1].item_type != 'heading' or entries[-1].test_name != group_label):
+            entries.append(
+                ResultEntryOut(
+                    order_test_id=f'heading:{row.order_item_id}',
+                    order_id=str(row.order_id),
+                    order_number=row.order_number,
+                    patient_name=' '.join(part for part in [row.first_name or '', row.last_name or '', row.middle_name or ''] if part).strip(),
+                    doctor_name=row.doctor_name,
+                    patient_sex=row.sex,
+                    patient_age_days=patient_age_days,
+                    test_id=str(row.test_id),
+                    test_name=group_label,
+                    item_type='heading',
+                    result_kind='text',
+                    select_options=None,
+                    default_result_value=None,
+                    result_value=None,
+                    unit=None,
+                    lower_value=None,
+                    upper_value=None,
+                    flag=None,
+                    reference_text=None,
+                    comments=None,
+                    test_status='pending',
+                )
+            )
+        entries.append(
+            ResultEntryOut(
+                order_test_id=str(row.order_item_id),
+                order_id=str(row.order_id),
+                order_number=row.order_number,
+                patient_name=' '.join(part for part in [row.first_name or '', row.last_name or '', row.middle_name or ''] if part).strip(),
+                doctor_name=row.doctor_name,
+                patient_sex=row.sex,
+                patient_age_days=patient_age_days,
+                test_id=str(row.test_id),
+                test_name=f"{row.test_name} ({row.test_code})",
+                item_type='test',
+                result_kind=result_kind,
+                select_options=row.select_options,
+                default_result_value=default_result_value,
+                result_value=result_value,
+                unit=unit,
+                lower_value=lower_value,
+                upper_value=upper_value,
+                flag=flag,
+                reference_text=reference_text,
+                comments=row.comments,
+                test_status=row.result_status or 'pending',
+            )
+        )
+    return entries
+
+
+@router.post('/order-items/{order_item_id}')
+def save_order_item_result(order_item_id: str, payload: ResultEntryIn, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
+    parsed_order_item_id = _parse_uuid(order_item_id, field_name='order_item_id')
+    order_item = db.get(OrderItem, parsed_order_item_id)
+    if order_item is None:
+        raise HTTPException(status_code=404, detail='order item not found')
+
+    test = db.get(TestCatalog, order_item.test_id)
+    if test is None:
+        raise HTTPException(status_code=404, detail='test not found')
+
+    normalized_value = payload.result_value.strip()
+    normalized_unit = payload.unit.strip()
+    lower_value = (payload.lower_value or '').strip() or None
+    upper_value = (payload.upper_value or '').strip() or None
+    reference_text = payload.reference_text.strip() or None
+    comments = payload.comments.strip() or None
+    result_kind = test.result_kind or payload.result_kind or 'text'
+    if result_kind == 'select':
+        valid_options = _deserialize_select_options(test.select_options)
+        if normalized_value and valid_options and normalized_value not in valid_options:
+            raise HTTPException(status_code=400, detail='result value must match a configured selectable option')
+    flag = _calculate_flag(result_kind, normalized_value, lower_value, upper_value)
+    numeric_value = _decimal_to_float(normalized_value) if result_kind == 'numeric' else None
+
+    result = db.scalars(select(Result).where(Result.order_item_id == parsed_order_item_id)).first()
+    before = _result_audit_payload(result)
+    if result is None:
+        result = Result(
+            order_item_id=parsed_order_item_id,
+            value_text=normalized_value or None,
+            value_num=numeric_value,
+            unit=normalized_unit or None,
+            lower_value_text=lower_value,
+            upper_value_text=upper_value,
+            reference_text=reference_text,
+            comments=comments,
+            flag=flag,
+            entered_by=actor,
+            status='draft',
+        )
+        db.add(result)
+    else:
+        result.value_text = normalized_value or None
+        result.value_num = numeric_value
+        result.unit = normalized_unit or None
+        result.lower_value_text = lower_value
+        result.upper_value_text = upper_value
+        result.reference_text = reference_text
+        result.comments = comments
+        result.flag = flag
+        result.entered_by = actor
+        result.status = 'draft'
+
+    order = db.get(LabOrder, order_item.order_id)
+    if order is not None and order.status == 'registered':
+        order.status = 'in_lab'
+
+    db.flush()
+    log_audit(
+        db,
+        actor_user_id=actor,
+        entity='result',
+        entity_id=str(result.id),
+        action='save',
+        before_json=before,
+        after_json=_result_audit_payload(result),
+    )
+    db.commit()
+    return {'id': str(result.id), 'flag': flag, 'status': result.status}
+
+
+@router.post('/import-instrument', response_model=InstrumentImportOut)
+def import_instrument_results(payload: InstrumentImportIn, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
+    order, matched_by = _resolve_instrument_order(payload, db)
+    if order is None:
+        raise HTTPException(status_code=400, detail='instrument result must be linked to an order manually')
+
+    order_items = db.execute(
+        select(OrderItem, TestCatalog)
+        .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .where(OrderItem.order_id == order.id)
+    ).all()
+    order_item_by_code = {test.code.strip().upper(): (item, test) for item, test in order_items if (test.code or '').strip()}
+
+    imported_count = 0
+    unmatched_codes: list[str] = []
+    for obs in payload.result.message.observations:
+        candidate_codes = [
+            (obs.mapped_lis_test_id or '').strip().upper(),
+            (obs.instrument_test_code or '').strip().upper(),
+        ]
+        matched = None
+        for code in candidate_codes:
+            if code and code in order_item_by_code:
+                matched = order_item_by_code[code]
+                break
+        if matched is None:
+            unmatched_codes.append(obs.instrument_test_code or obs.mapped_lis_test_id or 'unknown')
+            continue
+        order_item, test = matched
+        _upsert_instrument_result(db, order, order_item, test, obs, actor, payload.result)
+        imported_count += 1
+
+    if imported_count == 0:
+        raise HTTPException(status_code=409, detail='instrument payload matched an order, but no order items matched the observation codes')
+
+    if order.status == 'registered':
+        order.status = 'in_lab'
+    log_audit(
+        db,
+        actor_user_id=actor,
+        entity='instrument_result_import',
+        entity_id=str(order.id),
+        action='import',
+        after_json={
+            'order_id': str(order.id),
+            'order_number': order.order_number,
+            'matched_by': matched_by,
+            'imported_count': imported_count,
+            'unmatched_codes': unmatched_codes,
+            'capture_id': payload.result.capture_id,
+        },
+    )
+    db.commit()
+    return InstrumentImportOut(
+        order_id=str(order.id),
+        order_number=order.order_number,
+        matched_by=matched_by,
+        imported_count=imported_count,
+        unmatched_codes=unmatched_codes,
+    )
+
+
+def _parse_uuid(raw_value: str, *, field_name: str) -> UUID:
+    try:
+        return UUID(raw_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f'invalid {field_name}') from exc
+
+
+def _age_to_days(age_value: int | None, age_unit: str | None, dob: date | None = None) -> int | None:
+    if dob is not None:
+        return max((date.today() - dob).days, 0)
+    if age_value is None or not age_unit:
+        return None
+    unit = age_unit.strip().lower()
+    if unit == 'days':
+        return age_value
+    if unit == 'months':
+        return age_value * 30
+    if unit == 'years':
+        return age_value * 365
+    return None
+
+
+def _decimal_to_float(raw_value: str) -> float | None:
+    try:
+        return float(Decimal(raw_value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _resolve_reference_range(
+    db: Session,
+    test_id: UUID,
+    patient_sex: str | None,
+    patient_age_days: int | None,
+) -> TestReferenceRange | None:
+    rows = db.scalars(
+        select(TestReferenceRange)
+        .where(TestReferenceRange.test_id == test_id)
+        .order_by(
+            TestReferenceRange.sex.is_(None),
+            TestReferenceRange.age_min_days.is_(None),
+            TestReferenceRange.age_min_days.asc(),
+            TestReferenceRange.age_max_days.is_(None),
+            TestReferenceRange.age_max_days.asc(),
+        )
+    ).all()
+    for row in rows:
+        if row.sex and patient_sex and row.sex != patient_sex:
+            continue
+        if row.sex and not patient_sex:
+            continue
+        if patient_age_days is not None:
+            if row.age_min_days is not None and patient_age_days < row.age_min_days:
+                continue
+            if row.age_max_days is not None and patient_age_days > row.age_max_days:
+                continue
+        return row
+    return None
+
+
+def _calculate_flag(result_kind: str, result_value: str, lower_value: str | None, upper_value: str | None) -> str:
+    if result_kind != 'numeric' or not result_value:
+        return 'none'
+    try:
+        numeric_value = Decimal(result_value)
+    except (InvalidOperation, ValueError):
+        return 'abnormal'
+    lower_decimal = Decimal(lower_value) if lower_value else None
+    upper_decimal = Decimal(upper_value) if upper_value else None
+    if lower_decimal is not None and numeric_value < lower_decimal:
+        return 'low'
+    if upper_decimal is not None and numeric_value > upper_decimal:
+        return 'high'
+    if lower_decimal is not None or upper_decimal is not None:
+        return 'normal'
+    return 'none'
+
+
+def _match_order_for_instrument(message: InstrumentMessageIn, db: Session) -> tuple[LabOrder | None, str]:
+    candidates = [
+        ('sample_id', (message.sample_id or '').strip()),
+        ('accession_id', (message.accession_id or '').strip()),
+        ('order_number', (message.sample_id or '').strip()),
+        ('order_number', (message.accession_id or '').strip()),
+    ]
+    seen: set[tuple[str, str]] = set()
+    for field_name, value in candidates:
+        key = (field_name, value)
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        column = getattr(LabOrder, field_name)
+        order = db.scalars(select(LabOrder).where(column == value).order_by(LabOrder.ordered_at.desc())).first()
+        if order is not None:
+            return order, field_name
+    if (message.patient_id or '').strip():
+        patient_order = db.scalars(
+            select(LabOrder).where(
+                or_(
+                    LabOrder.sample_id == message.patient_id.strip(),
+                    LabOrder.accession_id == message.patient_id.strip(),
+                    LabOrder.order_number == message.patient_id.strip(),
+                )
+            ).order_by(LabOrder.ordered_at.desc())
+        ).first()
+        if patient_order is not None:
+            return patient_order, 'patient_fallback'
+    return None, ''
+
+
+def _resolve_instrument_order(payload: InstrumentImportIn, db: Session) -> tuple[LabOrder | None, str]:
+    if (payload.order_id or '').strip():
+        parsed_order_id = _parse_uuid(payload.order_id.strip(), field_name='order_id')
+        order = db.get(LabOrder, parsed_order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail='order not found')
+        return order, 'manual_order_id'
+    return _match_order_for_instrument(payload.result.message, db)
+
+
+def _upsert_instrument_result(
+    db: Session,
+    order: LabOrder,
+    order_item: OrderItem,
+    test: TestCatalog,
+    obs: InstrumentObservationIn,
+    actor_id: UUID,
+    payload: InstrumentResultIn,
+) -> None:
+    result = db.scalars(select(Result).where(Result.order_item_id == order_item.id)).first()
+    result_kind = (test.result_kind or 'text').strip().lower()
+    result_value = _instrument_result_value(obs, result_kind)
+    unit_value = (obs.units_normalized or obs.units_raw or test.unit or '').strip() or None
+    lower_value = None
+    upper_value = None
+    reference_text = None
+    comments = _instrument_result_comment(obs, payload)
+    flag = _calculate_flag(result_kind, result_value, lower_value, upper_value)
+    numeric_value = obs.value_numeric if result_kind == 'numeric' else None
+
+    if result is None:
+        result = Result(
+            order_item_id=order_item.id,
+            sample_id=None,
+            entered_by=actor_id,
+            status='draft',
+        )
+        db.add(result)
+
+    result.value_text = result_value or None
+    result.value_num = numeric_value
+    result.unit = unit_value
+    result.lower_value_text = lower_value
+    result.upper_value_text = upper_value
+    result.reference_text = reference_text
+    result.comments = comments
+    result.flag = flag
+    result.entered_by = actor_id
+    result.status = 'draft'
+
+
+def _instrument_result_value(obs: InstrumentObservationIn, result_kind: str) -> str:
+    if result_kind == 'numeric' and obs.value_numeric is not None:
+        return format(obs.value_numeric, 'g')
+    if (obs.value_text or '').strip():
+        return obs.value_text.strip()
+    if (obs.value_raw or '').strip():
+        return obs.value_raw.strip()
+    if obs.value_numeric is not None:
+        return format(obs.value_numeric, 'g')
+    return ''
+
+
+def _instrument_result_comment(obs: InstrumentObservationIn, payload: InstrumentResultIn) -> str | None:
+    detail: dict[str, str] = {}
+    if (payload.capture_id or '').strip():
+        detail['capture_id'] = payload.capture_id.strip()
+    if (payload.message.source_profile_id or '').strip():
+        detail['profile'] = payload.message.source_profile_id.strip()
+    if (payload.message.source_device_id or '').strip():
+        detail['device'] = payload.message.source_device_id.strip()
+    if (obs.instrument_test_code or '').strip():
+        detail['instrument_code'] = obs.instrument_test_code.strip()
+    if (obs.mapped_lis_test_id or '').strip():
+        detail['mapped_code'] = obs.mapped_lis_test_id.strip()
+    if (obs.abnormal_flag or '').strip():
+        detail['instrument_flag'] = obs.abnormal_flag.strip()
+    if not detail:
+        return None
+    return json.dumps(detail, ensure_ascii=True)
+
+
+def _result_audit_payload(result: Result | None) -> dict[str, object] | None:
+    if result is None:
+        return None
+    return {
+        'id': str(result.id) if result.id is not None else None,
+        'order_item_id': str(result.order_item_id),
+        'value_text': result.value_text,
+        'value_num': float(result.value_num) if result.value_num is not None else None,
+        'unit': result.unit,
+        'lower_value_text': result.lower_value_text,
+        'upper_value_text': result.upper_value_text,
+        'reference_text': result.reference_text,
+        'comments': result.comments,
+        'flag': result.flag,
+        'status': result.status,
+    }

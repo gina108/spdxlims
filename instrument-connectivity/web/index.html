@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Instrument Connectivity Engine</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="layout">
+    <section class="page-tabs panel">
+      <button data-page-button="overviewPage" class="active">Overview</button>
+      <button data-page-button="networkDevicesPage">Network Devices</button>
+    </section>
+
+    <section id="overviewPage" data-page class="page active">
+      <section class="panel hero">
+        <h1>Instrument Connectivity Engine</h1>
+        <p>Windows-first local runtime for capture, classification, parsing, mapping, replay, learning mode, and support diagnostics.</p>
+        <div class="token-row">
+          <label>API Token <input id="apiToken" type="password" placeholder="optional shared secret" /></label>
+          <label>Operator <input id="operatorName" type="text" placeholder="support staff name" /></label>
+          <button id="saveToken">Save Token</button>
+        </div>
+        <div class="scan-controls">
+          <label>Network CIDRs <input id="scanCIDRs" placeholder="optional, comma-separated e.g. 192.168.1.0/24" /></label>
+          <label>Probe Ports <input id="scanPortsInput" placeholder="optional, comma-separated e.g. 5000,8080" /></label>
+        </div>
+        <div class="actions">
+          <button id="scanPorts">Scan Ports</button>
+          <button id="loadProfiles">Load Profiles</button>
+          <button id="loadCaptures">Load Captures</button>
+          <button id="loadRuntimeStatus">Runtime Status</button>
+          <button id="loadRuntimeErrors">Runtime Errors</button>
+        </div>
+      </section>
+      <section class="grid">
+        <article class="panel">
+          <h2>Manual Parse</h2>
+          <label>Profile ID <input id="profileId" value="generic-hl7" /></label>
+          <label>Device ID <input id="deviceId" value="manual-input" /></label>
+          <label>Payload <textarea id="payloadText" rows="10"></textarea></label>
+          <div class="actions">
+            <button id="classifyBtn">Classify</button>
+            <button id="parseBtn">Parse + Map</button>
+            <button id="learnBtn">Learning Suggest</button>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Maintenance</h2>
+          <p class="panel-note">Run retention cleanup and review what was removed from the local cache and diagnostics tables.</p>
+          <div class="actions">
+            <button id="runCleanup">Run Cleanup</button>
+            <button id="refreshMaintenance">Refresh Status</button>
+          </div>
+          <div id="maintenanceSummary" class="summary-card">No maintenance run yet in this browser session.</div>
+          <pre id="cleanupOut"></pre>
+        </article>
+        <article class="panel">
+          <h2>Profiles</h2>
+          <div class="network-filters">
+            <label>Profile
+              <select id="profileEditorSelect">
+                <option value="">Select profile</option>
+              </select>
+            </label>
+            <label>Profile ID <input id="profileEditorId" placeholder="urinalysis-com6" /></label>
+            <label>Name <input id="profileEditorName" placeholder="Urinalysis ASTM (COM6)" /></label>
+            <label>Vendor <input id="profileEditorVendor" placeholder="optional" /></label>
+            <label>Model <input id="profileEditorModel" placeholder="optional" /></label>
+            <label>Protocol Hint <input id="profileEditorProtocolHint" placeholder="astm" /></label>
+            <label>Transport Type
+              <select id="profileTransportType">
+                <option value="serial">serial</option>
+                <option value="tcp_client">tcp_client</option>
+                <option value="tcp_server">tcp_server</option>
+                <option value="file_drop">file_drop</option>
+              </select>
+            </label>
+            <label>Session Mode <input id="profileSessionMode" placeholder="astm" /></label>
+            <label>Serial Port <input id="profileSerialPort" placeholder="COM6" /></label>
+            <label>Baud Rate <input id="profileBaudRate" type="number" placeholder="9600" /></label>
+            <label>Data Bits <input id="profileDataBits" type="number" placeholder="8" /></label>
+            <label>Parity <input id="profileParity" placeholder="N" /></label>
+            <label>Stop Bits <input id="profileStopBits" type="number" placeholder="1" /></label>
+            <label>Listen Address <input id="profileListenAddress" placeholder="127.0.0.1:5100" /></label>
+            <label>Remote Address <input id="profileRemoteAddress" placeholder="127.0.0.1:5000" /></label>
+            <label>Watch Directories <input id="profileWatchDirectories" placeholder="incoming" /></label>
+            <label>Parser Strategy <input id="profileParsingStrategy" placeholder="astm" /></label>
+            <label>Discovery Hints <input id="profileDiscoveryHints" placeholder="hl7_listener,http_admin" /></label>
+          </div>
+          <div id="discoveryHintPresets" class="capture-links"></div>
+          <div id="profileHintValidation" class="summary-card">Choose a profile to review supported discovery hints.</div>
+          <div id="profileHintHelp" class="device-sublist">
+            <span class="muted">Hint port expansions will appear here.</span>
+          </div>
+          <div class="actions">
+            <button id="saveProfile">Save Profile</button>
+            <button id="startProfileCapture">Start Capture</button>
+            <button id="stopProfileCapture">Stop Capture</button>
+          </div>
+          <div id="profileCaptureSummary" class="summary-card">No capture started from the profile editor yet.</div>
+          <pre id="profilesOut"></pre>
+        </article>
+        <article class="panel">
+          <h2>Migration Bundle</h2>
+          <p class="panel-note">Export or import profiles plus confirmed runtime links as a JSON migration bundle for site moves.</p>
+          <div id="bundleSecretStatus" class="summary-card">Bundle signing status not loaded yet.</div>
+          <div class="network-filters">
+            <label>Redaction Preset
+              <select id="migrationRedactionPreset">
+                <option value="">None</option>
+                <option value="external_share">External Share</option>
+                <option value="transport_only">Transport Only</option>
+                <option value="metadata_only">Metadata Only</option>
+                <option value="identifiers_only">Identifiers Only</option>
+              </select>
+            </label>
+            <label><input id="migrationRedactProfileTransports" type="checkbox" /> Redact transport endpoints</label>
+            <label><input id="migrationRedactDeviceMetadata" type="checkbox" /> Redact device metadata</label>
+            <label><input id="migrationRedactNetworkEndpoints" type="checkbox" /> Redact linked endpoints</label>
+            <label><input id="migrationRedactRuntimeIDs" type="checkbox" /> Redact runtime device IDs</label>
+          </div>
+          <div class="actions">
+            <button id="exportMigrationBundle">Export Bundle</button>
+            <button id="previewMigrationBundle">Preview Bundle Import</button>
+            <button id="importMigrationBundle">Import Bundle</button>
+          </div>
+          <label>Bundle Payload <textarea id="migrationBundlePayload" rows="8" placeholder='{"version":"v1","profiles":[...],"network_links":[...]}'></textarea></label>
+          <div id="migrationBundleSummary" class="summary-card">No migration bundle loaded yet.</div>
+          <div id="migrationDiffCards" class="diff-grid">
+            <div class="empty-state">Preview a bundle to see side-by-side field changes.</div>
+          </div>
+          <pre id="migrationBundleDetails">No migration bundle preview loaded yet.</pre>
+        </article>
+        <article class="panel">
+          <h2>Support Bundle</h2>
+          <p class="panel-note">Review runtime-link confidence/source distribution before exporting diagnostics for support or site migration work.</p>
+          <div class="actions">
+            <button id="refreshSupportBundleSummary">Refresh Summary</button>
+            <button id="downloadSupportBundle">Download Bundle</button>
+          </div>
+          <div id="supportBundleSummary" class="summary-card">No support-bundle summary loaded yet.</div>
+          <pre id="supportBundleDetails"></pre>
+        </article>
+        <article class="panel">
+          <h2>Runtime Link Audit</h2>
+          <div id="bundleAuditSummary" class="summary-card">No bundle transfer events loaded yet.</div>
+          <div id="bundleAuditCards" class="diff-grid">
+            <div class="empty-state">Refresh audit to see bundle export/import activity.</div>
+          </div>
+          <div class="network-filters">
+            <label>Operator <input id="auditActorFilter" placeholder="optional" /></label>
+            <label>Profile <input id="auditProfileFilter" placeholder="optional" /></label>
+            <label>Endpoint <input id="auditDeviceFilter" placeholder="net:192.168.1.10" /></label>
+            <label>Action <input id="auditActionFilter" placeholder="manual_override" /></label>
+          </div>
+          <div class="network-filters">
+            <label>Redaction Preset
+              <select id="auditRedactionPreset">
+                <option value="">None</option>
+                <option value="external_share">External Share</option>
+                <option value="identifiers_only">Identifiers Only</option>
+              </select>
+            </label>
+            <label><input id="auditRedactActors" type="checkbox" /> Redact actors</label>
+            <label><input id="auditRedactNetworkEndpoints" type="checkbox" /> Redact endpoints</label>
+            <label><input id="auditRedactRuntimeIDs" type="checkbox" /> Redact runtime IDs</label>
+          </div>
+          <div class="actions">
+            <button id="refreshLinkAudit">Refresh Audit</button>
+            <button id="exportLinkAudit">Export Audit</button>
+          </div>
+          <pre id="networkLinkAuditOut">No audit events loaded yet.</pre>
+        </article>
+        <article class="panel"><h2>Ports</h2><pre id="portsOut"></pre></article>
+        <article class="panel"><h2>Captures</h2><pre id="capturesOut"></pre></article>
+        <article class="panel"><h2>Runtime Status</h2><pre id="runtimeStatusOut"></pre></article>
+        <article class="panel"><h2>Runtime Errors</h2><pre id="runtimeErrorsOut"></pre></article>
+        <article class="panel wide">
+          <h2>Session History</h2>
+          <div class="history-filters">
+            <label>Session ID <input id="historySessionId" placeholder="optional" /></label>
+            <label>Profile ID <input id="historyProfileId" placeholder="optional" /></label>
+            <label>Device ID <input id="historyDeviceId" placeholder="optional" /></label>
+            <button id="loadSessionHistory">Load History</button>
+          </div>
+          <pre id="sessionHistoryOut"></pre>
+        </article>
+        <article class="panel wide"><h2>Output</h2><pre id="output"></pre></article>
+      </section>
+    </section>
+
+    <section id="networkDevicesPage" data-page class="page">
+      <section class="panel hero">
+        <h2>Discovered Network Devices</h2>
+        <p>Filter likely network-connected instruments, review subnet and interface history, and replay recent captures tied to a selected endpoint.</p>
+        <div class="network-filters">
+          <label>Search <input id="networkSearch" placeholder="IP, host, CIDR, banner, or protocol" /></label>
+          <label>Status
+            <select id="networkStatusFilter">
+              <option value="">Any status</option>
+              <option value="online">Online</option>
+              <option value="recent">Recent</option>
+              <option value="stale">Stale</option>
+            </select>
+          </label>
+          <label>Protocol
+            <select id="networkProtocolFilter">
+              <option value="">Any protocol</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="refreshNetworkDevices">Refresh Devices</button>
+          <button id="refreshNetworkCaptures">Refresh Selected Captures</button>
+        </div>
+        <div id="networkSummary" class="summary-card">No network scan data loaded yet.</div>
+      </section>
+      <section class="grid">
+        <article class="panel wide">
+          <h2>Device Inventory</h2>
+          <div id="networkDevicesList" class="device-list">
+            <div class="empty-state">Refresh runtime status or scan ports to populate discovered devices.</div>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Selected Device</h2>
+          <pre id="networkDeviceDetail">Select a device to inspect its history and recent captures.</pre>
+          <div class="link-inspector">
+            <h3>Runtime Link Inspector</h3>
+            <div class="network-filters">
+              <label>Profile ID <input id="linkProfileId" placeholder="generic-hl7" /></label>
+              <label>Runtime Device ID <input id="linkRuntimeDeviceId" placeholder="analyzer runtime id or host:port" /></label>
+            </div>
+            <div class="actions">
+              <button id="saveNetworkLink">Confirm Link</button>
+              <button id="overrideNetworkLink">Override Link</button>
+              <button id="exportNetworkLinks">Export Links</button>
+              <button id="previewImportNetworkLinks">Preview Import</button>
+              <button id="importNetworkLinks">Import Links</button>
+            </div>
+            <label>Import Payload <textarea id="networkLinksImport" rows="5" placeholder='{"replace":false,"links":[...]}'></textarea></label>
+            <div id="networkLinkImportSummary" class="summary-card">Export or paste runtime-link JSON to preview merges.</div>
+            <div id="networkLinkMergeList" class="device-sublist">
+              <span class="muted">No import conflicts loaded.</span>
+            </div>
+            <div id="networkLinkList" class="capture-links">
+              <span class="muted">No runtime links loaded yet.</span>
+            </div>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Replay Output</h2>
+          <pre id="networkReplayOut">No replay run yet.</pre>
+        </article>
+      </section>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

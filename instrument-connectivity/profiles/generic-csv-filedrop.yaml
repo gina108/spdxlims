@@ -1,0 +1,21 @@
+id: generic-csv-filedrop
+name: Generic CSV File Drop
+protocol_hint: csv
+transport:
+  type: file_drop
+  watch_directories:
+    - incoming
+parsing:
+  strategy: csv
+  delimiter: ","
+mapping:
+  test_mappings:
+    - match_type: exact
+      pattern: GLU
+      canonical_assay: Glucose
+      lis_test_id: LIS-GLU
+      normalized_units: mg/dL
+  unit_normalization:
+    mg/dl: mg/dL
+learning_mode:
+  enabled: true

@@ -1,0 +1,24 @@
+id: generic-astm
+name: Generic ASTM Instrument
+protocol_hint: astm
+transport:
+  type: serial
+  session_mode: astm
+  serial_port: COM5
+  baud_rate: 9600
+  data_bits: 8
+  parity: N
+  stop_bits: 1
+parsing:
+  strategy: astm
+mapping:
+  test_mappings:
+    - match_type: exact
+      pattern: GLU
+      canonical_assay: Glucose
+      lis_test_id: LIS-GLU
+      normalized_units: mg/dL
+  unit_normalization:
+    mg/dl: mg/dL
+learning_mode:
+  enabled: true

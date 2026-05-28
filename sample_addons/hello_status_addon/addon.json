@@ -1,0 +1,9 @@
+{
+  "id": "hello_status_addon",
+  "name": "Hello Status Addon",
+  "version": "1.0.0",
+  "description": "Example addon that adds a simple administrative page.",
+  "workspace": "administrative",
+  "nav_label": "Hello Addon",
+  "entry_point": "main.py:create_page"
+}

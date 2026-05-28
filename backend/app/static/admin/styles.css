@@ -1,0 +1,59 @@
+:root {
+  --bg: #f4f7ef;
+  --ink: #1f2a1f;
+  --card: #ffffff;
+  --accent: #155e63;
+  --accent2: #d57c2a;
+}
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Tahoma, sans-serif;
+  background: radial-gradient(circle at 10% 0%, #e8f5e9, var(--bg));
+  color: var(--ink);
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.4rem;
+  background: linear-gradient(90deg, var(--accent), #0f3d40);
+  color: #fff;
+}
+main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  padding: 1rem;
+}
+.card {
+  background: var(--card);
+  border: 1px solid #d9e7da;
+  border-radius: 12px;
+  padding: 1rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+  margin: 1rem;
+}
+input, select, button {
+  width: 100%;
+  margin: 0.35rem 0;
+  padding: 0.6rem;
+  border-radius: 8px;
+  border: 1px solid #b8cbb9;
+  box-sizing: border-box;
+}
+button {
+  background: var(--accent2);
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  cursor: pointer;
+}
+pre {
+  background: #112233;
+  color: #d2f5e3;
+  padding: 0.7rem;
+  border-radius: 8px;
+  overflow: auto;
+  min-height: 90px;
+}
+.hidden { display: none; }

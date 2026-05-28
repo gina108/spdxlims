@@ -1,0 +1,91 @@
+id: urinalysis-com6
+name: Urinalysis Strip Reader (COM6)
+protocol_hint: framed_text
+device_metadata:
+  department: urinalysis
+transport:
+  type: serial
+  serial_port: COM6
+  baud_rate: 9600
+  data_bits: 8
+  parity: N
+  stop_bits: 1
+  discovery_hints:
+    - astm_serial
+parsing:
+  strategy: line_text
+mapping:
+  test_code_aliases:
+    LEU:
+      - LEU
+    NIT:
+      - NIT
+    URO:
+      - URO
+    PRO:
+      - PRO
+    PH:
+      - pH
+      - PH
+    BLO:
+      - BLO
+    SG:
+      - SG
+    KET:
+      - KET
+    BIL:
+      - BIL
+    GLU:
+      - GLU
+  test_mappings:
+    - match_type: exact
+      pattern: LEU
+      canonical_assay: Leukocytes
+      lis_test_id: LIS-UA-LEU
+    - match_type: exact
+      pattern: NIT
+      canonical_assay: Nitrite
+      lis_test_id: LIS-UA-NIT
+    - match_type: exact
+      pattern: URO
+      canonical_assay: Urobilinogen
+      lis_test_id: LIS-UA-URO
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: PRO
+      canonical_assay: Protein
+      lis_test_id: LIS-UA-PRO
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: PH
+      canonical_assay: Urine pH
+      lis_test_id: LIS-UA-PH
+    - match_type: exact
+      pattern: BLO
+      canonical_assay: Blood
+      lis_test_id: LIS-UA-BLO
+    - match_type: exact
+      pattern: SG
+      canonical_assay: Specific Gravity
+      lis_test_id: LIS-UA-SG
+    - match_type: exact
+      pattern: KET
+      canonical_assay: Ketones
+      lis_test_id: LIS-UA-KET
+    - match_type: exact
+      pattern: BIL
+      canonical_assay: Bilirubin
+      lis_test_id: LIS-UA-BIL
+    - match_type: exact
+      pattern: GLU
+      canonical_assay: Glucose
+      lis_test_id: LIS-UA-GLU
+  unit_normalization:
+    mg/dl: mg/dL
+    eu/dl: EU/dL
+  qc_filter_patterns:
+    - "DATE:"
+    - "OPERATOR:"
+    - "NO."
+learning_mode:
+  enabled: true

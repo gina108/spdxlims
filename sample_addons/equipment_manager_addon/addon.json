@@ -1,0 +1,14 @@
+{
+  "id": "equipment_manager",
+  "name": "Equipment Manager",
+  "version": "1.0.0",
+  "description": "Equipment registration and maintenance tracking for laboratory instruments.",
+  "entry_point": "main.py:create_page",
+  "nav_entries": [
+    {
+      "entry_id": "equipment",
+      "nav_label": "Equipment",
+      "workspace": "administrative"
+    }
+  ]
+}

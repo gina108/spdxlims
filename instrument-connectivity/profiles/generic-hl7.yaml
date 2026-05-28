@@ -1,0 +1,30 @@
+id: generic-hl7
+name: Generic HL7 Instrument
+protocol_hint: hl7_v2
+transport:
+  type: tcp_client
+  remote_address: 127.0.0.1:5000
+parsing:
+  strategy: hl7_oru
+mapping:
+  test_code_aliases:
+    WBC:
+      - WBC
+    HGB:
+      - HGB
+  test_mappings:
+    - match_type: exact
+      pattern: WBC
+      canonical_assay: White Blood Cells
+      lis_test_id: LIS-WBC
+      normalized_units: 10^3/uL
+    - match_type: exact
+      pattern: HGB
+      canonical_assay: Hemoglobin
+      lis_test_id: LIS-HGB
+      normalized_units: g/dL
+  unit_normalization:
+    10^3/uL: 10^3/uL
+    g/dL: g/dL
+learning_mode:
+  enabled: true

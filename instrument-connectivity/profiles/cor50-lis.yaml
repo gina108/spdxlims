@@ -1,0 +1,37 @@
+id: cor50-lis
+name: COR 50 LIS HL7
+protocol_hint: hl7_v2
+device_metadata:
+  vendor: COR
+  model: "50"
+transport:
+  type: tcp_server
+  listen_address: 10.0.0.10:5100
+  discovery_hints:
+    - hl7_listener
+parsing:
+  strategy: hl7_oru
+mapping:
+  test_code_aliases:
+    TP:
+      - "1"
+    APTT:
+      - "2"
+  test_mappings:
+    - match_type: exact
+      pattern: TP
+      canonical_assay: Prothrombin Time
+      lis_test_id: LIS-PT
+      normalized_units: s^%^Ratio^INR^mg/dL
+    - match_type: exact
+      pattern: APTT
+      canonical_assay: Activated Partial Thromboplastin Time
+      lis_test_id: LIS-APTT
+      normalized_units: s
+  unit_normalization:
+    s: s
+    "s^%^RazÃ³n^RIN^mg/dL": s^%^Ratio^INR^mg/dL
+    mg/dL: mg/dL
+    mmol/L: mmol/L
+learning_mode:
+  enabled: true

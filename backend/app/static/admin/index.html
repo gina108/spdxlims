@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SPDX LIMS Admin</title>
+  <link rel="stylesheet" href="/static/admin/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>SPDX LIMS Admin Console</h1>
+    <div id="whoami"></div>
+  </header>
+
+  <section class="card" id="login-card">
+    <h2>Login</h2>
+    <form id="login-form">
+      <input id="email" placeholder="email" required />
+      <input id="password" type="password" placeholder="password" required />
+      <button type="submit">Sign In</button>
+    </form>
+    <p id="login-msg"></p>
+  </section>
+
+  <main id="app" class="hidden">
+    <section class="card">
+      <h2>Create Provider</h2>
+      <form id="provider-form">
+        <select id="provider_type"><option value="doctor">Doctor</option><option value="clinic">Clinic</option></select>
+        <input id="legal_name" placeholder="Legal name" required />
+        <input id="provider_email" placeholder="Email" />
+        <button type="submit">Save Provider</button>
+      </form>
+      <pre id="providers-out"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Create Inventory Item</h2>
+      <form id="item-form">
+        <input id="sku" placeholder="SKU" required />
+        <input id="item_name" placeholder="Name" required />
+        <input id="category" placeholder="Category" required />
+        <input id="unit" placeholder="Unit" required />
+        <button type="submit">Save Item</button>
+      </form>
+      <pre id="items-out"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Open Month-End</h2>
+      <form id="month-form">
+        <input id="period_start" type="date" required />
+        <input id="period_end" type="date" required />
+        <button type="submit">Open</button>
+      </form>
+      <pre id="month-out"></pre>
+    </section>
+
+    <button id="logout">Logout</button>
+  </main>
+
+  <script src="/static/admin/app.js"></script>
+</body>
+</html>

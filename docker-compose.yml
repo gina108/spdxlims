@@ -1,0 +1,14 @@
+version: '3.7'
+
+services:
+  SPDXLIMS:
+    image: SPDXLIM/SPDXLIM:latest
+    container_name: SPDXLIM
+    ports:
+      - "8080:8080"
+    volumes:
+      - SPDXLIM_data:/data
+    restart: always
+
+volumes:
+  SPDXLIM_data:

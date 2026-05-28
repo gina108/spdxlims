@@ -1,0 +1,183 @@
+id: mindray-bc30s
+name: Mindray BC-30s HL7
+protocol_hint: hl7_v2
+device_metadata:
+  vendor: Mindray
+  model: BC-30s
+transport:
+  type: tcp_client
+  remote_address: 10.0.0.2:5100
+  discovery_hints:
+    - hl7_listener
+parsing:
+  strategy: hl7_oru
+mapping:
+  test_code_aliases:
+    WBC:
+      - 6690-2
+    LYM_ABS:
+      - 731-0
+    LYM_PCT:
+      - 736-9
+    RBC:
+      - 789-8
+    HGB:
+      - 718-7
+    HCT:
+      - 4544-3
+    MCV:
+      - 787-2
+    MCH:
+      - 785-6
+    MCHC:
+      - 786-4
+    RDW_CV:
+      - 788-0
+    RDW_SD:
+      - 21000-5
+    PLT:
+      - 777-3
+    MPV:
+      - 32623-1
+    PDW:
+      - 32207-3
+    PCT:
+      - "10002"
+    MID_ABS:
+      - "10027"
+    MID_PCT:
+      - "10029"
+    GRAN_ABS:
+      - "10028"
+    GRAN_PCT:
+      - "10030"
+    PLCC:
+      - "10013"
+    PLCR:
+      - "10014"
+  test_mappings:
+    - match_type: exact
+      pattern: WBC
+      canonical_assay: White Blood Cells
+      lis_test_id: LIS-WBC
+      normalized_units: 10*9/L
+    - match_type: exact
+      pattern: LYM_ABS
+      canonical_assay: Lymphocytes Absolute
+      lis_test_id: LIS-LYM-ABS
+      normalized_units: 10*9/L
+    - match_type: exact
+      pattern: LYM_PCT
+      canonical_assay: Lymphocytes Percent
+      lis_test_id: LIS-LYM-PCT
+      normalized_units: "%"
+    - match_type: exact
+      pattern: RBC
+      canonical_assay: Red Blood Cells
+      lis_test_id: LIS-RBC
+      normalized_units: 10*12/L
+    - match_type: exact
+      pattern: HGB
+      canonical_assay: Hemoglobin
+      lis_test_id: LIS-HGB
+      normalized_units: g/dL
+    - match_type: exact
+      pattern: HCT
+      canonical_assay: Hematocrit
+      lis_test_id: LIS-HCT
+      normalized_units: "%"
+    - match_type: exact
+      pattern: MCV
+      canonical_assay: Mean Corpuscular Volume
+      lis_test_id: LIS-MCV
+      normalized_units: fL
+    - match_type: exact
+      pattern: MCH
+      canonical_assay: Mean Corpuscular Hemoglobin
+      lis_test_id: LIS-MCH
+      normalized_units: pg
+    - match_type: exact
+      pattern: MCHC
+      canonical_assay: Mean Corpuscular Hemoglobin Concentration
+      lis_test_id: LIS-MCHC
+      normalized_units: g/dL
+    - match_type: exact
+      pattern: RDW_CV
+      canonical_assay: Red Cell Distribution Width CV
+      lis_test_id: LIS-RDW-CV
+      normalized_units: "%"
+    - match_type: exact
+      pattern: RDW_SD
+      canonical_assay: Red Cell Distribution Width SD
+      lis_test_id: LIS-RDW-SD
+      normalized_units: fL
+    - match_type: exact
+      pattern: PLT
+      canonical_assay: Platelets
+      lis_test_id: LIS-PLT
+      normalized_units: /nL
+    - match_type: exact
+      pattern: MPV
+      canonical_assay: Mean Platelet Volume
+      lis_test_id: LIS-MPV
+      normalized_units: fL
+    - match_type: exact
+      pattern: PDW
+      canonical_assay: Platelet Distribution Width
+      lis_test_id: LIS-PDW
+    - match_type: exact
+      pattern: PCT
+      canonical_assay: Plateletcrit
+      lis_test_id: LIS-PCT
+      normalized_units: mL/L
+    - match_type: exact
+      pattern: MID_ABS
+      canonical_assay: MID Absolute
+      lis_test_id: LIS-MID-ABS
+      normalized_units: 10*9/L
+    - match_type: exact
+      pattern: MID_PCT
+      canonical_assay: MID Percent
+      lis_test_id: LIS-MID-PCT
+      normalized_units: "%"
+    - match_type: exact
+      pattern: GRAN_ABS
+      canonical_assay: Granulocytes Absolute
+      lis_test_id: LIS-GRAN-ABS
+      normalized_units: 10*9/L
+    - match_type: exact
+      pattern: GRAN_PCT
+      canonical_assay: Granulocytes Percent
+      lis_test_id: LIS-GRAN-PCT
+      normalized_units: "%"
+    - match_type: exact
+      pattern: PLCC
+      canonical_assay: Platelet Large Cell Count
+      lis_test_id: LIS-PLCC
+      normalized_units: 10*9/L
+    - match_type: exact
+      pattern: PLCR
+      canonical_assay: Platelet Large Cell Ratio
+      lis_test_id: LIS-PLCR
+      normalized_units: "%"
+  unit_normalization:
+    10*9/L: 10*9/L
+    10*12/L: 10*12/L
+    g/dL: g/dL
+    fL: fL
+    pg: pg
+    mL/L: mL/L
+    /nL: /nL
+    "%": "%"
+  qc_filter_patterns:
+    - Take Mode
+    - Blood Mode
+    - Ref Group
+    - Histogram.
+    - Binary Meta Length
+    - Left Line
+    - Right Line
+    - Mid gran region alert
+    - Erythrocytosis
+learning_mode:
+  enabled: true

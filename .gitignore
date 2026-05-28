@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!backend/.env.example
+!backend/.env.production.example
+data/instrument-engine/bundle-hmac.key
+backend/backup-status.json
+backend/app/static/uploads/
+
+# Runtime databases and generated local state
+backups/
+data/
+Files/
+data/*.db
+data/*.db-*
+tmp*.db
+tmp*/
+outputs/
+*.log
+
+# Generated reports, labels, captures, and build artifacts
+data/reports/exports/
+data/reports/whatsapp/
+data/labels/
+data/instrument-engine/captures/
+data/instrument-engine/*.log
+data/instrument-engine/*.db
+data/instrument-engine/*.db-*
+instrument-connectivity/dist/
+instrument-connectivity/bin/
+instrument-connectivity/data/
+instrument-connectivity/.runtime/
+niimbot-helper/helper.exe
+niimbot-helper/helper.exe~
+sample_addons/dist/
+
+# Local spreadsheet workbooks and ad hoc exports
+*.xlsx
+*.xls
+*.xlsb
+*.csv
+*.tsv
+
+# Office temp/recovery files
+~$*
+recovered_excel/
+
+# Stray command/output files
+python
+sh -T git@github.com
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
