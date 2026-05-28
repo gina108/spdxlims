@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import shutil
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -180,13 +182,16 @@ class InstrumentConnectivityPage(DataAwarePage):
         process.setProcessEnvironment(environment)
         process.readyReadStandardOutput.connect(self._append_stdout)
         process.readyReadStandardError.connect(self._append_stderr)
+        process.errorOccurred.connect(self._process_error)
         process.finished.connect(self._process_finished)
         process.start()
         if not process.waitForStarted(5000):
+            self.log_output.append(f"{tr('The instrument engine could not be started from the host UI.')}: {process.errorString()}")
             if not silent:
                 QMessageBox.critical(self, tr("Instrument Connectivity"), tr("The instrument engine could not be started from the host UI."))
             else:
                 self.log_output.append(tr("The instrument engine could not be started from the host UI."))
+            process.deleteLater()
             return
         self.engine_process = process
         self.log_output.append(f"$ {program} {' '.join(args)}")
@@ -281,32 +286,29 @@ class InstrumentConnectivityPage(DataAwarePage):
         self.refresh_status()
 
     def _resolve_engine_command(self) -> tuple[str, list[str], Path] | None:
-        root = Path(__file__).resolve().parents[2]
-        runtime_dir = root / "data" / "instrument-engine"
+        root = self._app_root()
+        runtime_dir = self._runtime_dir()
         source_root = root / "instrument-connectivity"
-        candidates = [
-            root / "instrument-connectivity" / "dist" / "build" / "instrument-agent.exe",
-            root / "instrument-connectivity" / "bin" / "instrument-agent.exe",
-            root / "instrument-connectivity" / "dist" / "instrument-connectivity-windows" / "bin" / "instrument-agent.exe",
-        ]
+        candidates = self._engine_binary_candidates(root)
         for candidate in candidates:
             if candidate.exists():
                 workdir = self._resolve_engine_workdir(candidate, source_root)
                 return str(candidate), ["-data-dir", str(runtime_dir)], workdir
-        if (source_root / "cmd" / "agent").exists():
+        if (source_root / "cmd" / "agent").exists() and shutil.which("go"):
             return "go", ["run", ".\\cmd\\agent", "-data-dir", str(runtime_dir)], source_root
         return None
 
     def _sync_runtime_profiles(self) -> None:
-        root = Path(__file__).resolve().parents[2]
-        runtime_profiles = root / "data" / "instrument-engine" / "profiles"
-        source_profiles = root / "instrument-connectivity" / "profiles"
+        runtime_profiles = self._runtime_dir() / "profiles"
+        source_profiles = self._profile_source_dir()
         if not source_profiles.exists():
             return
         runtime_profiles.mkdir(parents=True, exist_ok=True)
         for source in source_profiles.glob("*.yaml"):
             target = runtime_profiles / source.name
             try:
+                if source.resolve() == target.resolve():
+                    continue
                 if not target.exists() or source.read_bytes() != target.read_bytes():
                     shutil.copy2(source, target)
             except OSError as exc:
@@ -322,6 +324,70 @@ class InstrumentConnectivityPage(DataAwarePage):
             if (candidate / "web" / "index.html").exists():
                 return candidate
         return executable.parent
+
+    def _app_root(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parents[2]
+
+    def _engine_binary_candidates(self, root: Path) -> list[Path]:
+        env_path = os.environ.get("INSTRUMENT_ENGINE_EXE", "").strip()
+        roots = [
+            root,
+            root / "instrument-connectivity",
+            root / "instrument-connectivity" / "dist" / "instrument-connectivity-windows",
+            root / "instrument-connectivity-windows",
+            root.parent / "instrument-connectivity-windows",
+            Path(getattr(sys, "_MEIPASS", root)),
+        ]
+        candidates: list[Path] = []
+        if env_path:
+            candidates.append(Path(env_path))
+        for base in roots:
+            candidates.extend(
+                [
+                    base / "bin" / "instrument-agent.exe",
+                    base / "instrument-agent.exe",
+                    base / "dist" / "build" / "instrument-agent.exe",
+                    base / "dist" / "instrument-connectivity-windows" / "bin" / "instrument-agent.exe",
+                ]
+            )
+        deduped: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in candidates:
+            resolved = candidate.expanduser()
+            if resolved not in seen:
+                deduped.append(resolved)
+                seen.add(resolved)
+        return deduped
+
+    def _runtime_dir(self) -> Path:
+        env_path = os.environ.get("INSTRUMENT_ENGINE_DATA_DIR", "").strip()
+        if env_path:
+            return Path(env_path).expanduser()
+        root = self._app_root()
+        package_runtime = root / "runtime-data"
+        if package_runtime.exists():
+            return package_runtime
+        sibling_runtime = root.parent / "instrument-connectivity-windows" / "runtime-data"
+        if sibling_runtime.exists():
+            return sibling_runtime
+        return root / "data" / "instrument-engine"
+
+    def _profile_source_dir(self) -> Path:
+        root = self._app_root()
+        candidates = [
+            root / "instrument-connectivity" / "profiles",
+            root / "profiles",
+            root / "instrument-connectivity-windows" / "profiles",
+            root.parent / "instrument-connectivity-windows" / "profiles",
+            Path(getattr(sys, "_MEIPASS", root)) / "profiles",
+            self._runtime_dir() / "profiles",
+        ]
+        for candidate in candidates:
+            if candidate.exists() and any(candidate.glob("*.yaml")):
+                return candidate
+        return candidates[0]
 
     def _get_web_view_class(self):
         if self._web_engine_checked:
@@ -370,6 +436,11 @@ class InstrumentConnectivityPage(DataAwarePage):
         text = bytes(self.engine_process.readAllStandardError()).decode("utf-8", errors="replace").strip()
         if text:
             self.log_output.append(text)
+
+    def _process_error(self, error) -> None:
+        if self.engine_process is None:
+            return
+        self.log_output.append(f"{tr('Engine request failed')}: {error.name} {self.engine_process.errorString()}")
 
     def _process_finished(self) -> None:
         self.log_output.append(tr("Instrument engine process exited."))

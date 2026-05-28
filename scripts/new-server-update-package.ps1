@@ -90,6 +90,18 @@ Invoke-Step "Stage source files" {
     ) | ForEach-Object { Copy-ProjectItem $_ }
 }
 
+Invoke-Step "Build instrument connectivity package" {
+    Push-Location (Join-Path $Root "instrument-connectivity")
+    try {
+        & (Join-Path $Root "instrument-connectivity\scripts\package-release.ps1") -OutputRoot $StagingDir -PackageName "instrument-connectivity-windows" -Version $PackageVersion
+    } finally {
+        Pop-Location
+    }
+
+    Get-ChildItem -Path $StagingDir -Filter "instrument-connectivity-windows-*.zip" -File |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+}
+
 Invoke-Step "Remove local-only files from package" {
     @(
         ".venv",
