@@ -734,7 +734,7 @@ class Database:
                     sat_postal_code TEXT NOT NULL DEFAULT '',
                     sat_certificate_path TEXT NOT NULL DEFAULT '',
                     sat_key_path TEXT NOT NULL DEFAULT '',
-                    ui_language TEXT NOT NULL DEFAULT 'en',
+                    ui_language TEXT NOT NULL DEFAULT 'es',
                     report_flag_style TEXT NOT NULL DEFAULT 'arrows',
                     ui_state TEXT NOT NULL DEFAULT '{}',
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1722,7 +1722,7 @@ class Database:
                     payload.get("sat_postal_code", "").strip(),
                     payload.get("sat_certificate_path", "").strip(),
                     payload.get("sat_key_path", "").strip(),
-                    payload.get("ui_language", "en").strip() or "en",
+                    payload.get("ui_language", "es").strip() or "es",
                     payload.get("report_flag_style", "arrows").strip() or "arrows",
                     payload.get("ui_state", self.get_ui_state_json()),
                 ),
@@ -3579,7 +3579,8 @@ class Database:
     def _migrate_lab_settings_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(lab_settings)").fetchall()}
         if "ui_language" not in columns:
-            connection.execute("ALTER TABLE lab_settings ADD COLUMN ui_language TEXT NOT NULL DEFAULT 'en'")
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN ui_language TEXT NOT NULL DEFAULT 'es'")
+        connection.execute("UPDATE lab_settings SET ui_language = 'es' WHERE ui_language IS NULL OR ui_language = '' OR ui_language = 'en'")
         if "ui_state" not in columns:
             connection.execute("ALTER TABLE lab_settings ADD COLUMN ui_state TEXT NOT NULL DEFAULT '{}'")
         if "sat_rfc" not in columns:
