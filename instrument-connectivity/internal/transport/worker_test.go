@@ -78,6 +78,7 @@ func TestTCPServerWorkerProcessesInboundPayload(t *testing.T) {
 			default:
 			}
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("startTCPServerWorker() error = %v", err)

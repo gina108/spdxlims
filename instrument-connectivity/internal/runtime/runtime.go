@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"instrument-connectivity/internal/discovery"
 	"instrument-connectivity/internal/learning"
 	"instrument-connectivity/internal/models"
+	"instrument-connectivity/internal/orders"
 	"instrument-connectivity/internal/pipeline"
 	"instrument-connectivity/internal/profile"
 	"instrument-connectivity/internal/transport"
@@ -36,13 +38,15 @@ type App struct {
 	processor        *pipeline.Processor
 	discovery        *discovery.Service
 	learning         *learning.Engine
+	pendingOrders    *orders.Store
 	server           *http.Server
 	wg               sync.WaitGroup
 	bundleHMACSecret []byte
 	bundleSecretMode string
 
-	workersMu sync.Mutex
-	workers   map[string]transport.Worker
+	workersMu  sync.Mutex
+	workers    map[string]transport.Worker
+	tcpServers map[string]*sharedTCPServer
 
 	closeOnce sync.Once
 	stopCh    chan struct{}
@@ -66,7 +70,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	app := &App{cfg: cfg, profiles: profiles, captures: captureStore, processor: pipeline.New(), discovery: discovery.New(), learning: learning.New(), workers: map[string]transport.Worker{}, stopCh: make(chan struct{}), bundleHMACSecret: bundleSecret, bundleSecretMode: bundleSecretMode}
+	app := &App{cfg: cfg, profiles: profiles, captures: captureStore, processor: pipeline.New(), discovery: discovery.New(), learning: learning.New(), pendingOrders: orders.NewStore(), workers: map[string]transport.Worker{}, tcpServers: map[string]*sharedTCPServer{}, stopCh: make(chan struct{}), bundleHMACSecret: bundleSecret, bundleSecretMode: bundleSecretMode}
 	if err := app.seedProfiles(); err != nil {
 		return nil, err
 	}
@@ -84,7 +88,27 @@ func (a *App) Start() error {
 		a.wg.Add(1)
 		go a.runScheduledCleanup()
 	}
+	if a.cfg.AutoResume {
+		a.Resume()
+	}
 	return nil
+}
+
+// Resume restarts capture sessions for any profile that was active before the
+// engine last stopped. It is called automatically on Start when AutoResume is
+// enabled and can also be triggered on demand.
+func (a *App) Resume() []string {
+	profileIDs, err := a.captures.ListResumableProfiles()
+	if err != nil || len(profileIDs) == 0 {
+		return nil
+	}
+	var resumed []string
+	for _, id := range profileIDs {
+		if _, err := a.StartCapture(id); err == nil {
+			resumed = append(resumed, id)
+		}
+	}
+	return resumed
 }
 func (a *App) Wait() error { a.wg.Wait(); return nil }
 func (a *App) Close() error {
@@ -231,23 +255,41 @@ func (a *App) ImportMigrationBundle(bundle profile.MigrationBundle, actor string
 		CreatedAt: time.Now().UTC(),
 	})
 }
-func (a *App) ScanPorts(req models.NetworkScanRequest) ([]models.DeviceFingerprint, []transport.SerialCandidate, []models.NetworkDevice, error) {
+func (a *App) ScanPorts(req models.NetworkScanRequest) ([]models.DeviceFingerprint, []transport.SerialCandidate, []models.NetworkDevice, models.NetworkScanDiagnostics, error) {
+	started := time.Now()
 	ports, err := a.discovery.ScanSerialPorts()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, models.NetworkScanDiagnostics{}, err
 	}
 	networkDevices := []models.NetworkDevice{}
+	diagnostics := models.NetworkScanDiagnostics{Mode: scanMode(req.Mode), SerialDevices: len(ports)}
 	if a.cfg.NetworkDiscoveryEnabled {
-		scanned, err := a.discovery.ScanNetwork(discovery.NetworkScanOptions{CIDRs: a.discoveryCIDRs(req.CIDRs), Ports: a.discoveryPorts(req.Ports), Timeout: a.cfg.NetworkProbeTimeout, Concurrency: a.cfg.NetworkScanConcurrency, HostLimit: a.cfg.NetworkScanHostLimit})
+		cidrs := a.discoveryCIDRs(req.CIDRs)
+		probePorts, profilePortCount := a.discoveryPorts(req.Ports)
+		hostLimit := a.discoveryHostLimit(req)
+		scanned, err := a.discovery.ScanNetwork(discovery.NetworkScanOptions{CIDRs: cidrs, Ports: probePorts, Timeout: a.cfg.NetworkProbeTimeout, Concurrency: a.cfg.NetworkScanConcurrency, HostLimit: hostLimit})
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, diagnostics, err
 		}
-		networkDevices, err = a.captures.UpsertNetworkDevices(scanned)
+		networkDevices, err = a.captures.UpsertNetworkDevices(scanned.Devices)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, diagnostics, err
 		}
+		diagnostics.CIDRs = scanned.CIDRs
+		diagnostics.Ports = scanned.Ports
+		diagnostics.HostLimit = scanned.HostLimit
+		diagnostics.CandidateHosts = scanned.CandidateHosts
+		diagnostics.DurationMS = scanned.Duration.Milliseconds()
+		diagnostics.NetworkDevices = len(networkDevices)
+		diagnostics.ProfilePortCount = profilePortCount
+		diagnostics.Warnings, diagnostics.Recommendations = discoveryGuidance(diagnostics, len(req.CIDRs) > 0, len(req.Ports) > 0)
+	} else {
+		diagnostics.Warnings = []string{"Network discovery is disabled in configuration."}
 	}
-	return ports, transport.CommonSerialCandidates(), networkDevices, nil
+	if diagnostics.DurationMS == 0 {
+		diagnostics.DurationMS = time.Since(started).Milliseconds()
+	}
+	return ports, transport.CommonSerialCandidates(), networkDevices, diagnostics, nil
 }
 func (a *App) RuntimeSnapshot(limit int) (capture.RuntimeSnapshot, error) {
 	return a.captures.RuntimeSnapshot(limit, limit)
@@ -296,6 +338,9 @@ func (a *App) ProcessPayload(raw []byte, transportType models.TransportType, pro
 	}
 	if err := a.captures.RecordProcessingSuccess(prof.ID, deviceID, transportType, result.Classification.Selected, rec.ID, prof.Transport, result.Message.Observations, rec.ReceivedAt); err != nil {
 		a.recordError(prof.ID, deviceID, transportType, err, map[string]any{"stage": "record_processing_success", "capture_id": rec.ID}, prof.Transport)
+	}
+	if err := a.captures.UpsertResult(result.Message, rec.ID, rec.ReceivedAt); err != nil {
+		a.recordError(prof.ID, deviceID, transportType, err, map[string]any{"stage": "upsert_result", "capture_id": rec.ID}, prof.Transport)
 	}
 	return result, rec, nil
 }
@@ -469,6 +514,7 @@ func (a *App) ReplayCapture(id, overrideProfileID string) (models.ParseResult, e
 		_ = a.captures.RecordReplayEvent(networkDeviceID, rec.ID, profileID, rec.DeviceID, "error", err.Error())
 		return result, err
 	}
+	_ = a.captures.SaveParsed(rec.ID, result)
 	_ = a.captures.RecordReplayEvent(networkDeviceID, rec.ID, profileID, rec.DeviceID, "success", string(result.Classification.Selected))
 	return result, nil
 }
@@ -490,6 +536,9 @@ func (a *App) StartCapture(profileID string) (string, error) {
 		return "", err
 	}
 	transportType := models.TransportType(prof.Transport.Type)
+	if transportType == models.TransportTCPServer {
+		return a.startSharedTCPServerCapture(prof)
+	}
 	deviceID := transportDeviceID(prof)
 	sessionID, err := a.captures.StartSession(prof.ID, transportType)
 	if err != nil {
@@ -507,7 +556,7 @@ func (a *App) StartCapture(profileID string) (string, error) {
 		_ = a.captures.UpdateSessionState(sessionID, state)
 		_ = a.captures.UpdateRuntimeState(prof.ID, deviceID, transportType, sessionID, state, prof.Transport)
 		_ = a.captures.AppendSessionEvent(sessionID, prof.ID, deviceID, transportType, state, meta)
-	})
+	}, a.makeQueryHandler(prof))
 	if err != nil {
 		_ = a.captures.StopSession(sessionID)
 		_ = a.captures.UpdateRuntimeState(prof.ID, deviceID, transportType, sessionID, "error", prof.Transport)
@@ -634,6 +683,107 @@ func (a *App) loadProfile(profileID string) (profile.Profile, error) {
 	}
 	return a.profiles.Get(profileID)
 }
+
+// PushPendingOrder stores an order in the pending orders store so the engine can
+// respond to ASTM host queries (Q records) from bidirectional analyzers.
+func (a *App) PushPendingOrder(req models.PendingOrderRequest) error {
+	if strings.TrimSpace(req.SampleID) == "" {
+		return fmt.Errorf("sample_id is required")
+	}
+	tests := make([]orders.PendingTest, 0, len(req.Tests))
+	for _, t := range req.Tests {
+		tests = append(tests, orders.PendingTest{TestCode: t.TestCode, TestName: t.TestName})
+	}
+	a.pendingOrders.Put(orders.PendingOrder{
+		SampleID:    strings.TrimSpace(req.SampleID),
+		PatientID:   req.PatientID,
+		PatientName: req.PatientName,
+		DOB:         req.DOB,
+		Sex:         req.Sex,
+		DoctorName:  req.DoctorName,
+		Tests:       tests,
+		ProfileID:   req.ProfileID,
+	})
+	return nil
+}
+
+// ListPendingOrders returns all non-expired pending orders as PendingOrderRequests.
+func (a *App) ListPendingOrders() []models.PendingOrderRequest {
+	all := a.pendingOrders.List()
+	out := make([]models.PendingOrderRequest, 0, len(all))
+	for _, o := range all {
+		tests := make([]models.PendingTestRequest, 0, len(o.Tests))
+		for _, t := range o.Tests {
+			tests = append(tests, models.PendingTestRequest{TestCode: t.TestCode, TestName: t.TestName})
+		}
+		out = append(out, models.PendingOrderRequest{
+			SampleID:    o.SampleID,
+			PatientID:   o.PatientID,
+			PatientName: o.PatientName,
+			DOB:         o.DOB,
+			Sex:         o.Sex,
+			DoctorName:  o.DoctorName,
+			Tests:       tests,
+			ProfileID:   o.ProfileID,
+		})
+	}
+	return out
+}
+
+// DeletePendingOrder removes the order for sampleID from the store.
+func (a *App) DeletePendingOrder(sampleID string) {
+	a.pendingOrders.Delete(strings.TrimSpace(sampleID))
+}
+
+// makeQueryHandler returns an ASTM QueryHandler for profiles that use ASTM framing.
+// For non-ASTM profiles it returns nil so the worker skips Q-record handling.
+func (a *App) makeQueryHandler(prof profile.Profile) transport.QueryHandler {
+	if transport.SelectSessionMode(prof) != "astm" {
+		return nil
+	}
+	return func(sampleID string, rw io.ReadWriter) {
+		order, found := a.pendingOrders.Get(sampleID)
+		records := buildASTMOrderResponseRecords(sampleID, found, order)
+		if err := transport.SendASTMResponse(rw, records); err != nil {
+			a.recordError(prof.ID, "astm_query", models.TransportTCPServer, err,
+				map[string]any{"stage": "astm_query_response", "sample_id": sampleID}, prof.Transport)
+		} else if found {
+			a.pendingOrders.Delete(sampleID)
+		}
+	}
+}
+
+// buildASTMOrderResponseRecords builds the ASTM H+[P+O...]+L record bodies
+// for a query response. If no order is found it returns an empty H+L (no work list).
+func buildASTMOrderResponseRecords(sampleID string, found bool, order orders.PendingOrder) []string {
+	now := time.Now().Format("20060102150405")
+	seq := 1
+	records := []string{fmt.Sprintf("%dH|\\^&|||SPDXLIMS|||||||P|LIS2-A2|%s", seq, now)}
+	seq++
+
+	if found {
+		// Format patient name as "LASTNAME^FIRSTNAME"
+		name := strings.ReplaceAll(strings.TrimSpace(order.PatientName), " ", "^")
+		dob := strings.ReplaceAll(order.DOB, "-", "")
+		sex := strings.ToUpper(strings.TrimSpace(order.Sex))
+		if len(sex) > 1 {
+			sex = sex[:1]
+		}
+		if order.PatientID != "" || name != "" {
+			records = append(records, fmt.Sprintf("%dP|1||%s|||%s||%s|%s",
+				seq, order.PatientID, name, dob, sex))
+			seq++
+		}
+		for i, t := range order.Tests {
+			records = append(records, fmt.Sprintf("%dO|%d|%s||^^^%s|R|||||||N|||||",
+				seq, i+1, sampleID, t.TestCode))
+			seq++
+		}
+	}
+
+	records = append(records, fmt.Sprintf("%dL|1|N", seq))
+	return records
+}
 func (a *App) recordError(profileID, deviceID string, transportType models.TransportType, err error, detail map[string]any, selectedSettings any) {
 	if deviceID == "" {
 		deviceID = "manual-input"
@@ -684,8 +834,32 @@ func transportDeviceID(prof profile.Profile) string {
 	return prof.ID
 }
 
-func (a *App) discoveryPorts(extra []int) []int {
+func scanMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "full":
+		return "full"
+	case "custom":
+		return "custom"
+	default:
+		return "quick"
+	}
+}
+
+func (a *App) discoveryHostLimit(req models.NetworkScanRequest) int {
+	if req.HostLimit > 0 {
+		return req.HostLimit
+	}
+	switch scanMode(req.Mode) {
+	case "full":
+		return 254
+	default:
+		return a.cfg.NetworkScanHostLimit
+	}
+}
+
+func (a *App) discoveryPorts(extra []int) ([]int, int) {
 	portSet := map[int]struct{}{}
+	profilePortSet := map[int]struct{}{}
 	for _, port := range a.cfg.NetworkProbePorts {
 		if port > 0 && port <= 65535 {
 			portSet[port] = struct{}{}
@@ -702,14 +876,17 @@ func (a *App) discoveryPorts(extra []int) []int {
 			for _, port := range prof.Transport.DiscoveryPorts {
 				if port > 0 && port <= 65535 {
 					portSet[port] = struct{}{}
+					profilePortSet[port] = struct{}{}
 				}
 			}
 			for _, port := range discoveryHintPorts(prof.Transport.DiscoveryHints) {
 				portSet[port] = struct{}{}
+				profilePortSet[port] = struct{}{}
 			}
 			for _, rawAddress := range []string{prof.Transport.RemoteAddress, prof.Transport.ListenAddress} {
 				if port, ok := addressPort(rawAddress); ok {
 					portSet[port] = struct{}{}
+					profilePortSet[port] = struct{}{}
 				}
 			}
 		}
@@ -719,7 +896,30 @@ func (a *App) discoveryPorts(extra []int) []int {
 		ports = append(ports, port)
 	}
 	sort.Ints(ports)
-	return ports
+	return ports, len(profilePortSet)
+}
+
+func discoveryGuidance(d models.NetworkScanDiagnostics, explicitCIDRs, explicitPorts bool) ([]string, []string) {
+	warnings := []string{}
+	recommendations := []string{}
+	if len(d.CIDRs) == 0 {
+		warnings = append(warnings, "No private IPv4 subnet was available for automatic scanning.")
+		recommendations = append(recommendations, "Enter the analyzer subnet manually, such as 10.0.0.0/24.")
+	}
+	if d.Mode == "quick" && d.CandidateHosts > 0 && d.HostLimit < 254 {
+		recommendations = append(recommendations, fmt.Sprintf("Quick scan checked up to %d hosts per subnet. Use Full subnet scan if the analyzer may have a higher address.", d.HostLimit))
+	}
+	if !explicitPorts && d.ProfilePortCount == 0 {
+		recommendations = append(recommendations, "Add discovery hints or profile ports for the analyzer family so scans include its LIS port.")
+	}
+	if d.NetworkDevices == 0 && d.CandidateHosts > 0 {
+		warnings = append(warnings, "No TCP endpoints responded on the scanned ports.")
+		recommendations = append(recommendations, "Confirm the analyzer IP, LIS port, cable/VLAN, and Windows firewall rules, then try a targeted scan.")
+	}
+	if explicitCIDRs || explicitPorts {
+		recommendations = append(recommendations, "Save successful CIDRs and ports into the matching profile so future quick scans include them.")
+	}
+	return warnings, recommendations
 }
 
 func discoveryHintPorts(hints []string) []int {

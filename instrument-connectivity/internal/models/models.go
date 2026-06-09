@@ -98,8 +98,24 @@ type DeviceFingerprint struct {
 }
 
 type NetworkScanRequest struct {
-	CIDRs []string `json:"cidrs,omitempty"`
-	Ports []int    `json:"ports,omitempty"`
+	CIDRs     []string `json:"cidrs,omitempty"`
+	Ports     []int    `json:"ports,omitempty"`
+	Mode      string   `json:"mode,omitempty"`
+	HostLimit int      `json:"host_limit,omitempty"`
+}
+
+type NetworkScanDiagnostics struct {
+	Mode             string   `json:"mode"`
+	CIDRs            []string `json:"cidrs,omitempty"`
+	Ports            []int    `json:"ports,omitempty"`
+	HostLimit        int      `json:"host_limit"`
+	CandidateHosts   int      `json:"candidate_hosts"`
+	NetworkDevices   int      `json:"network_devices"`
+	SerialDevices    int      `json:"serial_devices"`
+	DurationMS       int64    `json:"duration_ms"`
+	Warnings         []string `json:"warnings,omitempty"`
+	Recommendations  []string `json:"recommendations,omitempty"`
+	ProfilePortCount int      `json:"profile_port_count,omitempty"`
 }
 
 type NetworkHistoryEntry struct {
@@ -224,4 +240,23 @@ type NetworkDevice struct {
 	CIDRHistory          []NetworkHistoryEntry `json:"cidr_history,omitempty"`
 	InterfaceHistory     []NetworkHistoryEntry `json:"interface_history,omitempty"`
 	Metadata             map[string]any        `json:"metadata,omitempty"`
+}
+
+// PendingOrderRequest is the JSON body sent by the LIMS to pre-load an order
+// so the engine can respond to ASTM host queries from analyzers.
+type PendingOrderRequest struct {
+	SampleID    string               `json:"sample_id"`
+	PatientID   string               `json:"patient_id,omitempty"`
+	PatientName string               `json:"patient_name,omitempty"`
+	DOB         string               `json:"dob,omitempty"`
+	Sex         string               `json:"sex,omitempty"`
+	DoctorName  string               `json:"doctor_name,omitempty"`
+	Tests       []PendingTestRequest `json:"tests"`
+	ProfileID   string               `json:"profile_id,omitempty"`
+}
+
+// PendingTestRequest is one test within a PendingOrderRequest.
+type PendingTestRequest struct {
+	TestCode string `json:"test_code"`
+	TestName string `json:"test_name,omitempty"`
 }

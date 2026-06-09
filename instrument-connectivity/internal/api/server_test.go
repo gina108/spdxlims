@@ -59,9 +59,9 @@ func (f *fakeService) ImportMigrationBundle(bundle profile.MigrationBundle, acto
 	f.importMerges = merges
 	return nil
 }
-func (f *fakeService) ScanPorts(req models.NetworkScanRequest) ([]models.DeviceFingerprint, []transport.SerialCandidate, []models.NetworkDevice, error) {
+func (f *fakeService) ScanPorts(req models.NetworkScanRequest) ([]models.DeviceFingerprint, []transport.SerialCandidate, []models.NetworkDevice, models.NetworkScanDiagnostics, error) {
 	f.lastScanRequest = req
-	return nil, nil, nil, nil
+	return nil, nil, nil, models.NetworkScanDiagnostics{Mode: req.Mode, HostLimit: req.HostLimit}, nil
 }
 func (f *fakeService) ProcessPayload(raw []byte, transport models.TransportType, profileID string, deviceID string) (models.ParseResult, capture.CaptureRecord, error) {
 	return models.ParseResult{}, capture.CaptureRecord{}, nil
@@ -128,6 +128,9 @@ func (f *fakeService) RunRetention() (capture.CleanupReport, error) {
 	f.runRetentionHit = true
 	return f.cleanupReport, nil
 }
+func (f *fakeService) PushPendingOrder(order models.PendingOrderRequest) error { return nil }
+func (f *fakeService) ListPendingOrders() []models.PendingOrderRequest         { return nil }
+func (f *fakeService) DeletePendingOrder(sampleID string)                      {}
 
 func TestRuntimeStatusIncludesMaintenance(t *testing.T) {
 	executedAt := time.Date(2026, 3, 22, 18, 0, 0, 0, time.UTC)
@@ -248,7 +251,7 @@ func TestScanPortsAcceptsCIDRAndPortQueries(t *testing.T) {
 	svc := &fakeService{}
 	handler := New(svc, Options{}).Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/ports/scan?cidrs=192.168.1.0/24,10.10.20.0/24&ports=5000,8080,bad", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ports/scan?cidrs=192.168.1.0/24,10.10.20.0/24&ports=5000,8080,bad&mode=full&host_limit=200", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -260,6 +263,9 @@ func TestScanPortsAcceptsCIDRAndPortQueries(t *testing.T) {
 	}
 	if len(svc.lastScanRequest.Ports) != 2 || svc.lastScanRequest.Ports[0] != 5000 || svc.lastScanRequest.Ports[1] != 8080 {
 		t.Fatalf("ports = %#v", svc.lastScanRequest.Ports)
+	}
+	if svc.lastScanRequest.Mode != "full" || svc.lastScanRequest.HostLimit != 200 {
+		t.Fatalf("scan options = %#v", svc.lastScanRequest)
 	}
 }
 

@@ -5,7 +5,9 @@ from decimal import Decimal, InvalidOperation
 import sqlite3
 from datetime import datetime
 
-from PySide6.QtCore import QEvent, Qt
+from spdxlims import instrument_broadcast
+
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QTextDocument
 from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -20,8 +22,11 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -150,8 +155,8 @@ class PatientDialog(QDialog):
         self.accept()
 
     def save_patient(self) -> None:
-        if not self.first_name.text().strip() or not self.last_name.text().strip():
-            QMessageBox.warning(self, tr("Missing Data"), tr("First name and last name are required."))
+        if not self.first_name.text().strip():
+            QMessageBox.warning(self, tr("Missing Data"), tr("First name is required."))
             return
         age_value_text = self.age_value.text().strip()
         if not self.date_of_birth.text().strip() and not age_value_text:
@@ -402,8 +407,11 @@ class OrderResultsDialog(QDialog):
 
         self.load_order()
         if self.results_table.rowCount() > 0:
-            self.results_table.selectRow(0)
+            first_row = self._first_selectable_row()
+            target_row = first_row if first_row >= 0 else 0
+            self.results_table.selectRow(target_row)
             self.load_selected_entry()
+            QTimer.singleShot(0, lambda: self._focus_result_editor(target_row))
     def _build_order_results(self) -> QWidget:
         self.order_group = QGroupBox(tr("Order Results"))
         layout = QVBoxLayout(self.order_group)
@@ -1041,19 +1049,46 @@ class OrderResultsDialog(QDialog):
 
 
 class OrderLabelsDialog(QDialog):
-    _CODE39_PATTERNS = {
-        '0': 'nnnwwnwnn', '1': 'wnnwnnnnw', '2': 'nnwwnnnnw', '3': 'wnwwnnnnn',
-        '4': 'nnnwwnnnw', '5': 'wnnwwnnnn', '6': 'nnwwwnnnn', '7': 'nnnwnnwnw',
-        '8': 'wnnwnnwnn', '9': 'nnwwnnwnn', 'A': 'wnnnnwnnw', 'B': 'nnwnnwnnw',
-        'C': 'wnwnnwnnn', 'D': 'nnnnwwnnw', 'E': 'wnnnwwnnn', 'F': 'nnwnwwnnn',
-        'G': 'nnnnnwwnw', 'H': 'wnnnnwwnn', 'I': 'nnwnnwwnn', 'J': 'nnnnwwwnn',
-        'K': 'wnnnnnnww', 'L': 'nnwnnnnww', 'M': 'wnwnnnnwn', 'N': 'nnnnwnnww',
-        'O': 'wnnnwnnwn', 'P': 'nnwnwnnwn', 'Q': 'nnnnnnwww', 'R': 'wnnnnnwwn',
-        'S': 'nnwnnnwwn', 'T': 'nnnnwnwwn', 'U': 'wwnnnnnnw', 'V': 'nwwnnnnnw',
-        'W': 'wwwnnnnnn', 'X': 'nwnnwnnnw', 'Y': 'wwnnwnnnn', 'Z': 'nwwnwnnnn',
-        '-': 'nwnnnnwnw', '.': 'wwnnnnwnn', ' ': 'nwwnnnwnn', '$': 'nwnwnwnnn',
-        '/': 'nwnwnnnwn', '+': 'nwnnnwnwn', '%': 'nnnwnwnwn', '*': 'nwnnwnwnn',
-    }
+    # Code 128B symbol patterns: [bar1, space1, bar2, space2, bar3, space3] widths
+    _CODE128_PATTERNS: list[list[int]] = [
+        [2,1,2,2,2,2],[2,2,2,1,2,2],[2,2,2,2,2,1],[1,2,1,2,2,3],[1,2,1,3,2,2],
+        [1,3,1,2,2,2],[1,2,2,2,1,3],[1,2,2,3,1,2],[1,3,2,2,1,2],[2,2,1,2,1,3],
+        [2,2,1,3,1,2],[2,3,1,2,1,2],[1,1,2,2,3,2],[1,2,2,1,3,2],[1,2,2,2,3,1],
+        [1,1,3,2,2,2],[1,2,3,1,2,2],[1,2,3,2,2,1],[2,2,3,2,1,1],[2,2,1,1,3,2],
+        [2,2,1,2,3,1],[2,1,3,2,1,2],[2,2,3,1,1,2],[3,1,2,1,3,1],[3,1,1,2,2,2],
+        [3,2,1,1,2,2],[3,2,1,2,2,1],[3,1,2,2,1,2],[3,2,2,1,1,2],[3,2,2,2,1,1],
+        [2,1,2,1,2,3],[2,1,2,3,2,1],[2,3,2,1,2,1],[1,1,1,3,2,3],[1,3,1,1,2,3],
+        [1,3,1,3,2,1],[1,1,2,3,1,3],[1,3,2,1,1,3],[1,3,2,3,1,1],[2,1,1,3,1,3],
+        [2,3,1,1,1,3],[2,3,1,3,1,1],[1,1,2,1,3,3],[1,1,2,3,3,1],[1,3,2,1,3,1],
+        [1,1,3,1,2,3],[1,1,3,3,2,1],[1,3,3,1,2,1],[3,1,3,1,2,1],[2,1,1,3,3,1],
+        [2,3,1,1,3,1],[2,1,3,1,1,3],[2,1,3,3,1,1],[2,1,3,1,3,1],[3,1,1,1,2,3],
+        [3,1,1,3,2,1],[3,3,1,1,2,1],[3,1,2,1,1,3],[3,1,2,3,1,1],[3,3,2,1,1,1],
+        [3,1,4,1,1,1],[2,2,1,4,1,1],[4,3,1,1,1,1],[1,1,1,2,2,4],[1,1,1,4,2,2],
+        [1,2,1,1,2,4],[1,2,1,4,2,1],[1,4,1,1,2,2],[1,4,1,2,2,1],[1,1,2,2,1,4],
+        [1,1,2,4,1,2],[1,2,2,1,1,4],[1,2,2,4,1,1],[1,4,2,1,1,2],[1,4,2,2,1,1],
+        [2,4,1,2,1,1],[2,2,1,1,1,4],[4,1,3,1,1,1],[2,4,1,1,1,2],[1,3,4,1,1,1],
+        [1,1,1,2,4,2],[1,2,1,1,4,2],[1,2,1,2,4,1],[1,1,4,2,1,2],[1,2,4,1,1,2],
+        [1,2,4,2,1,1],[4,1,1,2,1,2],[4,2,1,1,1,2],[4,2,1,2,1,1],[2,1,2,1,4,1],
+        [2,1,4,1,2,1],[4,1,2,1,2,1],[1,1,1,1,4,3],[1,1,1,3,4,1],[1,3,1,1,4,1],
+        [1,1,4,1,1,3],[1,1,4,3,1,1],[4,1,1,1,1,3],[4,1,1,3,1,1],[1,1,3,1,4,1],
+        [1,1,4,1,3,1],[3,1,1,1,4,1],[4,1,1,1,3,1],[2,1,1,4,1,2],[2,1,1,2,1,4],
+        [2,1,1,2,3,2],  # 105: START C
+    ]
+    _CODE128_STOP: list[int] = [2,3,3,1,1,1,2]  # 13-module stop symbol
+
+    @classmethod
+    def _encode_code128b(cls, text: str) -> list[int]:
+        """Return Code 128B symbol values [START_B, data..., check] (stop rendered separately)."""
+        START_B = 104
+        symbols: list[int] = [START_B]
+        for ch in text:
+            v = ord(ch)
+            symbols.append((v - 32) if 32 <= v <= 127 else 0)
+        check = START_B
+        for i, val in enumerate(symbols[1:], 1):
+            check += i * val
+        symbols.append(check % 103)
+        return symbols
 
     def __init__(self, database: Database, order_id: int | None = None, label_rows: list[dict[str, object]] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1111,7 +1146,7 @@ class OrderLabelsDialog(QDialog):
         self.payload_combo.addItem(tr('Order ID + accession ID'), 'order_accession')
         self.show_order_number_text = QCheckBox(tr("Show Order Number Text"))
         self.show_order_number_text.stateChanged.connect(self._refresh_preview)
-        self.show_datetime = QCheckBox(tr("Show Date/Time"))
+        self.show_datetime = QCheckBox(tr("Show Date, Sex & Age"))
         self.show_datetime.stateChanged.connect(self._refresh_preview)
         self.copies_label = QLabel()
         self.copies_input = QSpinBox()
@@ -1155,7 +1190,7 @@ class OrderLabelsDialog(QDialog):
         self.info.setText(tr("Preview the specimen labels for the selected order before printing."))
         self.copies_label.setText(tr("Copies"))
         self.show_order_number_text.setText(tr("Show Order Number Text"))
-        self.show_datetime.setText(tr("Show Date/Time"))
+        self.show_datetime.setText(tr("Show Date, Sex & Age"))
         self.client_id = self._resolve_client_id()
         self._load_saved_preferences()
 
@@ -1333,9 +1368,20 @@ class OrderLabelsDialog(QDialog):
             if patient_name:
                 lines.append(patient_name)
         if self.show_datetime.isChecked():
+            dsa_parts: list[str] = []
             created_at = str(row.get("created_at") or "").strip()
             if created_at:
-                lines.append(created_at)
+                dsa_parts.append(created_at)
+            patient_sex = str(row.get("patient_sex") or "").strip()
+            if patient_sex:
+                dsa_parts.append(patient_sex)
+            age_value = row.get("age_value")
+            if age_value is not None:
+                age_unit = str(row.get("age_unit") or "").lower()
+                unit_abbr = {"years": "a", "months": "m", "days": "d"}.get(age_unit, age_unit[:1] if age_unit else "")
+                dsa_parts.append(f"{age_value}{unit_abbr}")
+            if dsa_parts:
+                lines.append("  ".join(dsa_parts))
         return lines
 
     @classmethod
@@ -1373,7 +1419,7 @@ class OrderLabelsDialog(QDialog):
             token = cls._build_token(row, payload_key)
             machine_block = ''
             if show_barcode:
-                machine_block = cls._code39_html(token)
+                machine_block = cls._code128_html(token)
             copies_text = ''
             if int(row.get('copies_total', 1) or 1) > 1:
                 copies_text = f'<div style="font-size:{profile["meta"]};color:#666;">{tr("Copy")} {row.get("copy_number", 1)}/{row.get("copies_total", 1)}</div>'
@@ -1387,7 +1433,17 @@ class OrderLabelsDialog(QDialog):
             subtitle_line = f'<div style="font-size:{profile["meta"]};font-weight:700;color:{template["accent"]};margin-top:2px;">{subtitle}</div>' if subtitle else ''
             patient_line = f'<div style="font-size:{profile["name"]};margin-top:4px;">{row.get("patient_name", "")}</div>' if show_patient_name and row.get("patient_name") else ''
             order_text_line = f'<div style="font-size:{profile["meta"]};margin-top:4px;">{row.get("order_number", "")}</div>' if show_order_number_text and row.get("order_number") else ''
-            datetime_line = f'<div style="font-size:{profile["meta"]};color:#666;margin-top:4px;">{row.get("created_at", "")}</div>' if show_datetime and row.get("created_at") else ''
+            _dsa_parts: list[str] = []
+            if show_datetime:
+                if row.get("created_at"):
+                    _dsa_parts.append(str(row.get("created_at", "")))
+                if row.get("patient_sex"):
+                    _dsa_parts.append(str(row.get("patient_sex", "")))
+                if row.get("age_value") is not None:
+                    _age_unit = str(row.get("age_unit") or "").lower()
+                    _unit_abbr = {"years": "a", "months": "m", "days": "d"}.get(_age_unit, _age_unit[:1] if _age_unit else "")
+                    _dsa_parts.append(f'{row.get("age_value")}{_unit_abbr}')
+            datetime_line = f'<div style="font-size:{profile["meta"]};color:#666;margin-top:4px;">{" · ".join(_dsa_parts)}</div>' if _dsa_parts else ''
             test_line = f'<div style="font-size:{profile["name"]};margin-top:8px;">{row.get("test_name", "")}</div>' if row.get("test_name") else ''
             specimen_line = f'<div style="font-size:{profile["meta"]};color:#444;margin-top:4px;">{row.get("specimen_type") or ""}</div>' if row.get("specimen_type") else ''
             group_line = f'<div style="font-size:{profile["meta"]};color:#444;margin-top:2px;">{group_text}</div>' if group_text else ''
@@ -1424,7 +1480,7 @@ class OrderLabelsDialog(QDialog):
         safe_token = ''.join(character if character.isalnum() else '' for character in token.upper()) or token.upper()
         current_top = barcode_top + 8
         if self.show_barcode:
-            self._draw_code39(painter, safe_token, margin, barcode_top, width_px - (margin * 2), barcode_height)
+            self._draw_code128(painter, safe_token, margin, barcode_top, width_px - (margin * 2), barcode_height)
             current_top = barcode_top + barcode_height + 8
         painter.setPen(QColor("#111111"))
         order_to_name_gap = max(16, int(height_px * 0.05))
@@ -1448,28 +1504,36 @@ class OrderLabelsDialog(QDialog):
                 current_top += patient_height + name_to_date_gap
 
         if self.show_datetime.isChecked():
+            dsa_parts: list[str] = []
             created_at = str(row.get("created_at") or "").strip()
             if created_at:
+                dsa_parts.append(created_at)
+            patient_sex = str(row.get("patient_sex") or "").strip()
+            if patient_sex:
+                dsa_parts.append(patient_sex)
+            age_value = row.get("age_value")
+            if age_value is not None:
+                age_unit = str(row.get("age_unit") or "").lower()
+                unit_abbr = {"years": "a", "months": "m", "days": "d"}.get(age_unit, age_unit[:1] if age_unit else "")
+                dsa_parts.append(f"{age_value}{unit_abbr}")
+            if dsa_parts:
                 datetime_font = QFont("Segoe UI", max(12, int(height_px * 0.07)))
                 painter.setFont(datetime_font)
-                painter.drawText(margin, current_top, width_px - (margin * 2), max(24, int(height_px * 0.09)), Qt.AlignLeft | Qt.AlignTop, created_at)
+                painter.drawText(margin, current_top, width_px - (margin * 2), max(24, int(height_px * 0.09)), Qt.AlignLeft | Qt.AlignTop, "  ".join(dsa_parts))
 
         painter.end()
         return image
 
     @classmethod
-    def _draw_code39(cls, painter: QPainter, token: str, x: int, y: int, width: int, height: int) -> None:
-        safe = ''.join(character if character in cls._CODE39_PATTERNS and character != '*' else '-' for character in token.upper())
-        encoded = '*' + safe + '*'
+    def _draw_code128(cls, painter: QPainter, token: str, x: int, y: int, width: int, height: int) -> None:
+        symbols = cls._encode_code128b(token)
         units: list[tuple[bool, int]] = []
-        for character in encoded:
-            pattern = cls._CODE39_PATTERNS.get(character, cls._CODE39_PATTERNS['-'])
-            for index, width_code in enumerate(pattern):
-                is_bar = index % 2 == 0
-                unit_width = 3 if width_code == 'w' else 1
-                units.append((is_bar, unit_width))
-            units.append((False, 1))
-        total_units = sum(unit for _is_bar, unit in units) or 1
+        for sym in symbols:
+            for i, w in enumerate(cls._CODE128_PATTERNS[sym]):
+                units.append((i % 2 == 0, w))
+        for i, w in enumerate(cls._CODE128_STOP):
+            units.append((i % 2 == 0, w))
+        total_units = sum(u for _, u in units) or 1
         unit_px = max(1.0, width / total_units)
         cursor = float(x)
         painter.setPen(Qt.NoPen)
@@ -1510,18 +1574,17 @@ class OrderLabelsDialog(QDialog):
         return (order_number or accession_id or sample_id or specimen_code)[:36]
 
     @classmethod
-    def _code39_html(cls, token: str) -> str:
-        safe = ''.join(character if character in cls._CODE39_PATTERNS and character != '*' else '-' for character in token.upper())
-        encoded = '*' + safe + '*'
+    def _code128_html(cls, token: str) -> str:
+        symbols = cls._encode_code128b(token)
         bars: list[str] = []
-        for character in encoded:
-            pattern = cls._CODE39_PATTERNS.get(character, cls._CODE39_PATTERNS['-'])
-            for index, width_code in enumerate(pattern):
-                width = '3px' if width_code == 'w' else '1px'
-                color = '#111' if index % 2 == 0 else '#fff'
-                bars.append(f'<span style="display:inline-block;width:{width};height:42px;background:{color};"></span>')
-            bars.append('<span style="display:inline-block;width:1px;height:42px;background:#fff;"></span>')
-        return '<div style="margin-top:8px;line-height:0;">' + ''.join(bars) + f'</div><div style="font-size:10px;font-family:Consolas,monospace;margin-top:4px;">{safe}</div>'
+        for sym in symbols:
+            for i, w in enumerate(cls._CODE128_PATTERNS[sym]):
+                color = '#111' if i % 2 == 0 else '#fff'
+                bars.append(f'<span style="display:inline-block;width:{w}px;height:42px;background:{color};"></span>')
+        for i, w in enumerate(cls._CODE128_STOP):
+            color = '#111' if i % 2 == 0 else '#fff'
+            bars.append(f'<span style="display:inline-block;width:{w}px;height:42px;background:{color};"></span>')
+        return '<div style="margin-top:8px;line-height:0;">' + ''.join(bars) + f'</div><div style="font-size:10px;font-family:Consolas,monospace;margin-top:4px;">{token}</div>'
 
 
 class OrdersPage(DataAwarePage):
@@ -1622,12 +1685,16 @@ class OrdersPage(DataAwarePage):
         self.form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
+        _BTN_W = 130
+
         self.patient_combo = QComboBox()
         self.patient_combo.setMinimumWidth(210)
         self.add_patient_button = QPushButton()
         self.add_patient_button.setProperty("class", "secondaryButton")
+        self.add_patient_button.setFixedWidth(_BTN_W)
         self.add_patient_button.clicked.connect(self.open_patient_dialog)
         patient_row = QWidget()
+        patient_row.setStyleSheet("background: transparent;")
         patient_row_layout = QHBoxLayout(patient_row)
         patient_row_layout.setContentsMargins(0, 0, 0, 0)
         patient_row_layout.setSpacing(12)
@@ -1636,8 +1703,24 @@ class OrdersPage(DataAwarePage):
 
         self.doctor_input = QLineEdit()
         self.doctor_input.setMinimumWidth(210)
+        doctor_row = QWidget()
+        doctor_row.setStyleSheet("background: transparent;")
+        doctor_row_layout = QHBoxLayout(doctor_row)
+        doctor_row_layout.setContentsMargins(0, 0, 0, 0)
+        doctor_row_layout.setSpacing(0)
+        doctor_row_layout.addWidget(self.doctor_input, 1)
+        doctor_row_layout.addSpacing(_BTN_W + 12)
+
         self.client_combo = QComboBox()
         self.client_combo.setMinimumWidth(210)
+        client_row = QWidget()
+        client_row.setStyleSheet("background: transparent;")
+        client_row_layout = QHBoxLayout(client_row)
+        client_row_layout.setContentsMargins(0, 0, 0, 0)
+        client_row_layout.setSpacing(0)
+        client_row_layout.addWidget(self.client_combo, 1)
+        client_row_layout.addSpacing(_BTN_W + 12)
+
         self.test_combo = QComboBox()
         self.panel_combo = QComboBox()
         self.test_combo.setMinimumWidth(210)
@@ -1646,17 +1729,21 @@ class OrdersPage(DataAwarePage):
         self._configure_searchable_combo(self.panel_combo)
         self.add_test_button = QPushButton()
         self.add_test_button.setProperty("class", "secondaryButton")
+        self.add_test_button.setFixedWidth(_BTN_W)
         self.add_test_button.clicked.connect(self.add_selected_test)
         self.add_panel_button = QPushButton()
         self.add_panel_button.setProperty("class", "secondaryButton")
+        self.add_panel_button.setFixedWidth(_BTN_W)
         self.add_panel_button.clicked.connect(self.add_selected_panel)
         self.test_row = QWidget()
+        self.test_row.setStyleSheet("background: transparent;")
         test_row_layout = QHBoxLayout(self.test_row)
         test_row_layout.setContentsMargins(0, 0, 0, 0)
         test_row_layout.setSpacing(12)
         test_row_layout.addWidget(self.test_combo, 1)
         test_row_layout.addWidget(self.add_test_button, 0)
         panel_row = QWidget()
+        panel_row.setStyleSheet("background: transparent;")
         panel_row_layout = QHBoxLayout(panel_row)
         panel_row_layout.setContentsMargins(0, 0, 0, 0)
         panel_row_layout.setSpacing(12)
@@ -1667,8 +1754,8 @@ class OrdersPage(DataAwarePage):
         self.remove_button.clicked.connect(self.remove_selected_test)
 
         self._add_form_row("patient", patient_row)
-        self._add_form_row("doctor", self.doctor_input)
-        self._add_form_row("client", self.client_combo)
+        self._add_form_row("doctor", doctor_row)
+        self._add_form_row("client", client_row)
         self._add_form_row("test", self.test_row)
         self._add_form_row("panel", panel_row)
         layout.addLayout(self.form)
@@ -1685,9 +1772,9 @@ class OrdersPage(DataAwarePage):
         self.selected_table.setObjectName("selectedPanelsTable")
         self.selected_panels: list[dict[str, object]] = []
         self.selected_table.itemChanged.connect(self._handle_selected_table_item_changed)
-        self.selected_table.horizontalHeader().setStretchLastSection(True)
-        self.selected_table.setColumnWidth(0, 240)
-        self.selected_table.setColumnWidth(1, 108)
+        self.selected_table.horizontalHeader().setStretchLastSection(False)
+        self.selected_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.selected_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.selected_table.setMinimumHeight(170)
         self.selected_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.selected_stack.addWidget(self.empty_panels_state)
@@ -1700,8 +1787,16 @@ class OrdersPage(DataAwarePage):
         self.save_button = QPushButton()
         self.save_button.setProperty("class", "primaryButton")
         self.save_button.clicked.connect(self.save_order)
+        self.save_and_print_labels_button = QPushButton()
+        self.save_and_print_labels_button.setProperty("class", "secondaryButton")
+        self.save_and_print_labels_button.clicked.connect(self.save_and_print_labels)
+        self.print_receipt_button = QPushButton()
+        self.print_receipt_button.setProperty("class", "secondaryButton")
+        self.print_receipt_button.clicked.connect(self.print_order_receipt)
         actions.addStretch(1)
         actions.addWidget(self.remove_button)
+        actions.addWidget(self.save_and_print_labels_button)
+        actions.addWidget(self.print_receipt_button)
         actions.addWidget(self.save_button)
         layout.addLayout(actions)
 
@@ -1744,12 +1839,22 @@ class OrdersPage(DataAwarePage):
         self.import_orders_button = QPushButton()
         self.import_orders_button.setProperty("class", "secondaryButton")
         self.import_orders_button.clicked.connect(self.import_orders_from_excel)
-        actions.addWidget(self.result_button, 0, 0)
-        actions.addWidget(self.edit_order_button, 1, 0)
-        actions.addWidget(self.label_button, 2, 0)
-        actions.addWidget(self.order_template_button, 3, 0)
+        self.import_and_print_button = QPushButton()
+        self.import_and_print_button.setProperty("class", "primaryButton")
+        self.import_and_print_button.setStyleSheet(
+            "QPushButton { background-color: #7c3aed; color: #ffffff; }"
+            "QPushButton:hover { background-color: #6d28d9; }"
+            "QPushButton:pressed { background-color: #5b21b6; }"
+        )
+        self.import_and_print_button.clicked.connect(self.import_and_print_from_excel)
+        actions.addWidget(self.result_button, 0, 0, 1, 2)
+        actions.addWidget(self.edit_order_button, 1, 0, 1, 2)
+        actions.addWidget(self.label_button, 2, 0, 1, 2)
+        actions.addWidget(self.order_template_button, 3, 0, 1, 2)
         actions.addWidget(self.import_orders_button, 4, 0)
+        actions.addWidget(self.import_and_print_button, 4, 1)
         actions.setColumnStretch(0, 1)
+        actions.setColumnStretch(1, 1)
         layout.addLayout(actions)
         return self.recent_group
 
@@ -1789,18 +1894,21 @@ class OrdersPage(DataAwarePage):
         self.current_order_title.setText("Orden actual")
         self.recent_orders_title.setText("\u00d3rdenes recientes")
         self.form_labels["scan"].setText("Escanear Código")
-        self.scan_input.setPlaceholderText(tr("Enter or scan an order barcode"))
+        self.scan_input.setPlaceholderText(tr("Scan barcode or search by order number / patient name"))
         self.scan_button.setText("Abrir Código")
         self.add_patient_button.setText(tr("New Patient"))
         self.add_test_button.setText(tr("Add Test"))
         self.add_panel_button.setText(tr("Add Panel"))
         self.remove_button.setText("Quitar Panel")
+        self.save_and_print_labels_button.setText("Guardar e imprimir etiquetas")
+        self.print_receipt_button.setText("Imprimir recibo")
         self.selected_table.setHorizontalHeaderLabels([tr("Panel"), tr("Outsourced")])
         self.edit_order_button.setText("Editar Orden Seleccionada")
         self.label_button.setText("Imprimir Etiquetas")
         self.result_button.setText("Agregar Resultado")
         self.order_template_button.setText(tr("Order Template"))
         self.import_orders_button.setText(tr("Import Orders"))
+        self.import_and_print_button.setText("Importar y imprimir etiquetas")
         self.form_labels["order_number"].setText("Número de Orden")
         self.form_labels["status"].setText("Estado")
         self.form_labels["patient"].setText(tr("Patient"))
@@ -2045,13 +2153,13 @@ class OrdersPage(DataAwarePage):
             self.notify_data_changed()
 
     def open_scanned_order(self) -> None:
-        order_number = self.scan_input.text().strip()
-        if not order_number:
+        query = self.scan_input.text().strip()
+        if not query:
             QMessageBox.warning(self, tr("Missing Data"), tr("Enter or scan an order barcode."))
             return
         if self.order_service.uses_server_backend():
             try:
-                record = self.order_service.get_order_detail_by_number(order_number)
+                record = self.order_service.get_order_detail_by_number(query)
             except RuntimeError as exc:
                 QMessageBox.warning(self, tr("Missing Selection"), str(exc))
                 return
@@ -2059,22 +2167,70 @@ class OrdersPage(DataAwarePage):
             self.scan_input.clear()
             QMessageBox.information(self, tr("Order"), tr("Shared order loaded for editing."))
             return
-        lookup = self.database.find_order_by_number(order_number)
-        if lookup is None:
-            QMessageBox.warning(self, tr("Missing Selection"), tr("Barcode order not found."))
+        lookup = self.database.find_order_by_number(query)
+        if lookup is not None:
+            record = self.database.get_order_edit_record(lookup.id)
+            if record is None:
+                QMessageBox.warning(self, tr("Missing Selection"), tr("Barcode order not found."))
+                return
+            self._load_order_record(record)
+            self.scan_input.clear()
+            if lookup.is_preallocated:
+                QMessageBox.information(self, tr("Saved"), tr("Barcode order loaded. Assign the patient and tests, then save."))
+                return
+            self.refresh_recent_orders()
+            self._select_recent_order(lookup.id)
             return
-        record = self.database.get_order_edit_record(lookup.id)
+        matches = self.database.search_orders(query)
+        if not matches:
+            QMessageBox.warning(self, tr("Missing Selection"), tr("No orders found matching that number or name."))
+            return
+        if len(matches) == 1:
+            order_id = matches[0].id
+        else:
+            order_id = self._pick_order_from_list(matches)
+            if order_id is None:
+                return
+        record = self.database.get_order_edit_record(order_id)
         if record is None:
-            QMessageBox.warning(self, tr("Missing Selection"), tr("Barcode order not found."))
+            QMessageBox.warning(self, tr("Missing Selection"), tr("Order could not be loaded."))
             return
         self._load_order_record(record)
         self.scan_input.clear()
-        if lookup.is_preallocated:
-            QMessageBox.information(self, tr("Saved"), tr("Barcode order loaded. Assign the patient and tests, then save."))
-            return
         self.refresh_recent_orders()
-        self._select_recent_order(lookup.id)
-        QMessageBox.information(self, tr("Order"), tr("Order loaded for editing."))
+        self._select_recent_order(order_id)
+
+    def _pick_order_from_list(self, matches: list) -> int | None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr("Select Order"))
+        dialog.setModal(True)
+        dialog.resize(500, 320)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(tr("Multiple orders found. Select one:")))
+        list_widget = QListWidget()
+        for order in matches:
+            label = f"{order.order_number}  —  {order.patient_name}  ({order.order_date[:10] if order.order_date else ''})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, order.id)
+            list_widget.addItem(item)
+        list_widget.itemDoubleClicked.connect(lambda _: dialog.accept())
+        layout.addWidget(list_widget, 1)
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton(tr("Cancel"))
+        cancel_btn.clicked.connect(dialog.reject)
+        select_btn = QPushButton(tr("Select"))
+        select_btn.setProperty("class", "primaryButton")
+        select_btn.clicked.connect(dialog.accept)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(select_btn)
+        layout.addLayout(buttons)
+        if list_widget.count() > 0:
+            list_widget.setCurrentRow(0)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        item = list_widget.currentItem()
+        return item.data(Qt.UserRole) if item is not None else None
 
     def generate_preallocated_batch(self) -> None:
         try:
@@ -2103,7 +2259,7 @@ class OrdersPage(DataAwarePage):
         dialog.exec()
 
     def open_order_results_dialog(self) -> None:
-        order_id = self._selected_recent_order_id()
+        order_id = self._active_order_id()
         if order_id is None:
             QMessageBox.warning(self, tr("Missing Selection"), tr("Select a recent order first."))
             return
@@ -2144,7 +2300,11 @@ class OrdersPage(DataAwarePage):
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, tr("Import Failed"), str(exc))
             return
-        plan, errors = self._build_order_import_plan(rows)
+        try:
+            plan, errors = self._build_order_import_plan(rows)
+        except Exception as exc:
+            QMessageBox.critical(self, tr("Import Failed"), str(exc))
+            return
         if errors:
             QMessageBox.critical(self, tr("Import Failed"), "\n".join(errors[:20]))
             return
@@ -2185,6 +2345,213 @@ class OrdersPage(DataAwarePage):
         self.refresh_page_data()
         self.notify_data_changed()
         QMessageBox.information(self, tr("Saved"), tr("Created {count} orders.", count=str(created)))
+
+    def import_and_print_from_excel(self) -> None:
+        if self.order_service.uses_server_backend():
+            QMessageBox.information(self, tr("Not Available Yet"), tr("Order Excel import is not available yet in server mode."))
+            return
+        path, _ = QFileDialog.getOpenFileName(self, tr("Import Orders"), "", tr("Excel Workbook (*.xlsx)"))
+        if not path:
+            return
+        try:
+            rows = read_order_workbook_rows(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, tr("Import Failed"), str(exc))
+            return
+        try:
+            plan, errors = self._build_order_import_plan(rows)
+        except Exception as exc:
+            QMessageBox.critical(self, tr("Import Failed"), str(exc))
+            return
+        if errors:
+            QMessageBox.critical(self, tr("Import Failed"), "\n".join(errors[:20]))
+            return
+        if not plan:
+            QMessageBox.information(self, tr("No Matches"), tr("No valid orders were found in the workbook."))
+            return
+        preview_lines = [
+            f"{item['patient_name']} - {len(item['order_items'])} tests"
+            for item in plan[:12]
+        ]
+        if len(plan) > 12:
+            preview_lines.append(f"... +{len(plan) - 12} more")
+        confirm = QMessageBox.question(
+            self,
+            tr("Preview Order Import"),
+            "¿Crear " + str(len(plan)) + " órdenes e imprimir etiquetas?\n\n" + "\n".join(preview_lines),
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        created_orders: list[tuple[int, int | None]] = []
+        try:
+            for item in plan:
+                order_id = self.database.create_order(
+                    order_number=str(item.get("order_number") or "") or None,
+                    accession_id=str(item.get("accession_id") or "") or None,
+                    sample_id=str(item.get("sample_id") or "") or None,
+                    patient_id=int(item["patient_id"]),
+                    doctor_id=item.get("doctor_id"),
+                    client_id=item.get("client_id"),
+                    order_items=list(item["order_items"]),
+                    status=str(item.get("status") or "draft"),
+                    notes=str(item.get("notes") or ""),
+                )
+                created_orders.append((order_id, item.get("client_id")))
+        except sqlite3.IntegrityError as exc:
+            QMessageBox.critical(self, tr("Save Failed"), str(exc))
+            return
+        self.refresh_page_data()
+        self.notify_data_changed()
+        niimbot_client = NIIMBOTClient()
+        try:
+            printers = niimbot_client.list_printers()
+            printer = next((p for p in printers if p.id and p.status.lower() != "offline"), None)
+        except NIIMBOTClientError as exc:
+            QMessageBox.warning(
+                self,
+                tr("NIIMBOT Print Failed"),
+                "Se crearon " + str(len(created_orders)) + " órdenes pero no se pudo conectar a la impresora:\n" + str(exc),
+            )
+            return
+        if printer is None:
+            QMessageBox.warning(
+                self,
+                "Sin impresora",
+                "Se crearon " + str(len(created_orders)) + " órdenes pero no se encontró ninguna impresora NIIMBOT.",
+            )
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        printed = 0
+        first_error: str = ""
+        try:
+            for order_id, client_id in created_orders:
+                prefs = self.database.get_label_print_preferences(client_id)
+                try:
+                    self._print_order_label_silent(order_id, prefs, niimbot_client, printer.id)
+                    printed += 1
+                except NIIMBOTClientError as exc:
+                    first_error = str(exc)
+                    break
+        finally:
+            QApplication.restoreOverrideCursor()
+        if first_error:
+            QMessageBox.warning(
+                self,
+                tr("NIIMBOT Print Failed"),
+                "Se crearon " + str(len(created_orders)) + " órdenes. "
+                + str(printed) + " etiqueta(s) impresas. Error: " + first_error,
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Listo",
+                "Se crearon " + str(len(created_orders)) + " órdenes y se imprimieron "
+                + str(printed) + " etiqueta(s).",
+            )
+
+    def _silent_print_labels_niimbot(self, order_id: int, prefs: dict[str, str]) -> None:
+        client = NIIMBOTClient()
+        try:
+            available = client.list_printers()
+            printer = next((p for p in available if p.id and p.status.lower() != "offline"), None)
+        except NIIMBOTClientError as exc:
+            QMessageBox.warning(self, tr("NIIMBOT Print Failed"), str(exc))
+            return
+        if printer is None:
+            QMessageBox.warning(
+                self,
+                tr("NIIMBOT Print Failed"),
+                tr("No NIIMBOT printer found. Connect the printer and try again."),
+            )
+            return
+        try:
+            self._print_order_label_silent(order_id, prefs, client, printer.id)
+        except NIIMBOTClientError as exc:
+            QMessageBox.warning(self, tr("NIIMBOT Print Failed"), str(exc))
+
+    def _silent_print_labels_system(self, order_id: int, prefs: dict[str, str], printer_pref: str) -> None:
+        label_rows = self.database.get_order_label_entries(order_id)
+        if not label_rows:
+            return
+        size_key = str(prefs.get("size") or "small_tall")
+        payload_key = str(prefs.get("payload") or "order_only")
+        template_key = str(prefs.get("template") or "general")
+        show_barcode = str(prefs.get("show_barcode") or "1") == "1"
+        show_patient_name = str(prefs.get("show_patient_name") or "1") == "1"
+        show_order_number_text = str(prefs.get("show_order_number_text") or "0") == "1"
+        show_datetime = str(prefs.get("show_datetime") or "0") == "1"
+        copies = max(1, int(str(prefs.get("copies") or "1")))
+        base_row = dict(label_rows[0])
+        base_row["test_name"] = ""
+        base_row["specimen_type"] = ""
+        base_row["group_label"] = ""
+        rows_to_print = [base_row] * copies
+        html = OrderLabelsDialog._build_label_html(
+            rows_to_print,
+            size_key,
+            template_key,
+            payload_key,
+            show_barcode=show_barcode,
+            show_patient_name=show_patient_name,
+            show_order_number_text=show_order_number_text,
+            show_datetime=show_datetime,
+        )
+        printer = QPrinter(QPrinter.HighResolution)
+        if printer_pref.startswith("system:"):
+            printer_name = printer_pref[len("system:"):]
+            if printer_name:
+                printer.setPrinterName(printer_name)
+        document = QTextDocument()
+        document.setHtml(html)
+        document.print(printer)
+
+    def _print_order_label_silent(
+        self,
+        order_id: int,
+        prefs: dict[str, str],
+        client: NIIMBOTClient,
+        printer_id: str,
+    ) -> None:
+        label_rows = self.database.get_order_label_entries(order_id)
+        if not label_rows:
+            return
+        base_row = dict(label_rows[0])
+        base_row["test_name"] = ""
+        base_row["specimen_type"] = ""
+        base_row["group_label"] = ""
+        size_key = str(prefs.get("size") or "small_tall")
+        payload_key = str(prefs.get("payload") or "order_only")
+        copies = max(1, int(str(prefs.get("copies") or "1")))
+        show_barcode = str(prefs.get("show_barcode") or "1") == "1"
+        show_patient_name = str(prefs.get("show_patient_name") or "1") == "1"
+        show_order_number_text = str(prefs.get("show_order_number_text") or "0") == "1"
+        show_datetime = str(prefs.get("show_datetime") or "0") == "1"
+        width_mm, height_mm = OrderLabelsDialog._niimbot_label_size(size_key)
+        token = OrderLabelsDialog._build_token(base_row, payload_key)
+        safe_token = "".join(c if c.isalnum() else "" for c in token.upper()) or token.upper()
+        text_lines: list[str] = []
+        if show_order_number_text:
+            order_number = str(base_row.get("order_number") or "").strip()
+            if order_number:
+                text_lines.append(order_number)
+        if show_patient_name:
+            patient_name = str(base_row.get("patient_name") or "").strip()
+            if patient_name:
+                text_lines.append(patient_name)
+        if show_datetime:
+            created_at = str(base_row.get("created_at") or "").strip()
+            if created_at:
+                text_lines.append(created_at)
+        client.print_label(
+            printer_id=printer_id,
+            width_mm=width_mm,
+            height_mm=height_mm,
+            barcode_value=safe_token,
+            human_text=safe_token,
+            text_lines=text_lines,
+            show_barcode=show_barcode,
+            copies=copies,
+        )
 
     def _build_order_import_plan(self, rows: list[dict[str, str]]) -> tuple[list[dict[str, object]], list[str]]:
         plan: list[dict[str, object]] = []
@@ -2242,18 +2609,26 @@ class OrdersPage(DataAwarePage):
                 errors.append(f"unknown panel code {code}")
                 continue
             for panel_item in self.order_service.get_panel_order_items(panel_id):
-                if getattr(panel_item, "item_type", "") != "test" or panel_item.test_id is None:
+                item_type = self._import_item_value(panel_item, "item_type", "")
+                test_id = self._import_item_value(panel_item, "test_id", None)
+                if item_type != "test" or test_id is None:
                     continue
                 items.append(
                     {
                         "item_type": "test",
-                        "test_id": int(panel_item.test_id),
-                        "label": panel_item.label,
+                        "test_id": int(test_id),
+                        "label": str(self._import_item_value(panel_item, "label", "")),
                         "source": code,
                         "is_outsourced": 0,
                     }
                 )
         return items, errors
+
+    @staticmethod
+    def _import_item_value(item: object, key: str, default: object = None) -> object:
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
 
     def _resolve_import_patient(self, row: dict[str, str]) -> int:
         patient_code = str(row.get("patient_code") or "").strip()
@@ -2285,10 +2660,10 @@ class OrdersPage(DataAwarePage):
                 "first_name": first_name,
                 "last_name": last_name,
                 "middle_name": middle_name,
-                "sex": str(row.get("sex") or "").strip(),
+                "sex": self._normalize_import_sex(str(row.get("sex") or "")),
                 "date_of_birth": date_of_birth,
                 "age_value": self._parse_optional_int(str(row.get("age_value") or "")),
-                "age_unit": str(row.get("age_unit") or "").strip(),
+                "age_unit": self._normalize_import_age_unit(str(row.get("age_unit") or "")),
                 "phone": str(row.get("phone") or "").strip(),
                 "email": str(row.get("email") or "").strip(),
                 "address": str(row.get("address") or "").strip(),
@@ -2330,6 +2705,42 @@ class OrdersPage(DataAwarePage):
             return None
 
     @staticmethod
+    def _normalize_import_sex(value: str) -> str | None:
+        text = value.strip().casefold()
+        male = {"m", "male", "masculino", "masc", "hombre", "h"}
+        female = {"f", "female", "femenino", "fem", "mujer"}
+        other = {"o", "other", "otro", "otra"}
+        if text in male:
+            return "M"
+        if text in female:
+            return "F"
+        if text in other:
+            return "O"
+        return None
+
+    @staticmethod
+    def _normalize_import_age_unit(value: str) -> str:
+        text = value.strip().casefold()
+        return {
+            "day": "days",
+            "days": "days",
+            "dia": "days",
+            "dias": "days",
+            "día": "days",
+            "días": "days",
+            "month": "months",
+            "months": "months",
+            "mes": "months",
+            "meses": "months",
+            "year": "years",
+            "years": "years",
+            "ano": "years",
+            "anos": "years",
+            "año": "years",
+            "años": "years",
+        }.get(text, text)
+
+    @staticmethod
     def _order_import_row_label(row: dict[str, str], default_row_number: int) -> str:
         sheet = str(row.get("__sheet_name__") or "").strip()
         row_number = str(row.get("__row_number__") or default_row_number).strip()
@@ -2343,6 +2754,12 @@ class OrdersPage(DataAwarePage):
 
     def open_selected_order_for_edit(self) -> None:
         order_id = self._selected_recent_order_id()
+        self._open_order_for_edit(order_id)
+
+    def open_active_order_for_edit(self) -> None:
+        self._open_order_for_edit(self._active_order_id())
+
+    def _open_order_for_edit(self, order_id: int | str | None) -> None:
         if order_id is None:
             QMessageBox.warning(self, tr("Missing Selection"), tr("Select a recent order first."))
             return
@@ -2361,6 +2778,11 @@ class OrdersPage(DataAwarePage):
             return
         self._load_order_record(record)
         QMessageBox.information(self, tr("Order"), tr("Order loaded for editing."))
+
+    def _active_order_id(self) -> int | str | None:
+        if self.edit_order_id is not None:
+            return self.edit_order_id
+        return self._selected_recent_order_id()
 
     def _selected_recent_order_id(self) -> int | str | None:
         row = self.orders_table.currentRow()
@@ -2456,13 +2878,23 @@ class OrdersPage(DataAwarePage):
             QMessageBox.information(self, tr("Panel Already Added"), tr("This panel is already on the order."))
             return
         panel_items = self.order_service.get_panel_order_items(panel_id)
+        panel_detail = self.database.get_panel_detail(int(panel_id), include_inactive=True) if not self.order_service.uses_server_backend() else None
+        panel_name = str((panel_detail or {}).get("name") or panel_label).strip()
         if not panel_items:
             QMessageBox.warning(self, tr("Empty Panel"), tr("This panel does not have any tests."))
             return
         panel_tests: list[dict[str, object]] = []
         for item in panel_items:
             item_type = str(item.get("item_type") or "test")
-            if item_type != "test":
+            if item_type in {"heading", "comment"}:
+                panel_tests.append(
+                    {
+                        "item_type": item_type,
+                        "label": str(item.get("heading_text") or item.get("label") or ""),
+                        "source": panel_name,
+                        "is_outsourced": 0,
+                    }
+                )
                 continue
             test_id = item.get("test_id")
             if test_id is None:
@@ -2472,14 +2904,14 @@ class OrdersPage(DataAwarePage):
                     "item_type": "test",
                     "test_id": test_id,
                     "label": str(item.get("label") or ""),
-                    "source": panel_label,
+                    "source": panel_name,
                     "is_outsourced": 0,
                 }
             )
         if not panel_tests:
             QMessageBox.warning(self, tr("Empty Panel"), tr("This panel does not have any tests."))
             return
-        self.selected_panels.append({"panel_id": panel_id, "label": panel_label, "items": panel_tests, "is_outsourced": 0})
+        self.selected_panels.append({"panel_id": panel_id, "label": panel_name, "items": panel_tests, "is_outsourced": 0})
         self._rebuild_selected_items_from_panels()
         self._refresh_selected_table()
         self.panel_combo.setCurrentIndex(-1)
@@ -2493,14 +2925,20 @@ class OrdersPage(DataAwarePage):
         self._rebuild_selected_items_from_panels()
         self._refresh_selected_table()
 
-    def save_order(self) -> None:
+    def _save_current_order(self) -> tuple[int, int | None, str] | None:
+        """Validate and persist the current form.
+
+        Returns (patient_id, order_id, message) on success.
+        order_id is None for server-created orders where no local ID is available.
+        Returns None and shows an error dialog on failure.
+        """
         patient_id = self.patient_combo.currentData()
         if patient_id is None:
             QMessageBox.warning(self, tr("Missing Data"), tr("Select a patient for the order."))
-            return
+            return None
         if not self.selected_items:
             QMessageBox.warning(self, tr("Missing Data"), tr("Add at least one test or panel."))
-            return
+            return None
 
         if self.order_service.uses_server_backend():
             unsupported_items = [item for item in self.selected_items if item.get("item_type") != "test"]
@@ -2510,12 +2948,12 @@ class OrdersPage(DataAwarePage):
                     tr("Not Available Yet"),
                     tr("Server mode currently supports direct test orders only."),
                 )
-                return
+                return None
             try:
                 doctor_id = self._resolve_doctor_id_from_input(create_if_missing=False)
             except RuntimeError as exc:
                 QMessageBox.warning(self, tr("Missing Data"), str(exc))
-                return
+                return None
             try:
                 if self.edit_order_id is not None:
                     updated = self.order_service.update_simple_order(
@@ -2531,6 +2969,7 @@ class OrdersPage(DataAwarePage):
                         client_id=self.client_combo.currentData(),
                     )
                     message = tr("Order updated: {order_number}").format(order_number=updated.order_number)
+                    return (patient_id, int(self.edit_order_id), message)
                 else:
                     created = self.order_service.create_simple_order(
                         patient_id=patient_id,
@@ -2544,21 +2983,16 @@ class OrdersPage(DataAwarePage):
                         client_id=self.client_combo.currentData(),
                     )
                     message = tr("Order created: {order_number}").format(order_number=created.get("order_number") or "")
+                    return (patient_id, None, message)
             except RuntimeError as exc:
                 QMessageBox.critical(self, tr("Save Failed"), str(exc))
-                return
-
-            self.clear_order_form()
-            self.refresh_recent_orders()
-            self.notify_data_changed()
-            QMessageBox.information(self, tr("Saved"), message)
-            return
+                return None
 
         try:
             doctor_id = self._resolve_doctor_id_from_input(create_if_missing=True)
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
-            return
+            return None
 
         try:
             if self.edit_order_id is not None:
@@ -2589,8 +3023,9 @@ class OrdersPage(DataAwarePage):
                         notes="",
                     )
                     message = tr("Order updated.")
+                return (patient_id, int(self.edit_order_id), message)
             else:
-                self.database.create_order(
+                order_id = self.database.create_order(
                     order_number=None,
                     accession_id=None,
                     sample_id=None,
@@ -2601,15 +3036,206 @@ class OrdersPage(DataAwarePage):
                     status=self.status.currentData(),
                     notes="",
                 )
-                message = tr("Order created.")
+                return (patient_id, order_id, tr("Order created."))
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
-            return
+            return None
 
+    def save_order(self) -> None:
+        result = self._save_current_order()
+        if result is None:
+            return
+        patient_id, order_id, message = result
+        self._maybe_broadcast_order(patient_id, order_id)
         self.clear_order_form()
         self.refresh_recent_orders()
         self.notify_data_changed()
         QMessageBox.information(self, tr("Saved"), message)
+
+    def save_and_print_labels(self) -> None:
+        result = self._save_current_order()
+        if result is None:
+            return
+        patient_id, order_id, _message = result
+        self._maybe_broadcast_order(patient_id, order_id)
+        self.clear_order_form()
+        self.refresh_recent_orders()
+        self.notify_data_changed()
+        if order_id is None:
+            return
+        prefs = self.database.get_label_print_preferences()
+        printer_pref = str(prefs.get("printer") or "niimbot:B1")
+        if printer_pref.startswith("niimbot:"):
+            self._silent_print_labels_niimbot(order_id, prefs)
+        else:
+            self._silent_print_labels_system(order_id, prefs, printer_pref)
+
+    def print_order_receipt(self) -> None:
+        if self.edit_order_id is not None:
+            order_id = int(self.edit_order_id)
+        else:
+            result = self._save_current_order()
+            if result is None:
+                return
+            patient_id, order_id, _message = result
+            if order_id is None:
+                QMessageBox.warning(self, tr("Not Available"), tr("Receipt printing is not available for server-mode orders."))
+                return
+            self._maybe_broadcast_order(patient_id)
+            self.clear_order_form()
+            self.refresh_recent_orders()
+            self.notify_data_changed()
+        html = self._build_receipt_html(order_id)
+        document = QTextDocument()
+        document.setHtml(html)
+        printer = QPrinter(QPrinter.HighResolution)
+        preview = QPrintPreviewDialog(printer, self)
+        preview.paintRequested.connect(document.print)
+        preview.exec()
+
+    def _build_receipt_html(self, order_id: int) -> str:
+        from html import escape
+        lines = self.database.get_order_receipt_lines(order_id)
+        settings = self.database.get_lab_settings()
+        if not lines:
+            return f"<html><body><p>{escape(tr('No tests found for this order.'))}</p></body></html>"
+        first = lines[0]
+        order_number = str(first.get("order_number") or "")
+        patient_name = str(first.get("patient_name") or "")
+        order_date = str(first.get("order_date") or "")[:10]
+        total = sum(float(row.get("price") or 0) for row in lines)
+        rows_html = "".join(
+            f"<tr><td>{escape(str(row.get('test_name') or ''))}</td>"
+            f"<td style='text-align:right;'>${float(row.get('price') or 0):,.2f}</td></tr>"
+            for row in lines
+        )
+        return f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; font-size: 11px; color: #111827; margin: 20px; }}
+                .header {{ text-align: center; border-bottom: 2px solid #7c3aed; padding-bottom: 10px; margin-bottom: 14px; }}
+                .brand {{ font-size: 20px; font-weight: 700; color: #6d28d9; }}
+                .meta {{ color: #4b5563; font-size: 10px; }}
+                .info {{ margin-bottom: 12px; }}
+                .info span {{ display: inline-block; min-width: 110px; color: #6b7280; }}
+                table {{ border-collapse: collapse; width: 100%; }}
+                th {{ background: #ede9fe; text-align: left; padding: 5px 7px; font-size: 10px; }}
+                td {{ border-bottom: 1px solid #e5e7eb; padding: 5px 7px; }}
+                .total {{ text-align: right; font-size: 14px; font-weight: 700; margin-top: 10px; }}
+                .footer {{ text-align: center; color: #9ca3af; font-size: 9px; margin-top: 18px; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <div class="brand">{escape(settings.lab_name or "SDX LIMS")}</div>
+                <div class="meta">{escape(settings.address or "")}</div>
+                <div class="meta">{escape(settings.phone or "")}{"  " if settings.phone and settings.email else ""}{escape(settings.email or "")}</div>
+                <div style="font-size:13px;font-weight:700;margin-top:6px;">RECIBO</div>
+            </div>
+            <div class="info">
+                <div><span>Orden:</span> {escape(order_number)}</div>
+                <div><span>Paciente:</span> {escape(patient_name)}</div>
+                <div><span>Fecha:</span> {escape(order_date)}</div>
+            </div>
+            <table>
+                <thead><tr><th>Estudio</th><th style="text-align:right;">Precio</th></tr></thead>
+                <tbody>{rows_html}</tbody>
+            </table>
+            <div class="total">Total: ${total:,.2f} MXN</div>
+            <div class="footer">Conserve este recibo como comprobante de pago.</div>
+        </body>
+        </html>
+        """
+
+    def _maybe_broadcast_order(self, patient_id: int, order_id: int | None = None) -> None:
+        """Send order to any bidirectional-enabled instrument profiles, silently on error."""
+        try:
+            configs = self.database.list_instrument_order_match_configs()
+            enabled = [c for c in configs if c.broadcast_enabled]
+            if not enabled:
+                return
+            patient = next(
+                (p for p in self.database.list_patients() if p.id == patient_id), None
+            )
+            patient_name = f"{patient.first_name} {patient.last_name}".strip() if patient else ""
+            dob = str(patient.date_of_birth or "") if patient else ""
+            sex = str(patient.sex or "") if patient else ""
+            doctor_name = self.doctor_input.text().strip()
+
+            # Resolve the order number — used as sample_id for ASTM analyzers.
+            order_number = ""
+            if order_id is not None:
+                try:
+                    rec = self.database.get_order_edit_record(order_id)
+                    if rec:
+                        order_number = str(rec.order_number or "")
+                except Exception:
+                    pass
+
+            order_data: dict[str, object] = {
+                "patient_id": str(patient_id),
+                "patient_name": patient_name,
+                "patient_dob": dob,
+                "patient_age_value": str(patient.age_value or "") if patient else "",
+                "patient_age_unit": str(patient.age_unit or "a") if patient else "a",
+                "patient_sex": sex,
+                "doctor_name": doctor_name,
+                "order_number": order_number,
+                "sample_id": order_number,
+                "accession_id": "",
+            }
+
+            for cfg in enabled:
+                try:
+                    protocol = (cfg.broadcast_protocol or "hl7_orm").lower()
+                    if protocol == "astm":
+                        # Push pending order to the Go engine's in-memory store so it
+                        # can respond to ASTM Q record queries from the analyzer.
+                        if not order_number:
+                            continue
+                        mappings = self.database.list_instrument_result_mappings(
+                            instrument_profile=cfg.instrument_profile
+                        )
+                        code_by_test_id: dict[int, tuple[str, str]] = {
+                            m.test_id: (m.raw_code, m.raw_name or m.test_name or m.raw_code)
+                            for m in mappings
+                        }
+                        tests = []
+                        for item in self.selected_items:
+                            if item.get("item_type") != "test":
+                                continue
+                            tid = item.get("test_id")
+                            if tid and tid in code_by_test_id:
+                                code, name = code_by_test_id[tid]
+                                tests.append({"test_code": code, "test_name": name})
+                        instrument_broadcast.push_pending_order_to_engine(
+                            sample_id=order_number,
+                            tests=tests,
+                            patient_id=str(patient_id) if bool(cfg.broadcast_patient_id) else "",
+                            patient_name=patient_name if bool(cfg.broadcast_patient_name) else "",
+                            dob=dob if bool(cfg.broadcast_dob) else "",
+                            sex=sex if bool(cfg.broadcast_sex) else "",
+                            doctor_name=doctor_name if bool(cfg.broadcast_doctor) else "",
+                            profile_id=cfg.instrument_profile,
+                        )
+                    else:
+                        instrument_broadcast.broadcast_order(
+                            cfg.instrument_profile,
+                            order_data,
+                            send_patient_id=bool(cfg.broadcast_patient_id),
+                            send_patient_name=bool(cfg.broadcast_patient_name),
+                            send_dob=bool(cfg.broadcast_dob),
+                            send_age=bool(cfg.broadcast_age),
+                            send_sex=bool(cfg.broadcast_sex),
+                            send_doctor=bool(cfg.broadcast_doctor),
+                            protocol=protocol,
+                            encoding=cfg.broadcast_encoding or "ascii",
+                        )
+                except RuntimeError:
+                    pass
+        except Exception:
+            pass
 
     def clear_order_form(self) -> None:
         self.edit_order_id = None
@@ -2619,7 +3245,8 @@ class OrdersPage(DataAwarePage):
         self.doctor_input.clear()
         self.client_combo.setCurrentIndex(0)
         self.test_combo.setCurrentIndex(0)
-        self.panel_combo.setCurrentIndex(0)
+        self.panel_combo.setCurrentIndex(-1)
+        self.panel_combo.lineEdit().clear()
         self.selected_panels = []
         self.selected_items = []
         self._refresh_selected_table()

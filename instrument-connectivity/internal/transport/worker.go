@@ -35,6 +35,11 @@ type PayloadHandler func(raw []byte, deviceID string, transportType models.Trans
 type ErrorHandler func(error, map[string]any)
 type StateHandler func(state string, meta map[string]any)
 
+// QueryHandler is called when an ASTM host query (Q record session) is received.
+// sampleID is extracted from the Q record. rw is the open bidirectional connection
+// and can be used to send the ASTM response.
+type QueryHandler func(sampleID string, rw io.ReadWriter)
+
 type Worker interface {
 	Stop() error
 }
@@ -60,6 +65,9 @@ type sessionProcessor struct {
 	frame            []byte
 	awaitingChecksum bool
 	checksumBuf      []byte
+	hasQueryRecord   bool
+	querySampleID    string
+	queryHandler     QueryHandler
 }
 
 func newSessionProcessor(mode string) *sessionProcessor {
@@ -71,14 +79,14 @@ func newSessionProcessor(mode string) *sessionProcessor {
 	}
 }
 
-func (sp *sessionProcessor) consume(chunk []byte, writer io.Writer, meta map[string]any, flush func([]byte) error, onError ErrorHandler, onState StateHandler) error {
+func (sp *sessionProcessor) consume(chunk []byte, rw io.ReadWriter, meta map[string]any, flush func([]byte) error, onError ErrorHandler, onState StateHandler) error {
 	if sp.mode != "astm" {
 		sp.buffer = append(sp.buffer, chunk...)
 		return nil
 	}
 
 	for _, b := range chunk {
-		if sp.awaitingChecksum && sp.handleChecksumByte(b, writer, meta, onError, onState) {
+		if sp.awaitingChecksum && sp.handleChecksumByte(b, rw, meta, onError, onState) {
 			continue
 		}
 
@@ -88,8 +96,8 @@ func (sp *sessionProcessor) consume(chunk []byte, writer io.Writer, meta map[str
 			if onState != nil {
 				onState("handshake", mergeMeta(meta, map[string]any{"event": "enq"}))
 			}
-			if writer != nil {
-				if _, err := writer.Write([]byte{astmACK}); err != nil {
+			if rw != nil {
+				if _, err := rw.Write([]byte{astmACK}); err != nil {
 					onError(err, mergeMeta(meta, map[string]any{"stage": "astm_send_ack"}))
 				}
 			}
@@ -106,8 +114,15 @@ func (sp *sessionProcessor) consume(chunk []byte, writer io.Writer, meta map[str
 			if sp.awaitingChecksum && len(sp.checksumBuf) == 0 && len(sp.frame) > 0 {
 				sp.acceptFrame()
 			}
+			wasQuery := sp.hasQueryRecord
+			querySampleID := sp.querySampleID
+			sp.hasQueryRecord = false
+			sp.querySampleID = ""
 			if err := sp.flush(flush); err != nil {
 				return err
+			}
+			if wasQuery && sp.queryHandler != nil && rw != nil {
+				sp.queryHandler(querySampleID, rw)
 			}
 			sp.resetFrame()
 			if onState != nil {
@@ -132,7 +147,7 @@ func (sp *sessionProcessor) consume(chunk []byte, writer io.Writer, meta map[str
 	return nil
 }
 
-func (sp *sessionProcessor) handleChecksumByte(b byte, writer io.Writer, meta map[string]any, onError ErrorHandler, onState StateHandler) bool {
+func (sp *sessionProcessor) handleChecksumByte(b byte, rw io.ReadWriter, meta map[string]any, onError ErrorHandler, onState StateHandler) bool {
 	if isHexByte(b) && len(sp.checksumBuf) < 2 {
 		sp.checksumBuf = append(sp.checksumBuf, b)
 		if len(sp.checksumBuf) == 2 {
@@ -142,8 +157,8 @@ func (sp *sessionProcessor) handleChecksumByte(b byte, writer io.Writer, meta ma
 				if onState != nil {
 					onState("frame_valid", mergeMeta(meta, map[string]any{"checksum": actual}))
 				}
-				if writer != nil {
-					if _, err := writer.Write([]byte{astmACK}); err != nil {
+				if rw != nil {
+					if _, err := rw.Write([]byte{astmACK}); err != nil {
 						onError(err, mergeMeta(meta, map[string]any{"stage": "astm_send_ack"}))
 					}
 				}
@@ -153,8 +168,8 @@ func (sp *sessionProcessor) handleChecksumByte(b byte, writer io.Writer, meta ma
 					onState("checksum_error", mergeMeta(meta, map[string]any{"expected": expected, "actual": actual}))
 				}
 				onError(fmt.Errorf("invalid ASTM checksum: expected %s got %s", expected, actual), mergeMeta(meta, map[string]any{"stage": "astm_checksum"}))
-				if writer != nil {
-					if _, err := writer.Write([]byte{astmNAK}); err != nil {
+				if rw != nil {
+					if _, err := rw.Write([]byte{astmNAK}); err != nil {
 						onError(err, mergeMeta(meta, map[string]any{"stage": "astm_send_nak"}))
 					}
 				}
@@ -192,6 +207,12 @@ func (sp *sessionProcessor) acceptFrame() {
 	if payload[0] == astmSTX {
 		payload = payload[1:]
 	}
+	// payload = [seq_digit, record_type, '|', ...]
+	// Detect Q (host query) records so we can send back an order response.
+	if len(payload) >= 2 && payload[1] == 'Q' {
+		sp.hasQueryRecord = true
+		sp.querySampleID = extractSampleIDFromQRecord(payload)
+	}
 	sp.buffer = append(sp.buffer, payload...)
 	sp.resetFrame()
 }
@@ -213,16 +234,20 @@ func (sp *sessionProcessor) flush(flush func([]byte) error) error {
 	return flush(payload)
 }
 
-func StartProfileWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler) (Worker, error) {
+func StartProfileWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler, qhs ...QueryHandler) (Worker, error) {
+	var qh QueryHandler
+	if len(qhs) > 0 {
+		qh = qhs[0]
+	}
 	switch strings.ToLower(strings.TrimSpace(p.Transport.Type)) {
 	case "file_drop":
 		return startFileDropWorker(p, handler, onError, onState)
 	case "tcp_server":
-		return startTCPServerWorker(p, handler, onError, onState)
+		return startTCPServerWorker(p, handler, onError, onState, qh)
 	case "tcp_client":
-		return startTCPClientWorker(p, handler, onError, onState)
+		return startTCPClientWorker(p, handler, onError, onState, qh)
 	case "serial":
-		return startSerialWorker(p, handler, onError, onState)
+		return startSerialWorker(p, handler, onError, onState, qh)
 	case "", "replay":
 		return nopWorker{}, nil
 	default:
@@ -333,7 +358,7 @@ func startFileDropWorker(p profile.Profile, handler PayloadHandler, onError Erro
 	return &loopWorker{cancel: cancel, done: done}, nil
 }
 
-func startTCPServerWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler) (Worker, error) {
+func startTCPServerWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) (Worker, error) {
 	address := strings.TrimSpace(p.Transport.ListenAddress)
 	if address == "" {
 		return nil, errors.New("tcp_server transport requires listen_address")
@@ -388,14 +413,14 @@ func startTCPServerWorker(p profile.Profile, handler PayloadHandler, onError Err
 			if onState != nil {
 				onState("connected", map[string]any{"device_id": conn.RemoteAddr().String()})
 			}
-			go handleConnection(ctx, conn, models.TransportTCPServer, sessionMode, handler, onError, onState)
+			go handleConnection(ctx, conn, models.TransportTCPServer, sessionMode, handler, onError, onState, queryHandler)
 		}
 	}()
 
 	return &loopWorker{cancel: func() { cancel(); _ = listener.Close() }, done: done}, nil
 }
 
-func startTCPClientWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler) (Worker, error) {
+func startTCPClientWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) (Worker, error) {
 	address := strings.TrimSpace(p.Transport.RemoteAddress)
 	if address == "" {
 		return nil, errors.New("tcp_client transport requires remote_address")
@@ -435,7 +460,7 @@ func startTCPClientWorker(p profile.Profile, handler PayloadHandler, onError Err
 			if onState != nil {
 				onState("connected", map[string]any{"address": address})
 			}
-			handleConnection(ctx, conn, models.TransportTCPClient, sessionMode, handler, onError, onState)
+			handleConnection(ctx, conn, models.TransportTCPClient, sessionMode, handler, onError, onState, queryHandler)
 			sleepWithContext(ctx, time.Second)
 		}
 	}()
@@ -443,7 +468,7 @@ func startTCPClientWorker(p profile.Profile, handler PayloadHandler, onError Err
 	return &loopWorker{cancel: cancel, done: done}, nil
 }
 
-func startSerialWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler) (Worker, error) {
+func startSerialWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) (Worker, error) {
 	portName := strings.TrimSpace(p.Transport.SerialPort)
 	if portName == "" {
 		return nil, errors.New("serial transport requires serial_port")
@@ -485,7 +510,7 @@ func startSerialWorker(p profile.Profile, handler PayloadHandler, onError ErrorH
 			if onState != nil {
 				onState("connected", map[string]any{"port": portName, "candidate": candidate})
 			}
-			readSerialLoop(ctx, port, portName, sessionMode, handler, onError, onState, candidate)
+			readSerialLoop(ctx, port, portName, sessionMode, handler, onError, onState, candidate, queryHandler)
 			sleepWithContext(ctx, time.Second)
 		}
 	}()
@@ -493,9 +518,10 @@ func startSerialWorker(p profile.Profile, handler PayloadHandler, onError ErrorH
 	return &loopWorker{cancel: cancel, done: done}, nil
 }
 
-func readSerialLoop(ctx context.Context, port seriallib.Port, portName, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler, candidate SerialCandidate) {
+func readSerialLoop(ctx context.Context, port seriallib.Port, portName, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler, candidate SerialCandidate, queryHandler QueryHandler) {
 	defer port.Close()
 	processor := newSessionProcessor(sessionMode)
+	processor.queryHandler = queryHandler
 	chunk := make([]byte, 4096)
 	meta := map[string]any{"port": portName, "candidate": candidate}
 	for {
@@ -588,10 +614,11 @@ func fallbackString(value, fallback string) string {
 	return fallback
 }
 
-func handleConnection(ctx context.Context, conn net.Conn, transportType models.TransportType, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler) {
+func handleConnection(ctx context.Context, conn net.Conn, transportType models.TransportType, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) {
 	defer conn.Close()
 	deviceID := conn.RemoteAddr().String()
 	processor := newSessionProcessor(sessionMode)
+	processor.queryHandler = queryHandler
 	chunk := make([]byte, 4096)
 	meta := map[string]any{"device_id": deviceID}
 	for {
@@ -651,6 +678,11 @@ func handleConnection(ctx context.Context, conn net.Conn, transportType models.T
 }
 
 func selectSessionMode(p profile.Profile) string {
+	return SelectSessionMode(p)
+}
+
+// SelectSessionMode returns "astm" for profiles that use ASTM framing, otherwise "".
+func SelectSessionMode(p profile.Profile) string {
 	if mode := strings.ToLower(strings.TrimSpace(p.Transport.SessionMode)); mode != "" {
 		return mode
 	}
@@ -694,4 +726,89 @@ func buildASTMFrame(body string) []byte {
 	out = append(out, []byte(checksum)...)
 	out = append(out, astmCR, astmLF)
 	return out
+}
+
+// extractSampleIDFromQRecord parses the ASTM Q record payload
+// (payload = [seq, 'Q', '|', fields...]) and returns the sample ID from field 3.
+// Mindray sends: "1Q|1|^SID001^||ALL||||||||N"
+func extractSampleIDFromQRecord(payload []byte) string {
+	text := string(payload)
+	// Strip trailing ETX if present (0x03 is non-printable, usually absent after acceptFrame strips it)
+	if idx := strings.IndexByte(text, astmETX); idx >= 0 {
+		text = text[:idx]
+	}
+	parts := strings.Split(text, "|")
+	// parts[0]="1Q", parts[1]="1", parts[2]="^SID001^"
+	if len(parts) < 3 {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(parts[2]), "^")
+}
+
+// SendASTMResponse sends a pre-built list of ASTM record bodies to rw using the
+// full ASTM session handshake: ENQ → (ACK) → frames with ACK per frame → EOT.
+// It is called from within the connection goroutine so it can read ACKs directly.
+func SendASTMResponse(rw io.ReadWriter, records []string) error {
+	type netConn interface{ SetReadDeadline(time.Time) error }
+	type serialPort interface{ SetReadTimeout(time.Duration) error }
+	setDeadline := func(d time.Duration) {
+		if nc, ok := rw.(netConn); ok {
+			_ = nc.SetReadDeadline(time.Now().Add(d))
+		} else if sp, ok := rw.(serialPort); ok {
+			_ = sp.SetReadTimeout(d)
+		}
+	}
+	clearDeadline := func() {
+		if nc, ok := rw.(netConn); ok {
+			_ = nc.SetReadDeadline(time.Time{})
+		}
+	}
+
+	clearDeadline()
+
+	// Send ENQ, wait for ACK from instrument.
+	if _, err := rw.Write([]byte{astmENQ}); err != nil {
+		return fmt.Errorf("astm_response ENQ: %w", err)
+	}
+	ack := make([]byte, 1)
+	setDeadline(5 * time.Second)
+	if _, err := io.ReadFull(rw, ack); err != nil {
+		return fmt.Errorf("astm_response waiting ACK after ENQ: %w", err)
+	}
+	if ack[0] != astmACK {
+		return fmt.Errorf("astm_response expected ACK(0x06) after ENQ, got 0x%02X", ack[0])
+	}
+
+	for _, record := range records {
+		frame := buildASTMFrame(record)
+		if _, err := rw.Write(frame); err != nil {
+			return fmt.Errorf("astm_response write frame: %w", err)
+		}
+		setDeadline(5 * time.Second)
+		if _, err := io.ReadFull(rw, ack); err != nil {
+			return fmt.Errorf("astm_response waiting ACK after record: %w", err)
+		}
+		if ack[0] == astmNAK {
+			return fmt.Errorf("astm_response received NAK for record starting %q", record[:min(len(record), 6)])
+		}
+		if ack[0] != astmACK {
+			return fmt.Errorf("astm_response expected ACK, got 0x%02X", ack[0])
+		}
+	}
+
+	if _, err := rw.Write([]byte{astmEOT}); err != nil {
+		return fmt.Errorf("astm_response EOT: %w", err)
+	}
+	// Restore a short read timeout for the outer loop (serial only; TCP resets via SetReadDeadline per iteration).
+	if sp, ok := rw.(serialPort); ok {
+		_ = sp.SetReadTimeout(2 * time.Second)
+	}
+	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -22,7 +22,7 @@ type Service interface {
 	ExportMigrationBundle(models.RedactionOptions, string) (profile.MigrationBundle, error)
 	PreviewMigrationBundle(bundle profile.MigrationBundle) (profile.MigrationBundlePreview, error)
 	ImportMigrationBundle(bundle profile.MigrationBundle, actor string, merges []models.NetworkLinkMergeDecision) error
-	ScanPorts(req models.NetworkScanRequest) ([]models.DeviceFingerprint, []transport.SerialCandidate, []models.NetworkDevice, error)
+	ScanPorts(req models.NetworkScanRequest) ([]models.DeviceFingerprint, []transport.SerialCandidate, []models.NetworkDevice, models.NetworkScanDiagnostics, error)
 	ProcessPayload(raw []byte, transport models.TransportType, profileID string, deviceID string) (models.ParseResult, capture.CaptureRecord, error)
 	ListCaptures(filter capture.CaptureFilter) ([]capture.CaptureRecord, error)
 	ReplayCapture(id, overrideProfileID string) (models.ParseResult, error)
@@ -42,6 +42,9 @@ type Service interface {
 	RuntimeErrors(limit int) ([]capture.RuntimeError, error)
 	SessionHistory(filter capture.SessionEventFilter) ([]capture.SessionEvent, error)
 	RunRetention() (capture.CleanupReport, error)
+	PushPendingOrder(order models.PendingOrderRequest) error
+	ListPendingOrders() []models.PendingOrderRequest
+	DeletePendingOrder(sampleID string)
 }
 
 type Options struct {
@@ -116,6 +119,7 @@ func (s *Server) Routes() http.Handler {
 	register("/api/v1/runtime/errors", s.runtimeErrors)
 	register("/api/v1/runtime/history", s.runtimeHistory)
 	register("/api/v1/runtime/cleanup", s.runtimeCleanup)
+	register("/api/v1/orders/pending", s.pendingOrders)
 	mux.Handle("/", http.FileServer(http.Dir(s.uiAssetsDir)))
 	return mux
 }
@@ -146,12 +150,12 @@ func (s *Server) scanPorts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ports, candidates, networkDevices, err := s.svc.ScanPorts(models.NetworkScanRequest{CIDRs: queryCSV(r, "cidrs"), Ports: queryPorts(r, "ports")})
+	ports, candidates, networkDevices, diagnostics, err := s.svc.ScanPorts(models.NetworkScanRequest{CIDRs: queryCSV(r, "cidrs"), Ports: queryPorts(r, "ports"), Mode: strings.TrimSpace(r.URL.Query().Get("mode")), HostLimit: queryInt(r, "host_limit", 0)})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ports": ports, "serial_candidates": candidates, "network_devices": networkDevices})
+	writeJSON(w, http.StatusOK, map[string]any{"ports": ports, "serial_candidates": candidates, "network_devices": networkDevices, "diagnostics": diagnostics})
 }
 
 func (s *Server) startCapture(w http.ResponseWriter, r *http.Request) {
@@ -625,7 +629,13 @@ func firstDeviceID(v string) string {
 	return v
 }
 func queryLimit(r *http.Request, fallback int) int {
+	return queryInt(r, "limit", fallback)
+}
+func queryInt(r *http.Request, key string, fallback int) int {
 	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if key != "" {
+		raw = strings.TrimSpace(r.URL.Query().Get(key))
+	}
 	if raw == "" {
 		return fallback
 	}
@@ -749,6 +759,38 @@ func redactValue(value, label string) string {
 		return ""
 	}
 	return fmt.Sprintf("[redacted:%s]", label)
+}
+
+func (s *Server) pendingOrders(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var req models.PendingOrderRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, err)
+			return
+		}
+		if strings.TrimSpace(req.SampleID) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sample_id is required"})
+			return
+		}
+		if err := s.svc.PushPendingOrder(req); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "sample_id": req.SampleID})
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.svc.ListPendingOrders())
+	case http.MethodDelete:
+		sampleID := strings.TrimSpace(r.URL.Query().Get("sample_id"))
+		if sampleID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sample_id query param required"})
+			return
+		}
+		s.svc.DeletePendingOrder(sampleID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func defaultDiscoveryHintCatalog() []map[string]any {
