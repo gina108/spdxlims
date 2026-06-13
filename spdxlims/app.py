@@ -3,15 +3,24 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QLocale, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox, QSpinBox
 
 from spdxlims.addons import AddonManager
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentConfig, DeploymentService
 from spdxlims.i18n import set_language, tr
 from spdxlims.main_window import MainWindow
+
+
+class _App(QApplication):
+    """QApplication subclass that prevents scroll wheel from changing combo/spin values."""
+
+    def notify(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, (QComboBox, QSpinBox)):
+            return False
+        return super().notify(obj, event)
 
 
 def _apply_dark_theme(app: QApplication) -> None:
@@ -336,7 +345,8 @@ def _apply_dark_theme(app: QApplication) -> None:
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
+    QLocale.setDefault(QLocale(QLocale.Language.Spanish, QLocale.Country.Mexico))
+    app = _App(sys.argv)
     app.setApplicationName("SPDXLIMS")
     app.setOrganizationName("SPDXLIMS")
     icon_path = Path(__file__).resolve().parent.parent / "assets" / "SDXSquarePurple.png"

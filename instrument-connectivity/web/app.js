@@ -1,5 +1,6 @@
 const output = document.getElementById('output');
 const portsOut = document.getElementById('portsOut');
+const scanDiagnosticsOut = document.getElementById('scanDiagnostics');
 const profilesOut = document.getElementById('profilesOut');
 const capturesOut = document.getElementById('capturesOut');
 const runtimeStatusOut = document.getElementById('runtimeStatusOut');
@@ -73,12 +74,31 @@ async function call(path, options = {}) {
 
 function scanQuery() {
   const params = new URLSearchParams();
+  const mode = document.getElementById('scanMode').value.trim();
   const cidrs = document.getElementById('scanCIDRs').value.trim();
   const ports = document.getElementById('scanPortsInput').value.trim();
+  const hostLimit = document.getElementById('scanHostLimit').value.trim();
+  if (mode) params.set('mode', mode);
   if (cidrs) params.set('cidrs', cidrs);
   if (ports) params.set('ports', ports);
+  if (hostLimit) params.set('host_limit', hostLimit);
   const suffix = params.toString();
   return suffix ? `/ports/scan?${suffix}` : '/ports/scan';
+}
+
+function formatScanDiagnostics(diagnostics = {}) {
+  const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings : [];
+  const recommendations = Array.isArray(diagnostics.recommendations) ? diagnostics.recommendations : [];
+  return [
+    `Mode: ${diagnostics.mode || 'quick'}`,
+    `Subnets: ${(diagnostics.cidrs || []).join(', ') || 'none'}`,
+    `Ports: ${(diagnostics.ports || []).join(', ') || 'none'}`,
+    `Hosts checked: ${diagnostics.candidate_hosts ?? 0} (limit ${diagnostics.host_limit ?? 0} per subnet)`,
+    `Found: ${diagnostics.network_devices ?? 0} network, ${diagnostics.serial_devices ?? 0} serial`,
+    `Scan time: ${diagnostics.duration_ms ?? 0} ms`,
+    warnings.length ? `Warnings: ${warnings.join(' ')}` : '',
+    recommendations.length ? `Next steps: ${recommendations.join(' ')}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function formatPorts(result) {
@@ -88,6 +108,9 @@ function formatPorts(result) {
   return [
     `Serial devices: ${serial.length}`,
     `Network devices: ${network.length}`,
+    '',
+    'Scan Diagnostics:',
+    formatScanDiagnostics(result.diagnostics || {}),
     '',
     'Network Devices:',
     network.length
@@ -806,7 +829,7 @@ function buildProfileFromEditor(existingProfile = {}) {
   const sessionMode = document.getElementById('profileSessionMode').value.trim();
   const serialPort = document.getElementById('profileSerialPort').value.trim();
   const parity = document.getElementById('profileParity').value.trim();
-  const listenAddress = document.getElementById('profileListenAddress').value.trim();
+  let listenAddress = document.getElementById('profileListenAddress').value.trim();
   const remoteAddress = document.getElementById('profileRemoteAddress').value.trim();
   const parsingStrategy = document.getElementById('profileParsingStrategy').value.trim();
   const deviceMetadata = { ...(existingProfile.device_metadata || {}) };
@@ -819,6 +842,10 @@ function buildProfileFromEditor(existingProfile = {}) {
     deviceMetadata.model = model;
   } else {
     delete deviceMetadata.model;
+  }
+  if (transportType === 'tcp_server' && listenAddress && !listenAddress.startsWith('0.0.0.0:')) {
+    const portMatch = listenAddress.match(/:(\d+)$/);
+    if (portMatch) listenAddress = `0.0.0.0:${portMatch[1]}`;
   }
   return {
     ...existingProfile,
@@ -851,6 +878,58 @@ function buildProfileFromEditor(existingProfile = {}) {
       enabled: existingProfile.learning_mode?.enabled ?? true,
     },
   };
+}
+
+function applyWizardHints() {
+  const connection = document.getElementById('wizardConnection').value;
+  const ip = document.getElementById('wizardIP').value.trim();
+  const port = document.getElementById('wizardPort').value.trim();
+  const serial = document.getElementById('wizardSerial').value.trim();
+  const hints = new Set(parseDiscoveryHints());
+  let summary = '';
+  if (connection === 'network_inbound') {
+    document.getElementById('profileTransportType').value = 'tcp_server';
+    if (port) document.getElementById('profileListenAddress').value = `0.0.0.0:${port}`;
+    document.getElementById('profileRemoteAddress').value = '';
+    hints.add('hl7_listener');
+    summary = 'Profile set for analyzer-to-PC traffic. Listener uses 0.0.0.0 so Windows can accept traffic on any local adapter.';
+  } else if (connection === 'network_outbound') {
+    document.getElementById('profileTransportType').value = 'tcp_client';
+    if (ip && port) document.getElementById('profileRemoteAddress').value = `${ip}:${port}`;
+    document.getElementById('profileListenAddress').value = '';
+    hints.add('hl7_listener');
+    summary = 'Profile set for PC-to-analyzer traffic. Save the analyzer IP and port, then start capture.';
+  } else if (connection === 'serial') {
+    document.getElementById('profileTransportType').value = 'serial';
+    if (serial) document.getElementById('profileSerialPort').value = serial;
+    document.getElementById('profileBaudRate').value = document.getElementById('profileBaudRate').value || '9600';
+    document.getElementById('profileDataBits').value = document.getElementById('profileDataBits').value || '8';
+    document.getElementById('profileParity').value = document.getElementById('profileParity').value || 'N';
+    document.getElementById('profileStopBits').value = document.getElementById('profileStopBits').value || '1';
+    hints.add('astm_serial');
+    summary = 'Profile set for serial capture with common ASTM-style defaults.';
+  } else {
+    document.getElementById('profileTransportType').value = 'file_drop';
+    document.getElementById('profileWatchDirectories').value = document.getElementById('profileWatchDirectories').value || 'incoming';
+    hints.add('file_drop');
+    summary = 'Profile set for a watched result folder.';
+  }
+  if (port) {
+    const currentPorts = new Set(csvValues('scanPortsInput'));
+    currentPorts.add(port);
+    document.getElementById('scanPortsInput').value = Array.from(currentPorts).join(', ');
+  }
+  if (ip) {
+    const subnet = ip.replace(/\.\d+$/, '.0/24');
+    const currentCIDRs = new Set(csvValues('scanCIDRs'));
+    currentCIDRs.add(subnet);
+    document.getElementById('scanCIDRs').value = Array.from(currentCIDRs).join(', ');
+  }
+  document.getElementById('profileDiscoveryHints').value = Array.from(hints).join(', ');
+  renderDiscoveryHintPresets();
+  renderDiscoveryHintValidation();
+  renderDiscoveryHintHelp();
+  document.getElementById('wizardSummary').textContent = summary;
 }
 
 function renderProfileCaptureSummary() {
@@ -1272,6 +1351,7 @@ document.getElementById('exportNetworkLinks').onclick = exportNetworkLinks;
 document.getElementById('previewImportNetworkLinks').onclick = previewImportNetworkLinks;
 document.getElementById('importNetworkLinks').onclick = importNetworkLinks;
 document.getElementById('saveProfile').onclick = saveProfile;
+document.getElementById('applyWizard').onclick = applyWizardHints;
 document.getElementById('startProfileCapture').onclick = startProfileCapture;
 document.getElementById('stopProfileCapture').onclick = stopProfileCapture;
 document.getElementById('profileEditorSelect').onchange = renderProfileEditor;
@@ -1297,6 +1377,7 @@ document.getElementById('auditRedactionPreset').onchange = () => applyPresetTogg
 
 document.getElementById('scanPorts').onclick = async () => run(portsOut, () => call(scanQuery()), formatPorts, (result) => {
   state.networkDevices = Array.isArray(result.network_devices) ? result.network_devices : state.networkDevices;
+  scanDiagnosticsOut.textContent = formatScanDiagnostics(result.diagnostics || {});
   renderNetworkDevices();
 });
 document.getElementById('loadProfiles').onclick = loadProfilesData;

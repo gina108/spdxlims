@@ -735,22 +735,99 @@ func (a *App) DeletePendingOrder(sampleID string) {
 	a.pendingOrders.Delete(strings.TrimSpace(sampleID))
 }
 
-// makeQueryHandler returns an ASTM QueryHandler for profiles that use ASTM framing.
-// For non-ASTM profiles it returns nil so the worker skips Q-record handling.
+// makeQueryHandler returns a QueryHandler for profiles that support bidirectional
+// communication. Returns nil for profiles that use neither ASTM nor HL7 framing.
 func (a *App) makeQueryHandler(prof profile.Profile) transport.QueryHandler {
-	if transport.SelectSessionMode(prof) != "astm" {
-		return nil
-	}
-	return func(sampleID string, rw io.ReadWriter) {
-		order, found := a.pendingOrders.Get(sampleID)
-		records := buildASTMOrderResponseRecords(sampleID, found, order)
-		if err := transport.SendASTMResponse(rw, records); err != nil {
-			a.recordError(prof.ID, "astm_query", models.TransportTCPServer, err,
-				map[string]any{"stage": "astm_query_response", "sample_id": sampleID}, prof.Transport)
-		} else if found {
+	switch transport.SelectSessionMode(prof) {
+	case "astm":
+		return func(sampleID string, rw io.ReadWriter) {
+			order, found := a.pendingOrders.Get(sampleID)
+			records := buildASTMOrderResponseRecords(sampleID, found, order)
+			if err := transport.SendASTMResponse(rw, records); err != nil {
+				a.recordError(prof.ID, "astm_query", models.TransportType(prof.Transport.Type), err,
+					map[string]any{"stage": "astm_query_response", "sample_id": sampleID}, prof.Transport)
+			} else if found {
+				a.pendingOrders.Delete(sampleID)
+			}
+		}
+	case "hl7":
+		return func(sampleID string, rw io.ReadWriter) {
+			order, found := a.pendingOrders.Get(sampleID)
+			fmt.Fprintf(os.Stderr, "[HL7-RESP] query for sample_id=%q found=%v\n", sampleID, found)
+			// Send ACK first (required by Mindray before it will accept the ORM).
+			ack := buildHL7ACKMessage(found)
+			fmt.Fprintf(os.Stderr, "[HL7-SEND-ACK] %d bytes: %q\n", len(ack), ack)
+			if err := transport.SendHL7Response(rw, ack); err != nil {
+				fmt.Fprintf(os.Stderr, "[HL7-ERR] ACK write failed: %v\n", err)
+				a.recordError(prof.ID, "hl7_query", models.TransportType(prof.Transport.Type), err,
+					map[string]any{"stage": "hl7_ack", "sample_id": sampleID}, prof.Transport)
+				return
+			}
+			if !found {
+				return
+			}
+			// Send the order as a second MLLP message.
+			orm := buildHL7OrderResponseMessage(sampleID, order)
+			fmt.Fprintf(os.Stderr, "[HL7-SEND-ORM] %d bytes: %q\n", len(orm), orm)
+			if err := transport.SendHL7Response(rw, orm); err != nil {
+				fmt.Fprintf(os.Stderr, "[HL7-ERR] ORM write failed: %v\n", err)
+				a.recordError(prof.ID, "hl7_query", models.TransportType(prof.Transport.Type), err,
+					map[string]any{"stage": "hl7_orm", "sample_id": sampleID}, prof.Transport)
+				return
+			}
 			a.pendingOrders.Delete(sampleID)
 		}
 	}
+	return nil
+}
+
+// buildHL7ACKMessage returns an ACK^O01 acknowledging a Mindray ORM^O01 worklist request.
+// found=true → MSA|AA (orders available); found=false → MSA|AE (no orders for this sample).
+func buildHL7ACKMessage(found bool) string {
+	now := time.Now().Format("20060102150405")
+	msgID := fmt.Sprintf("ACK%s", now)
+	ackCode := "AA"
+	if !found {
+		ackCode = "AE"
+	}
+	return fmt.Sprintf("MSH|^~\\&|SPDXLIMS||BC30||%s||ACK^O01|%s|P|2.3\rMSA|%s|1|\r",
+		now, msgID, ackCode)
+}
+
+// buildHL7OrderResponseMessage builds a clean ORM^O01 message (no MSA segment) with
+// PID + PV1 + ORC/OBR per test. Sent as the second MLLP message after the ACK.
+func buildHL7OrderResponseMessage(sampleID string, order orders.PendingOrder) string {
+	now := time.Now().Format("20060102150405")
+	msgID := fmt.Sprintf("ORM%s", now)
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("MSH|^~\\&|SPDXLIMS||BC30||%s||ORM^O01|%s|P|2.3\r", now, msgID))
+
+	nameParts := strings.Fields(strings.TrimSpace(order.PatientName))
+	lastName, firstName := "", ""
+	if len(nameParts) >= 2 {
+		lastName = nameParts[len(nameParts)-1]
+		firstName = strings.Join(nameParts[:len(nameParts)-1], " ")
+	} else if len(nameParts) == 1 {
+		lastName = nameParts[0]
+	}
+	dob := strings.ReplaceAll(order.DOB, "-", "")
+	sex := strings.ToUpper(strings.TrimSpace(order.Sex))
+	if len(sex) > 1 {
+		sex = sex[:1]
+	}
+	sb.WriteString(fmt.Sprintf("PID|1||%s|||%s^%s||%s|%s\r",
+		order.PatientID, lastName, firstName, dob, sex))
+	sb.WriteString("PV1|1|O\r")
+
+	for i, t := range order.Tests {
+		ordID := fmt.Sprintf("ORD%s%03d", sampleID, i+1)
+		sb.WriteString(fmt.Sprintf("ORC|NW|%s|%s||CM\r", ordID, ordID))
+		sb.WriteString(fmt.Sprintf("OBR|%d|%s|%s|%s^%s^L\r",
+			i+1, ordID, ordID, t.TestCode, t.TestName))
+	}
+
+	return sb.String()
 }
 
 // buildASTMOrderResponseRecords builds the ASTM H+[P+O...]+L record bodies

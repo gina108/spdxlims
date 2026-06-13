@@ -1,0 +1,96 @@
+id: cm250
+name: CM 250 Chemistry Analyzer
+protocol_hint: astm
+device_metadata:
+  department: chemistry
+  manufacturer: Wiener Lab
+transport:
+  type: serial
+  session_mode: astm
+  serial_port: COM9
+  baud_rate: 9600
+  data_bits: 8
+  parity: N
+  stop_bits: 1
+  discovery_hints:
+    - astm_serial
+parsing:
+  strategy: astm
+mapping:
+  test_mappings:
+    - match_type: exact
+      pattern: "GLU L"
+      canonical_assay: Glucose
+      lis_test_id: CM250-GLU
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "URE Lb"
+      canonical_assay: Urea
+      lis_test_id: CM250-URE
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "CRE L"
+      canonical_assay: Creatinine
+      lis_test_id: CM250-CRE
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "A-COL"
+      canonical_assay: Total Cholesterol
+      lis_test_id: CM250-COL
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "A-TG"
+      canonical_assay: Triglycerides
+      lis_test_id: CM250-TG
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "A-HDL"
+      canonical_assay: HDL Cholesterol
+      lis_test_id: CM250-HDL
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "BT AA"
+      canonical_assay: Total Bilirubin
+      lis_test_id: CM250-BT
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "BD AA"
+      canonical_assay: Direct Bilirubin
+      lis_test_id: CM250-BD
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "ALP Lb"
+      canonical_assay: Alkaline Phosphatase
+      lis_test_id: CM250-ALP
+      normalized_units: U/L
+    - match_type: exact
+      pattern: "AUR Lb"
+      canonical_assay: Uric Acid
+      lis_test_id: CM250-AUR
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: "GOT Lb"
+      canonical_assay: AST
+      lis_test_id: CM250-GOT
+      normalized_units: U/L
+    - match_type: exact
+      pattern: "GPT Lb"
+      canonical_assay: ALT
+      lis_test_id: CM250-GPT
+      normalized_units: U/L
+    - match_type: exact
+      pattern: PT
+      canonical_assay: Prothrombin Time
+      lis_test_id: CM250-PT
+      normalized_units: s
+    - match_type: exact
+      pattern: ALB
+      canonical_assay: Albumin
+      lis_test_id: CM250-ALB
+      normalized_units: g/dL
+  unit_normalization:
+    mg/dl: mg/dL
+    u/l: U/L
+    g/dl: g/dL
+learning_mode:
+  enabled: true

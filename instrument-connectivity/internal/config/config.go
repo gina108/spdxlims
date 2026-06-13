@@ -25,6 +25,7 @@ type Config struct {
     NetworkScanConcurrency int
     NetworkScanHostLimit int
     BundleHMACSecret string
+    AutoResume bool
 }
 
 func Default(dataDir, listenAddr string) Config {
@@ -46,5 +47,6 @@ func Default(dataDir, listenAddr string) Config {
         NetworkProbeTimeout: 250 * time.Millisecond,
         NetworkScanConcurrency: 24,
         NetworkScanHostLimit: 64,
+        AutoResume: true,
     }
 }

@@ -20,14 +20,16 @@ def get_pdf_export_settings(database: Database) -> dict[str, object]:
             key for key in list(raw.get("filename_parts") or [])
             if isinstance(key, str) and key in FILENAME_PART_KEYS
         ] or ["order_number"],
+        "printer": str(raw.get("printer") or "system_default"),
     }
 
 
-def save_pdf_export_settings(database: Database, *, folder_path: str, filename_parts: list[str]) -> None:
+def save_pdf_export_settings(database: Database, *, folder_path: str, filename_parts: list[str], printer: str = "system_default") -> None:
     ui_state = database.get_ui_state()
     ui_state[PDF_EXPORT_SETTINGS_KEY] = {
         "folder_path": folder_path.strip(),
         "filename_parts": [key for key in filename_parts if key in FILENAME_PART_KEYS] or ["order_number"],
+        "printer": printer,
     }
     database.save_ui_state(ui_state)
 
@@ -48,7 +50,17 @@ def build_pdf_export_path(database: Database, preview: dict[str, object], *, suf
     stem = "_".join(part for part in name_parts if part)
     if suffix:
         stem = f"{stem}{suffix}"
-    return target_dir / f"{stem}{extension}"
+    return _next_available_path(target_dir / f"{stem}{extension}")
+
+
+def _next_available_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 10_000):
+        candidate = path.with_name(f"{path.stem} ({index}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"No available export filename for {path}")
 
 
 def _sanitize_filename_part(value: str) -> str:

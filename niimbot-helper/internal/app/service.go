@@ -44,7 +44,7 @@ func NewBridgeService() *BridgeService {
 		}
 	}
 	return &BridgeService{
-		pythonArgs: []string{"-3.13"},
+		pythonArgs: []string{"-3.12"},
 		scriptPath: scriptPath,
 	}
 }

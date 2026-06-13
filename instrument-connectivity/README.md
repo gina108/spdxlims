@@ -162,6 +162,10 @@ Legacy `/api/...` routes remain for backward compatibility.
 `GET /api/v1/ports/scan` accepts optional query parameters:
 - `cidrs=192.168.1.0/24,10.10.20.0/24`
 - `ports=5000,2575,9100`
+- `mode=quick|full|custom`
+- `host_limit=254`
+
+Network discovery includes endpoints with open TCP ports and ARP-neighbor candidates that are reachable on the local network but do not expose a listener. This helps analyzers such as inbound LIS senders appear during setup even when the PC must listen for results.
 
 `GET /api/v1/captures` accepts optional query parameters:
 - `device_id=net:192.168.1.10`
@@ -190,6 +194,7 @@ The local UI now:
 - shows bundle export/import events in a dedicated summarized section above the raw audit stream, including actor, time, redaction mode, counts, and merge outcomes
 - supports audit filtering by operator, profile, endpoint, and action in the local UI
 - shows serial ports and discovered network devices, including open ports, banner details, likely protocol hints, correlated runtime IDs, capture counts, replay history, parse-failure excerpts, and last replay status
+- shows ARP-reachable devices as network candidates for inbound analyzer workflows
 - shows ports, profiles, captures, runtime status, runtime errors, and session history
 - provides a maintenance panel for retention cleanup and report review
 - provides a support-bundle diagnostics panel with runtime-link source/confidence summaries before download

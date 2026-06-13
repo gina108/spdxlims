@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
+from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFontComboBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -27,6 +31,7 @@ from spdxlims.lab_profile_service import LabProfileService
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.report_export import FILENAME_PART_KEYS, get_pdf_export_settings, save_pdf_export_settings
 from spdxlims.sat_catalogs import REGIMEN_FISCAL_OPTIONS
+from spdxlims.whatsapp_phone import COUNTRY_CODE_OPTIONS
 from spdxlims.whatsapp_templates import get_whatsapp_templates, save_whatsapp_templates
 
 REPORT_FLAG_STYLE_OPTIONS: list[tuple[str, str]] = [
@@ -118,6 +123,9 @@ class SettingsPage(DataAwarePage):
         self.printing_group = QGroupBox()
         self.printing_form = QFormLayout(self.printing_group)
         self.printing_labels: dict[str, QLabel] = {}
+        self.receipt_group = QGroupBox()
+        self.receipt_form = QFormLayout(self.receipt_group)
+        self.receipt_labels: dict[str, QLabel] = {}
         self.whatsapp_section = AccordionSection(expanded=False)
         self.whatsapp_group = QGroupBox()
         self.whatsapp_form = QFormLayout(self.whatsapp_group)
@@ -138,6 +146,88 @@ class SettingsPage(DataAwarePage):
         self.report_flag_style = QComboBox()
         for value, label in REPORT_FLAG_STYLE_OPTIONS:
             self.report_flag_style.addItem(label, value)
+        self.keep_panels_together = QCheckBox()
+        self.report_font_family = QFontComboBox()
+        self.report_font_size = QSpinBox()
+        self.report_font_size.setRange(8, 18)
+        self.report_font_size.setValue(12)
+        self.report_font_bold = QCheckBox()
+        self.report_abnormal_bold = QCheckBox()
+        self.report_subheading_font_family = QFontComboBox()
+        self.report_subheading_font_size = QSpinBox()
+        self.report_subheading_font_size.setRange(8, 18)
+        self.report_subheading_font_size.setValue(13)
+        self.report_subheading_font_bold = QCheckBox()
+        self.report_subheading_font_bold.setChecked(True)
+        self.report_footer_gap_mm = QSpinBox()
+        self.report_footer_gap_mm.setRange(0, 60)
+        self.report_footer_gap_mm.setValue(8)
+        self.report_footer_gap_mm.setSuffix(" mm")
+        self.report_sex_format = QComboBox()
+        self.report_sex_format.addItem("M / F", "short")
+        self.report_sex_format.addItem("MASC / FEM", "medium")
+        self.report_sex_format.addItem("MASCULINO / FEMENINO", "full")
+        self.report_date_format = QComboBox()
+        self.report_date_format.addItem("", "auto")
+        self.report_date_format.addItem("", "date_only")
+        self.report_date_format.addItem("", "with_time")
+        self.report_header_fields_widget = QWidget()
+        _hf_layout = QGridLayout(self.report_header_fields_widget)
+        _hf_layout.setContentsMargins(0, 0, 0, 0)
+        _hf_layout.setSpacing(4)
+        _hf_layout.setColumnStretch(0, 1)
+        self.report_show_doctor = QCheckBox()
+        self.report_show_doctor.setChecked(True)
+        self.report_doctor_col = QComboBox()
+        self.report_doctor_col.addItem("", "left")
+        self.report_doctor_col.addItem("", "right")
+        self.report_show_client = QCheckBox()
+        self.report_show_client.setChecked(True)
+        self.report_client_col = QComboBox()
+        self.report_client_col.addItem("", "left")
+        self.report_client_col.addItem("", "right")
+        self.report_show_sex = QCheckBox()
+        self.report_show_sex.setChecked(True)
+        self.report_sex_col = QComboBox()
+        self.report_sex_col.addItem("", "left")
+        self.report_sex_col.addItem("", "right")
+        self.report_show_age = QCheckBox()
+        self.report_show_age.setChecked(True)
+        self.report_age_col = QComboBox()
+        self.report_age_col.addItem("", "left")
+        self.report_age_col.addItem("", "right")
+        self.report_age_col.setCurrentIndex(1)
+        self.report_show_dob = QCheckBox()
+        self.report_show_dob.setChecked(True)
+        self.report_dob_col = QComboBox()
+        self.report_dob_col.addItem("", "left")
+        self.report_dob_col.addItem("", "right")
+        self.report_dob_col.setCurrentIndex(1)
+        self.report_show_ordered_at = QCheckBox()
+        self.report_show_ordered_at.setChecked(True)
+        self.report_ordered_at_col = QComboBox()
+        self.report_ordered_at_col.addItem("", "left")
+        self.report_ordered_at_col.addItem("", "right")
+        self.report_ordered_at_col.setCurrentIndex(1)
+        self.report_show_reported_at = QCheckBox()
+        self.report_show_reported_at.setChecked(True)
+        self.report_reported_at_col = QComboBox()
+        self.report_reported_at_col.addItem("", "left")
+        self.report_reported_at_col.addItem("", "right")
+        self.report_reported_at_col.setCurrentIndex(1)
+        for _hf_row, (_cb, _combo) in enumerate([
+            (self.report_show_doctor, self.report_doctor_col),
+            (self.report_show_client, self.report_client_col),
+            (self.report_show_sex, self.report_sex_col),
+            (self.report_show_age, self.report_age_col),
+            (self.report_show_dob, self.report_dob_col),
+            (self.report_show_ordered_at, self.report_ordered_at_col),
+            (self.report_show_reported_at, self.report_reported_at_col),
+        ]):
+            _hf_layout.addWidget(_cb, _hf_row, 0)
+            _hf_layout.addWidget(_combo, _hf_row, 1)
+            _cb.toggled.connect(_combo.setEnabled)
+            _combo.setEnabled(_cb.isChecked())
         self.sat_rfc = QLineEdit()
         self.sat_fiscal_regime = QComboBox()
         self.sat_fiscal_regime.addItem('', '')
@@ -188,8 +278,34 @@ class SettingsPage(DataAwarePage):
         self.printing_default_copies = QSpinBox()
         self.printing_default_copies.setRange(1, 99)
         self.printing_default_copies.setValue(1)
+        self.printing_panel_extra_group = QGroupBox()
+        self._panel_extra_copies_layout = QVBoxLayout(self.printing_panel_extra_group)
+        self._panel_extra_copies_layout.setContentsMargins(8, 8, 8, 8)
+        self._panel_extra_copies_layout.setSpacing(4)
+        self._panel_extra_copy_spins: dict[str, QSpinBox] = {}
+        self.receipt_auto_print = QCheckBox()
+        self.receipt_paper_format = QComboBox()
+        self.receipt_paper_format.addItem('Carta / Oficio', 'letter')
+        self.receipt_paper_format.addItem('Ticket 80 mm', 'ticket_80mm')
+        self.receipt_paper_format.addItem('Ticket 58 mm', 'ticket_58mm')
+        self.printing_printer = QComboBox()
+        self.printing_printer_row, self.printing_printer_refresh = self._printer_row(
+            self.printing_printer, self._refresh_label_printers
+        )
+        self.receipt_printer = QComboBox()
+        self.receipt_printer_row, self.receipt_printer_refresh = self._printer_row(
+            self.receipt_printer, self._refresh_receipt_printers
+        )
+        self.report_printer = QComboBox()
+        self.report_printer_row, self.report_printer_refresh = self._printer_row(
+            self.report_printer, self._refresh_report_printers
+        )
         self.whatsapp_help = QLabel()
         self.whatsapp_help.setWordWrap(True)
+        self.whatsapp_country_code = QComboBox()
+        for code, label in COUNTRY_CODE_OPTIONS:
+            self.whatsapp_country_code.addItem(label, code)
+        self.whatsapp_country_code.setEditable(True)
         self.whatsapp_placeholders = QWidget()
         whatsapp_placeholders_layout = QHBoxLayout(self.whatsapp_placeholders)
         whatsapp_placeholders_layout.setContentsMargins(0, 0, 0, 0)
@@ -279,6 +395,31 @@ class SettingsPage(DataAwarePage):
         header_library_layout.addWidget(self.header_library)
         header_library_layout.addWidget(self.header_actions_row)
 
+        self.footer_library = QListWidget()
+        self.footer_library.setMinimumHeight(120)
+        self.footer_library_help = QLabel()
+        self.footer_library_help.setWordWrap(True)
+        self.add_footer_button = QPushButton()
+        self.add_footer_button.clicked.connect(self._add_footer_asset)
+        self.remove_footer_button = QPushButton()
+        self.remove_footer_button.clicked.connect(self._remove_selected_footer_asset)
+        self.set_default_footer_button = QPushButton()
+        self.set_default_footer_button.clicked.connect(self._set_default_footer_asset)
+        self.footer_actions_row = QWidget()
+        footer_actions_layout = QHBoxLayout(self.footer_actions_row)
+        footer_actions_layout.setContentsMargins(0, 0, 0, 0)
+        footer_actions_layout.addWidget(self.add_footer_button)
+        footer_actions_layout.addWidget(self.set_default_footer_button)
+        footer_actions_layout.addWidget(self.remove_footer_button)
+        footer_actions_layout.addStretch(1)
+        self.footer_library_block = QWidget()
+        footer_library_layout = QVBoxLayout(self.footer_library_block)
+        footer_library_layout.setContentsMargins(0, 0, 0, 0)
+        footer_library_layout.setSpacing(6)
+        footer_library_layout.addWidget(self.footer_library_help)
+        footer_library_layout.addWidget(self.footer_library)
+        footer_library_layout.addWidget(self.footer_actions_row)
+
         self._add_lab_row("lab_name", self.lab_name)
         self._add_lab_row("address", self.address)
         self._add_lab_row("phone", self.phone)
@@ -294,15 +435,34 @@ class SettingsPage(DataAwarePage):
         self._add_report_row("header", self.header_row)
         self._add_report_row("header_library", self.header_library_block)
         self._add_report_row("footer", self.footer_row)
+        self._add_report_row("footer_library", self.footer_library_block)
         self._add_report_row("report_flag_style", self.report_flag_style)
+        self._add_report_row("keep_panels_together", self.keep_panels_together)
+        self._add_report_row("report_font_family", self.report_font_family)
+        self._add_report_row("report_font_size", self.report_font_size)
+        self._add_report_row("report_font_bold", self.report_font_bold)
+        self._add_report_row("report_abnormal_bold", self.report_abnormal_bold)
+        self._add_report_row("report_subheading_font_family", self.report_subheading_font_family)
+        self._add_report_row("report_subheading_font_size", self.report_subheading_font_size)
+        self._add_report_row("report_subheading_font_bold", self.report_subheading_font_bold)
+        self._add_report_row("report_footer_gap_mm", self.report_footer_gap_mm)
+        self._add_report_row("report_header_fields", self.report_header_fields_widget)
+        self._add_report_row("report_sex_format", self.report_sex_format)
+        self._add_report_row("report_date_format", self.report_date_format)
+        self._add_printing_row("printer", self.printing_printer_row)
         self._add_printing_row("help", self.printing_help)
         self._add_printing_row("default_size", self.printing_default_size)
         self._add_printing_row("default_payload", self.printing_default_payload)
         self._add_printing_row("content_fields", self.printing_content_options)
         self._add_printing_row("default_copies", self.printing_default_copies)
+        self._add_receipt_row("printer", self.receipt_printer_row)
+        self._add_receipt_row("auto_print", self.receipt_auto_print)
+        self._add_receipt_row("paper_format", self.receipt_paper_format)
+        self._add_pdf_export_row("printer", self.report_printer_row)
         self._add_pdf_export_row("folder", self.pdf_export_folder_row)
         self._add_pdf_export_row("filename_parts", self.pdf_export_filename_options)
         self._add_whatsapp_row("help", self.whatsapp_help)
+        self._add_whatsapp_row("country_code", self.whatsapp_country_code)
         self._add_whatsapp_row("placeholders", self.whatsapp_placeholders)
         self._add_whatsapp_row("patient_message", self.whatsapp_patient_message)
         self._add_whatsapp_row("client_message", self.whatsapp_client_message)
@@ -318,8 +478,17 @@ class SettingsPage(DataAwarePage):
 
         self.lab_section.content_layout.addWidget(self.lab_group)
         self.reports_section.content_layout.addWidget(self.reports_group)
-        self.reports_section.content_layout.addWidget(self.pdf_export_group)
-        self.printing_section.content_layout.addWidget(self.printing_group)
+
+        _print_columns = QWidget()
+        _print_columns_layout = QHBoxLayout(_print_columns)
+        _print_columns_layout.setContentsMargins(0, 8, 0, 0)
+        _print_columns_layout.setSpacing(16)
+        _print_columns_layout.addWidget(self.printing_group, 1)
+        _print_columns_layout.addWidget(self.receipt_group, 1)
+        _print_columns_layout.addWidget(self.pdf_export_group, 1)
+        self.printing_section.content_layout.addWidget(_print_columns)
+        self.printing_section.content_layout.addWidget(self.printing_panel_extra_group)
+
         self.whatsapp_section.content_layout.addWidget(self.whatsapp_group)
         self.operations_section.content_layout.addWidget(self.operations_group)
 
@@ -387,6 +556,11 @@ class SettingsPage(DataAwarePage):
         self.printing_labels[key] = label
         self.printing_form.addRow(label, field)
 
+    def _add_receipt_row(self, key: str, field: QWidget) -> None:
+        label = QLabel()
+        self.receipt_labels[key] = label
+        self.receipt_form.addRow(label, field)
+
     def _add_connection_row(self, key: str, field: QWidget) -> None:
         label = QLabel()
         self.connection_labels[key] = label
@@ -406,6 +580,52 @@ class SettingsPage(DataAwarePage):
         label = QLabel()
         self.whatsapp_labels[key] = label
         self.whatsapp_form.addRow(label, field)
+
+    def _printer_row(self, combo: QComboBox, refresh_slot: object) -> tuple[QWidget, QPushButton]:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        button = QPushButton("⟳")
+        button.setFixedWidth(32)
+        button.setToolTip(tr("Refresh printer list"))
+        button.clicked.connect(refresh_slot)
+        layout.addWidget(combo)
+        layout.addWidget(button)
+        return container, button
+
+    @staticmethod
+    def _list_system_printer_names() -> list[str]:
+        return [p.printerName() for p in QPrinterInfo.availablePrinters()]
+
+    def _populate_label_printers(self, saved: str = "") -> None:
+        self.printing_printer.blockSignals(True)
+        self.printing_printer.clear()
+        self.printing_printer.addItem(tr("NIIMbot B1 (via helper)"), "niimbot:B1")
+        self.printing_printer.addItem(tr("Default system printer"), "system_default")
+        for name in self._list_system_printer_names():
+            self.printing_printer.addItem(name, f"system:{name}")
+        idx = self.printing_printer.findData(saved or "niimbot:B1")
+        self.printing_printer.setCurrentIndex(idx if idx >= 0 else 0)
+        self.printing_printer.blockSignals(False)
+
+    def _populate_system_printer_combo(self, combo: QComboBox, saved: str = "") -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(tr("Default system printer"), "system_default")
+        for name in self._list_system_printer_names():
+            combo.addItem(name, f"system:{name}")
+        idx = combo.findData(saved or "system_default")
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _refresh_label_printers(self) -> None:
+        self._populate_label_printers(str(self.printing_printer.currentData() or ""))
+
+    def _refresh_receipt_printers(self) -> None:
+        self._populate_system_printer_combo(self.receipt_printer, str(self.receipt_printer.currentData() or ""))
+
+    def _refresh_report_printers(self) -> None:
+        self._populate_system_printer_combo(self.report_printer, str(self.report_printer.currentData() or ""))
 
     def _file_picker_row(self, target: QLineEdit) -> tuple[QWidget, QPushButton]:
         container = QWidget()
@@ -455,8 +675,10 @@ class SettingsPage(DataAwarePage):
         self.connection_section.set_title(tr("Server Connection"))
         self.lab_group.setTitle("")
         self.reports_group.setTitle("")
-        self.pdf_export_group.setTitle(tr("PDF Export"))
-        self.printing_group.setTitle("")
+        self.pdf_export_group.setTitle(tr("Reports"))
+        self.printing_group.setTitle(tr("Labels"))
+        self.receipt_group.setTitle(tr("Receipts"))
+        self.printing_panel_extra_group.setTitle(tr("Extra Copies by Panel"))
         self.whatsapp_group.setTitle("")
         self.operations_group.setTitle(tr("Backup Configuration"))
         self.connection_group.setTitle("")
@@ -474,10 +696,55 @@ class SettingsPage(DataAwarePage):
         self.report_labels["header"].setText(tr("Header Banner"))
         self.report_labels["header_library"].setText(tr("Available Headers"))
         self.report_labels["footer"].setText(tr("Footer Signature"))
+        self.report_labels["footer_library"].setText(tr("Available Footers"))
         self.report_labels["report_flag_style"].setText(tr("Flag Style"))
+        self.report_labels["keep_panels_together"].setText(tr("Panel Page Breaks"))
+        self.keep_panels_together.setText(tr("Keep each panel on one page when possible"))
+        self.report_labels["report_font_family"].setText(tr("Report Font"))
+        self.report_labels["report_font_size"].setText(tr("Test Row Font Size"))
+        self.report_labels["report_font_bold"].setText(tr("Test Row Bold"))
+        self.report_font_bold.setText(tr("Bold test rows"))
+        self.report_labels["report_abnormal_bold"].setText(tr("Abnormal Result Bold"))
+        self.report_abnormal_bold.setText(tr("Bold abnormal results"))
+        self.report_labels["report_subheading_font_family"].setText(tr("Subheading Font"))
+        self.report_labels["report_subheading_font_size"].setText(tr("Subheading Font Size"))
+        self.report_labels["report_subheading_font_bold"].setText(tr("Subheading Bold"))
+        self.report_subheading_font_bold.setText(tr("Bold subheadings"))
+        self.report_labels["report_footer_gap_mm"].setText(tr("Footer Bottom Skip"))
+        self.report_labels["report_header_fields"].setText(tr("Header Fields"))
+        self.report_show_doctor.setText(tr("Doctor"))
+        self.report_show_client.setText(tr("Origin / Client"))
+        self.report_show_sex.setText(tr("Sex"))
+        self.report_show_age.setText(tr("Age"))
+        self.report_show_dob.setText(tr("Date of Birth"))
+        self.report_show_ordered_at.setText(tr("Appointment Date"))
+        self.report_show_reported_at.setText(tr("Print Date"))
+        for _col_combo in [
+            self.report_doctor_col, self.report_client_col, self.report_sex_col,
+            self.report_age_col, self.report_dob_col, self.report_ordered_at_col,
+            self.report_reported_at_col,
+        ]:
+            _cur_col = _col_combo.currentData()
+            _col_combo.setItemText(0, tr("Left column"))
+            _col_combo.setItemText(1, tr("Right column"))
+            _idx = _col_combo.findData(_cur_col)
+            if _idx >= 0:
+                _col_combo.setCurrentIndex(_idx)
+        self.report_labels["report_sex_format"].setText(tr("Sex Format"))
+        self.report_labels["report_date_format"].setText(tr("Date Format"))
+        current_date_format = self.report_date_format.currentData()
+        self.report_date_format.clear()
+        self.report_date_format.addItem(tr("Auto (date only or with time)"), "auto")
+        self.report_date_format.addItem(tr("Date only (DD/MM/YYYY)"), "date_only")
+        self.report_date_format.addItem(tr("Always with time (DD/MM/YYYY HH:MM)"), "with_time")
+        idx = self.report_date_format.findData(current_date_format)
+        if idx >= 0:
+            self.report_date_format.setCurrentIndex(idx)
+        self.pdf_export_labels["printer"].setText(tr("Printer"))
         self.pdf_export_labels["folder"].setText(tr("PDF Save Folder"))
         self.pdf_export_labels["filename_parts"].setText(tr("PDF File Name"))
-        self.pdf_export_help.setText(tr("Choose which report fields are used to build the PDF file name."))
+        self.pdf_export_help.setText(tr("Choose which fields are included in the exported PDF file name."))
+        self.printing_labels["printer"].setText(tr("Printer"))
         self.printing_labels["help"].setText("")
         self.printing_labels["default_size"].setText(tr("Default Label Size"))
         self.printing_labels["default_payload"].setText(tr("Default Barcode Payload"))
@@ -485,14 +752,19 @@ class SettingsPage(DataAwarePage):
         self.printing_show_barcode.setText(tr("Barcode"))
         self.printing_show_order_number_text.setText(tr("Order Number"))
         self.printing_show_patient_name.setText(tr("Patient Name"))
-        self.printing_show_datetime.setText(tr("Date"))
+        self.printing_show_datetime.setText(tr("Date, Sex & Age"))
         self.printing_labels["default_copies"].setText(tr("Default Copies"))
         self.printing_help.setText(tr("Set the default label printing values used when the print-label dialog opens."))
+        self.receipt_labels["printer"].setText(tr("Printer"))
+        self.receipt_labels["auto_print"].setText(tr("Auto-print"))
+        self.receipt_auto_print.setText(tr("Print receipt automatically when created"))
+        self.receipt_labels["paper_format"].setText(tr("Paper Format"))
         self.whatsapp_labels["help"].setText("")
+        self.whatsapp_labels["country_code"].setText(tr("Default WhatsApp Country Code"))
         self.whatsapp_labels["placeholders"].setText(tr("Placeholders"))
         self.whatsapp_labels["patient_message"].setText(tr("Patient Message"))
         self.whatsapp_labels["client_message"].setText(tr("Client Message"))
-        self.whatsapp_help.setText(tr("Customize the automatic WhatsApp messages. You can use: {name}, {order_number}, and {patient_name}."))
+        self.whatsapp_help.setText(tr("Set the default country code for WhatsApp and customize the automatic messages. Type patient phone numbers without country code unless you intentionally start with +. You can use: {name}, {order_number}, and {patient_name}."))
         self.operations_labels["backup_enabled"].setText(tr("Enable Backups"))
         self.operations_labels["backup_destination"].setText(tr("Backup Destination"))
         self.operations_labels["backup_schedule"].setText(tr("Schedule"))
@@ -519,6 +791,10 @@ class SettingsPage(DataAwarePage):
         self.add_header_button.setText(tr("Add Header"))
         self.set_default_header_button.setText(tr("Set Default Header"))
         self.remove_header_button.setText(tr("Remove Header"))
+        self.footer_library_help.setText(tr("Add multiple footer images here so each report can use a different footer."))
+        self.add_footer_button.setText(tr("Add Footer"))
+        self.set_default_footer_button.setText(tr("Set Default Footer"))
+        self.remove_footer_button.setText(tr("Remove Footer"))
         current_flag_style = self.report_flag_style.currentData()
         self.report_flag_style.clear()
         for value, label in REPORT_FLAG_STYLE_OPTIONS:
@@ -589,6 +865,37 @@ class SettingsPage(DataAwarePage):
         self._hidden_director_license = ""
         flag_style_index = self.report_flag_style.findData(settings.report_flag_style)
         self.report_flag_style.setCurrentIndex(flag_style_index if flag_style_index >= 0 else 0)
+        self.keep_panels_together.setChecked(bool(settings.keep_panels_together))
+        self.report_font_family.setCurrentFont(QFont(settings.report_font_family or "Segoe UI"))
+        self.report_font_size.setValue(max(8, min(18, int(settings.report_font_size or 12))))
+        self.report_font_bold.setChecked(bool(settings.report_font_bold))
+        self.report_abnormal_bold.setChecked(bool(settings.report_abnormal_bold))
+        self.report_subheading_font_family.setCurrentFont(QFont(settings.report_subheading_font_family or "Segoe UI"))
+        self.report_subheading_font_size.setValue(max(8, min(18, int(settings.report_subheading_font_size or 13))))
+        self.report_subheading_font_bold.setChecked(bool(settings.report_subheading_font_bold))
+        self.report_footer_gap_mm.setValue(max(0, min(60, int(settings.report_footer_gap_mm or 8))))
+        sex_fmt_index = self.report_sex_format.findData(settings.report_sex_format or "short")
+        self.report_sex_format.setCurrentIndex(sex_fmt_index if sex_fmt_index >= 0 else 0)
+        date_fmt_index = self.report_date_format.findData(settings.report_date_format or "auto")
+        self.report_date_format.setCurrentIndex(date_fmt_index if date_fmt_index >= 0 else 0)
+        self.report_show_doctor.setChecked(bool(settings.report_show_doctor))
+        self.report_show_client.setChecked(bool(settings.report_show_client))
+        self.report_show_sex.setChecked(bool(settings.report_show_sex))
+        self.report_show_age.setChecked(bool(settings.report_show_age))
+        self.report_show_dob.setChecked(bool(settings.report_show_dob))
+        self.report_show_ordered_at.setChecked(bool(settings.report_show_ordered_at))
+        self.report_show_reported_at.setChecked(bool(settings.report_show_reported_at))
+        for _combo, _val, _default in [
+            (self.report_doctor_col, settings.report_doctor_col, "left"),
+            (self.report_client_col, settings.report_client_col, "left"),
+            (self.report_sex_col, settings.report_sex_col, "left"),
+            (self.report_age_col, settings.report_age_col, "right"),
+            (self.report_dob_col, settings.report_dob_col, "right"),
+            (self.report_ordered_at_col, settings.report_ordered_at_col, "right"),
+            (self.report_reported_at_col, settings.report_reported_at_col, "right"),
+        ]:
+            _idx = _combo.findData(_val or _default)
+            _combo.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.sat_rfc.setText(settings.sat_rfc)
         sat_index = self.sat_fiscal_regime.findData(settings.sat_fiscal_regime)
         self.sat_fiscal_regime.setCurrentIndex(sat_index if sat_index >= 0 else 0)
@@ -598,9 +905,16 @@ class SettingsPage(DataAwarePage):
         index = self.language_combo.findData(settings.ui_language)
         self.language_combo.setCurrentIndex(index if index >= 0 else 0)
         self._load_header_library()
+        self._load_footer_library()
         self._load_pdf_export_settings()
         self._load_printing_settings()
+        self._load_receipt_settings()
         self._load_whatsapp_templates()
+        country_code = self.database.get_whatsapp_country_code()
+        country_index = self.whatsapp_country_code.findData(country_code)
+        self.whatsapp_country_code.setCurrentIndex(country_index if country_index >= 0 else 0)
+        if country_index < 0:
+            self.whatsapp_country_code.setEditText(f"+{country_code}")
         self.load_backup_config(silent=True)
 
     def _load_header_library(self) -> None:
@@ -673,8 +987,77 @@ class SettingsPage(DataAwarePage):
             self.header_image_path.setText(next_selected)
         self._load_header_library()
 
+    def _load_footer_library(self) -> None:
+        branding = self.database.get_report_branding_options()
+        selected_footer = str(branding.get("selected_footer") or "").strip()
+        self.footer_library.clear()
+        for raw_path in branding.get("footers", []):
+            value = str(raw_path or "").strip()
+            if not value:
+                continue
+            label = value.split("\\")[-1].split("/")[-1] or value
+            if value == selected_footer:
+                label = f"{label} [{tr('Default')}]"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, value)
+            self.footer_library.addItem(item)
+
+    def _add_footer_asset(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr("Choose Report Footer Image"),
+            "",
+            tr("Images (*.png *.jpg *.jpeg)"),
+        )
+        if not path:
+            return
+        self.database.add_report_branding_asset(path, "footer")
+        self._load_footer_library()
+
+    def _selected_footer_item_path(self) -> str:
+        item = self.footer_library.currentItem()
+        if item is None:
+            return ""
+        return str(item.data(Qt.UserRole) or "").strip()
+
+    def _set_default_footer_asset(self) -> None:
+        selected_path = self._selected_footer_item_path()
+        if not selected_path:
+            QMessageBox.warning(self, tr("Missing Selection"), tr("Select a footer first."))
+            return
+        branding = self.database.get_report_branding_options()
+        self.database.save_report_branding_options(
+            list(branding.get("headers", [])),
+            list(branding.get("footers", [])),
+            str(branding.get("selected_header") or ""),
+            selected_path,
+        )
+        self.footer_signature_image_path.setText(selected_path)
+        self._load_footer_library()
+
+    def _remove_selected_footer_asset(self) -> None:
+        selected_path = self._selected_footer_item_path()
+        if not selected_path:
+            QMessageBox.warning(self, tr("Missing Selection"), tr("Select a footer first."))
+            return
+        branding = self.database.get_report_branding_options()
+        footers = [v for v in branding.get("footers", []) if str(v or "").strip() != selected_path]
+        next_selected = str(branding.get("selected_footer") or "")
+        if next_selected == selected_path:
+            next_selected = footers[0] if footers else ""
+        self.database.save_report_branding_options(
+            list(branding.get("headers", [])),
+            footers,
+            str(branding.get("selected_header") or ""),
+            next_selected,
+        )
+        if self.footer_signature_image_path.text().strip() == selected_path:
+            self.footer_signature_image_path.setText(next_selected)
+        self._load_footer_library()
+
     def _load_pdf_export_settings(self) -> None:
         settings = get_pdf_export_settings(self.database)
+        self._populate_system_printer_combo(self.report_printer, str(settings.get("printer") or "system_default"))
         self.pdf_export_folder.setText(str(settings.get("folder_path") or ""))
         selected_parts = list(settings.get("filename_parts") or ["order_number"])
         for key, checkbox in self.pdf_export_part_checks.items():
@@ -682,6 +1065,7 @@ class SettingsPage(DataAwarePage):
 
     def _load_printing_settings(self) -> None:
         settings = self.database.get_label_print_preferences()
+        self._populate_label_printers(str(settings.get("printer") or "niimbot:B1"))
         size_index = self.printing_default_size.findData(settings.get("size") or "small_tall")
         self.printing_default_size.setCurrentIndex(size_index if size_index >= 0 else 0)
         payload_index = self.printing_default_payload.findData(settings.get("payload") or "order_only")
@@ -694,6 +1078,39 @@ class SettingsPage(DataAwarePage):
             self.printing_default_copies.setValue(max(1, int(str(settings.get("copies") or "1"))))
         except ValueError:
             self.printing_default_copies.setValue(1)
+        self._load_panel_extra_copies()
+
+    def _load_panel_extra_copies(self) -> None:
+        while self._panel_extra_copies_layout.count():
+            item = self._panel_extra_copies_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._panel_extra_copy_spins.clear()
+        panels = self.database.list_panels(status_filter="active")
+        saved_extras = self.database.get_panel_extra_copies()
+        if not panels:
+            self.printing_panel_extra_group.setVisible(False)
+            return
+        self.printing_panel_extra_group.setVisible(True)
+        for panel in panels:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(f"{panel.code} — {panel.name}")
+            spin = QSpinBox()
+            spin.setRange(0, 20)
+            spin.setValue(saved_extras.get(panel.code, 0))
+            row_layout.addWidget(label, 1)
+            row_layout.addWidget(spin)
+            self._panel_extra_copies_layout.addWidget(row)
+            self._panel_extra_copy_spins[panel.code] = spin
+
+    def _load_receipt_settings(self) -> None:
+        settings = self.database.get_receipt_print_preferences()
+        self._populate_system_printer_combo(self.receipt_printer, str(settings.get("printer") or "system_default"))
+        self.receipt_auto_print.setChecked(str(settings.get("auto_print") or "0") == "1")
+        paper_index = self.receipt_paper_format.findData(settings.get("paper_format") or "letter")
+        self.receipt_paper_format.setCurrentIndex(paper_index if paper_index >= 0 else 0)
 
     def _load_whatsapp_templates(self) -> None:
         templates = get_whatsapp_templates(self.database)
@@ -738,6 +1155,31 @@ class SettingsPage(DataAwarePage):
             "director_name": "",
             "director_license": "",
             "report_flag_style": self.report_flag_style.currentData(),
+            "keep_panels_together": "1" if self.keep_panels_together.isChecked() else "0",
+            "report_font_family": self.report_font_family.currentFont().family(),
+            "report_font_size": str(self.report_font_size.value()),
+            "report_font_bold": "1" if self.report_font_bold.isChecked() else "0",
+            "report_abnormal_bold": "1" if self.report_abnormal_bold.isChecked() else "0",
+            "report_subheading_font_family": self.report_subheading_font_family.currentFont().family(),
+            "report_subheading_font_size": str(self.report_subheading_font_size.value()),
+            "report_subheading_font_bold": "1" if self.report_subheading_font_bold.isChecked() else "0",
+            "report_footer_gap_mm": str(self.report_footer_gap_mm.value()),
+            "report_sex_format": self.report_sex_format.currentData(),
+            "report_date_format": self.report_date_format.currentData(),
+            "report_show_doctor": "1" if self.report_show_doctor.isChecked() else "0",
+            "report_show_client": "1" if self.report_show_client.isChecked() else "0",
+            "report_show_sex": "1" if self.report_show_sex.isChecked() else "0",
+            "report_show_age": "1" if self.report_show_age.isChecked() else "0",
+            "report_show_dob": "1" if self.report_show_dob.isChecked() else "0",
+            "report_show_ordered_at": "1" if self.report_show_ordered_at.isChecked() else "0",
+            "report_show_reported_at": "1" if self.report_show_reported_at.isChecked() else "0",
+            "report_doctor_col": self.report_doctor_col.currentData() or "left",
+            "report_client_col": self.report_client_col.currentData() or "left",
+            "report_sex_col": self.report_sex_col.currentData() or "left",
+            "report_age_col": self.report_age_col.currentData() or "right",
+            "report_dob_col": self.report_dob_col.currentData() or "right",
+            "report_ordered_at_col": self.report_ordered_at_col.currentData() or "right",
+            "report_reported_at_col": self.report_reported_at_col.currentData() or "right",
             "sat_rfc": self.sat_rfc.text(),
             "sat_fiscal_regime": self.sat_fiscal_regime.currentData(),
             "sat_postal_code": self.sat_postal_code.text(),
@@ -747,11 +1189,6 @@ class SettingsPage(DataAwarePage):
         }
         self.database.save_lab_settings(settings_payload)
         selected_filename_parts = [key for key in FILENAME_PART_KEYS if self.pdf_export_part_checks[key].isChecked()]
-        save_pdf_export_settings(
-            self.database,
-            folder_path=self.pdf_export_folder.text(),
-            filename_parts=selected_filename_parts,
-        )
         default_print_copies = str(max(1, int(self.printing_default_copies.value())))
         show_barcode = self.printing_show_barcode.isChecked()
         show_patient_name = self.printing_show_patient_name.isChecked()
@@ -767,12 +1204,28 @@ class SettingsPage(DataAwarePage):
             show_patient_name=show_patient_name,
             show_order_number_text=self.printing_show_order_number_text.isChecked(),
             show_datetime=self.printing_show_datetime.isChecked(),
+            printer=str(self.printing_printer.currentData() or "niimbot:B1"),
+        )
+        self.database.save_receipt_print_preferences(
+            auto_print=self.receipt_auto_print.isChecked(),
+            paper_format=str(self.receipt_paper_format.currentData() or "letter"),
+            printer=str(self.receipt_printer.currentData() or "system_default"),
+        )
+        self.database.save_panel_extra_copies(
+            {code: spin.value() for code, spin in self._panel_extra_copy_spins.items()}
+        )
+        save_pdf_export_settings(
+            self.database,
+            folder_path=self.pdf_export_folder.text(),
+            filename_parts=selected_filename_parts,
+            printer=str(self.report_printer.currentData() or "system_default"),
         )
         save_whatsapp_templates(
             self.database,
             patient=self.whatsapp_patient_message.toPlainText(),
             client=self.whatsapp_client_message.toPlainText(),
         )
+        self.database.save_whatsapp_country_code(str(self.whatsapp_country_code.currentText() or self.whatsapp_country_code.currentData() or ""))
         self._server_profile_dirty = True
         saved_config = self.deployment_service.save(
             DeploymentConfig(

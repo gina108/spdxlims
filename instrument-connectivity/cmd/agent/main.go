@@ -30,6 +30,7 @@ func main() {
 	var serviceName = flag.String("service-name", "InstrumentConnectivityEngine", "Windows service name")
 	var serviceDisplayName = flag.String("service-display-name", "Instrument Connectivity Engine", "Windows service display name")
 	var serviceDescription = flag.String("service-description", "Clinical LIS instrument connectivity runtime", "Windows service description")
+	var noAutoResume = flag.Bool("no-auto-resume", false, "disable automatic session resume on startup")
 	var versionFlag = flag.Bool("version", false, "print build version information")
 	flag.Parse()
 
@@ -41,6 +42,7 @@ func main() {
 	cfg := config.Default(*dataDir, *listen)
 	cfg.APIAuthToken = *apiToken
 	cfg.BundleHMACSecret = *bundleHMACSecret
+	cfg.AutoResume = !*noAutoResume
 	cfg.RetentionDays = *retentionDays
 	cfg.SessionEventMax = *sessionEventMax
 	cfg.RuntimeErrorMax = *runtimeErrorMax

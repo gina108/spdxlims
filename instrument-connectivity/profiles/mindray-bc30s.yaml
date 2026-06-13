@@ -1,5 +1,5 @@
 id: mindray-bc30s
-name: Mindray BC-30s HL7
+name: Mindray BC-30s
 protocol_hint: hl7_v2
 device_metadata:
   vendor: Mindray
@@ -7,8 +7,11 @@ device_metadata:
 transport:
   type: tcp_client
   remote_address: 10.0.0.2:5100
+  session_mode: hl7
   discovery_hints:
     - hl7_listener
+  discovery_ports:
+    - 5100
 parsing:
   strategy: hl7_oru
 mapping:
@@ -179,5 +182,9 @@ mapping:
     - Right Line
     - Mid gran region alert
     - Erythrocytosis
+    - Lym left region
+    - Lym Mid line
+    - Mid Gran line
+    - 30525-0
 learning_mode:
   enabled: true

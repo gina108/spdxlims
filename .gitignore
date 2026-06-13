@@ -52,9 +52,21 @@ instrument-connectivity/dist/
 instrument-connectivity/bin/
 instrument-connectivity/data/
 instrument-connectivity/.runtime/
+instrument-connectivity/.gomodcache/
 niimbot-helper/helper.exe
 niimbot-helper/helper.exe~
 sample_addons/dist/
+
+# Go build caches
+.gocache/
+.gopath/
+
+# Compiled binaries
+*.exe
+!niimbot-helper/helper.exe
+
+# Generated XML output files
+INV-*.xml
 
 # Local spreadsheet workbooks and ad hoc exports
 *.xlsx

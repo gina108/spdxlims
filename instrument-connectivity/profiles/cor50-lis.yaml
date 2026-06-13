@@ -6,7 +6,8 @@ device_metadata:
   model: "50"
 transport:
   type: tcp_server
-  listen_address: 10.0.0.10:5100
+  listen_address: 0.0.0.0:5100
+  remote_address: 10.0.0.3:5100
   discovery_hints:
     - hl7_listener
 parsing:
@@ -20,17 +21,49 @@ mapping:
   test_mappings:
     - match_type: exact
       pattern: TP
+      component_index: 0
       canonical_assay: Prothrombin Time
       lis_test_id: LIS-PT
-      normalized_units: s^%^Ratio^INR^mg/dL
+      normalized_units: s
+    - match_type: exact
+      pattern: TP
+      component_index: 1
+      canonical_assay: Prothrombin Time Activity
+      lis_test_id: LIS-PT-PCT
+      normalized_units: "%"
+    - match_type: exact
+      pattern: TP
+      component_index: 2
+      canonical_assay: ISI
+      lis_test_id: LIS-ISI
+      normalized_units: ratio
+    - match_type: exact
+      pattern: TP
+      component_index: 3
+      canonical_assay: International Normalized Ratio
+      lis_test_id: LIS-INR
+      normalized_units: ratio
+    - match_type: exact
+      pattern: TP
+      component_index: 4
+      canonical_assay: Fibrinogen
+      lis_test_id: LIS-FIB
+      normalized_units: mg/dL
     - match_type: exact
       pattern: APTT
       canonical_assay: Activated Partial Thromboplastin Time
       lis_test_id: LIS-APTT
       normalized_units: s
+    - match_type: exact
+      pattern: Testigo
+      canonical_assay: Prothrombin Time Control
+      lis_test_id: LIS-TESTIGO
+      normalized_units: s
   unit_normalization:
     s: s
-    "s^%^RazÃ³n^RIN^mg/dL": s^%^Ratio^INR^mg/dL
+    "%": "%"
+    "Razón": ratio
+    RIN: INR
     mg/dL: mg/dL
     mmol/L: mmol/L
 learning_mode:

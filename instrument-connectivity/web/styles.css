@@ -81,6 +81,8 @@ pre { white-space: pre-wrap; word-break: break-word; background: #f7fafb; border
 .merge-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .merge-actions label { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
 .hint-help-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: #f8fbfb; }
+.setup-wizard { margin: 14px 0; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: #f7fafb; }
+.setup-wizard h3 { margin: 0 0 12px; color: var(--accent-strong); }
 .diff-grid { display: grid; gap: 12px; margin: 12px 0; }
 .diff-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: #f8fbfb; }
 .diff-card h3 { margin: 0 0 10px; font-size: 1rem; color: var(--accent-strong); }

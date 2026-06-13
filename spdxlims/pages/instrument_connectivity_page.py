@@ -26,7 +26,7 @@ from spdxlims.pages.base_page import DataAwarePage
 
 
 class InstrumentConnectivityPage(DataAwarePage):
-    AUTO_START_PROFILE_IDS = ("cor50-lis", "mindray-bc30s", "urinalysis-com6")
+    AUTO_START_PROFILE_IDS = ("cor50-lis", "mindray-bc30s", "urinalysis-com6", "cm250")
 
     def __init__(self) -> None:
         super().__init__()
@@ -289,13 +289,23 @@ class InstrumentConnectivityPage(DataAwarePage):
         root = self._app_root()
         runtime_dir = self._runtime_dir()
         source_root = root / "instrument-connectivity"
+        go_executable = self._go_executable()
+        if (source_root / "cmd" / "agent").exists() and go_executable:
+            return go_executable, ["run", ".\\cmd\\agent", "-data-dir", str(runtime_dir)], source_root
         candidates = self._engine_binary_candidates(root)
         for candidate in candidates:
             if candidate.exists():
                 workdir = self._resolve_engine_workdir(candidate, source_root)
                 return str(candidate), ["-data-dir", str(runtime_dir)], workdir
-        if (source_root / "cmd" / "agent").exists() and shutil.which("go"):
-            return "go", ["run", ".\\cmd\\agent", "-data-dir", str(runtime_dir)], source_root
+        return None
+
+    def _go_executable(self) -> str | None:
+        path_go = shutil.which("go")
+        if path_go:
+            return path_go
+        common = Path("C:/Program Files/Go/bin/go.exe")
+        if common.exists():
+            return str(common)
         return None
 
     def _sync_runtime_profiles(self) -> None:

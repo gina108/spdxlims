@@ -51,11 +51,12 @@ type MappingSettings struct {
 }
 
 type TestMapping struct {
-    MatchType string `json:"match_type" yaml:"match_type"`
-    Pattern string `json:"pattern" yaml:"pattern"`
-    CanonicalAssay string `json:"canonical_assay" yaml:"canonical_assay"`
-    LISTestID string `json:"lis_test_id" yaml:"lis_test_id"`
+    MatchType       string `json:"match_type" yaml:"match_type"`
+    Pattern         string `json:"pattern" yaml:"pattern"`
+    CanonicalAssay  string `json:"canonical_assay" yaml:"canonical_assay"`
+    LISTestID       string `json:"lis_test_id" yaml:"lis_test_id"`
     NormalizedUnits string `json:"normalized_units,omitempty" yaml:"normalized_units,omitempty"`
+    ComponentIndex  *int   `json:"component_index,omitempty" yaml:"component_index,omitempty"`
 }
 
 type LearningSettings struct {

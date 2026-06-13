@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QDialog, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from spdxlims.i18n import tr
 from spdxlims.patient_service import PatientService
@@ -37,6 +37,14 @@ class PatientDialog(QDialog):
         self.age_unit.addItem(tr("Months"), "months")
         self.age_unit.addItem(tr("Days"), "days")
         self.phone = QLineEdit()
+        self.phone_country_code = QLabel(f"+{self.patient_service.database.get_whatsapp_country_code()}")
+        self.phone_country_code.setToolTip(tr("Default WhatsApp country code. Change it in Settings."))
+        self.phone_row = QWidget()
+        phone_layout = QHBoxLayout(self.phone_row)
+        phone_layout.setContentsMargins(0, 0, 0, 0)
+        phone_layout.setSpacing(8)
+        phone_layout.addWidget(self.phone_country_code)
+        phone_layout.addWidget(self.phone, 1)
         self.email = QLineEdit()
         self.address = QLineEdit()
 
@@ -47,7 +55,7 @@ class PatientDialog(QDialog):
         form.addRow(tr("Date of Birth"), self.date_of_birth)
         form.addRow(tr("Age"), self.age_value)
         form.addRow(tr("Age Unit"), self.age_unit)
-        form.addRow(tr("Phone"), self.phone)
+        form.addRow(tr("Phone"), self.phone_row)
         form.addRow(tr("Email"), self.email)
         form.addRow(tr("Address"), self.address)
         layout.addLayout(form)
@@ -108,8 +116,8 @@ class PatientDialog(QDialog):
         self.accept()
 
     def save_patient(self) -> None:
-        if not self.first_name.text().strip() or not self.last_name.text().strip():
-            QMessageBox.warning(self, tr("Missing Data"), tr("First name and last name are required."))
+        if not self.first_name.text().strip():
+            QMessageBox.warning(self, tr("Missing Data"), tr("First name is required."))
             return
         age_value_text = self.age_value.text().strip()
         if not self.date_of_birth.text().strip() and not age_value_text:

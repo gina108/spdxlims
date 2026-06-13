@@ -29,6 +29,8 @@ class PanelService:
                 id=str(item.get('id') or ''),
                 code=str(item.get('code') or ''),
                 name=str(item.get('name') or ''),
+                specimen_type=str(item.get('specimen_type') or '') or None,
+                method=str(item.get('method') or '') or None,
                 is_active=int(bool(item.get('is_active', True))),
                 test_names=str(item.get('test_names') or ''),
             )
@@ -43,19 +45,19 @@ class PanelService:
         payload = self.deployment_service.request_json('GET', f'/api/panels/{panel_id}?{query}', allow_404=True)
         return payload if isinstance(payload, dict) else None
 
-    def create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]]) -> None:
+    def create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> None:
         config = self.deployment_service.load()
         if config.mode != 'server':
-            self.database.create_panel(code, name, panel_items)
+            self.database.create_panel(code, name, panel_items, specimen_type=specimen_type, method=method)
             return
-        self.deployment_service.request_json('POST', '/api/panels', self._panel_payload(code, name, panel_items))
+        self.deployment_service.request_json('POST', '/api/panels', self._panel_payload(code, name, panel_items, specimen_type, method))
 
-    def update_panel(self, panel_id: int | str, code: str, name: str, panel_items: list[dict[str, Any]]) -> None:
+    def update_panel(self, panel_id: int | str, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> None:
         config = self.deployment_service.load()
         if config.mode != 'server':
-            self.database.update_panel(int(panel_id), code, name, panel_items)
+            self.database.update_panel(int(panel_id), code, name, panel_items, specimen_type=specimen_type, method=method)
             return
-        self.deployment_service.request_json('PUT', f'/api/panels/{panel_id}', self._panel_payload(code, name, panel_items))
+        self.deployment_service.request_json('PUT', f'/api/panels/{panel_id}', self._panel_payload(code, name, panel_items, specimen_type, method))
 
     def archive_panel(self, panel_id: int | str) -> None:
         config = self.deployment_service.load()
@@ -83,10 +85,12 @@ class PanelService:
             for item in payload if isinstance(item, dict) and item.get('id') and item.get('label')
         ]
 
-    def _panel_payload(self, code: str, name: str, panel_items: list[dict[str, Any]]) -> dict[str, Any]:
+    def _panel_payload(self, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> dict[str, Any]:
         return {
             'code': code.strip(),
             'name': name.strip(),
+            'specimen_type': specimen_type.strip(),
+            'method': method.strip(),
             'items': [
                 {
                     'item_type': str(item.get('item_type') or 'test'),

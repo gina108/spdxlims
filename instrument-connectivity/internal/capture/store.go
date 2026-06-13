@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS runtime_status (profile_id TEXT NOT NULL, device_id T
 CREATE TABLE IF NOT EXISTS runtime_errors (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, device_id TEXT NOT NULL, transport_type TEXT NOT NULL, message TEXT NOT NULL, detail_json TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS unmapped_observations (id TEXT PRIMARY KEY, capture_id TEXT NOT NULL, profile_id TEXT NOT NULL, device_id TEXT NOT NULL, instrument_test_code TEXT NOT NULL, instrument_test_name TEXT, value_raw TEXT NOT NULL, units_raw TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS maintenance_status (id INTEGER PRIMARY KEY CHECK (id = 1), last_cleanup_json TEXT, next_cleanup_at TEXT, cleanup_interval TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS results (profile_id TEXT NOT NULL, analyzer_run_id TEXT NOT NULL, device_id TEXT NOT NULL, capture_id TEXT NOT NULL, patient_id TEXT, sample_id TEXT, accession_id TEXT, observations_json TEXT NOT NULL, first_received_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (profile_id, analyzer_run_id));
 CREATE TABLE IF NOT EXISTS network_devices (device_id TEXT PRIMARY KEY, host TEXT, ip TEXT NOT NULL, cidr TEXT, interface_name TEXT, mac TEXT, open_ports_json TEXT, reachability TEXT NOT NULL, probe_latency_ms INTEGER, banner TEXT, banner_protocol TEXT, likely_protocols_json TEXT, seen_count INTEGER NOT NULL DEFAULT 1, stability_score REAL NOT NULL DEFAULT 0, metadata_json TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS network_device_sightings (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, cidr TEXT, interface_name TEXT, probe_latency_ms INTEGER, open_ports_json TEXT, banner_protocol TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS network_device_links (network_device_id TEXT NOT NULL, profile_id TEXT NOT NULL, runtime_device_id TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.5, seen_count INTEGER NOT NULL DEFAULT 1, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (network_device_id, profile_id, runtime_device_id));
@@ -1328,6 +1329,31 @@ func (s *Store) StopSession(id string) error {
 	return err
 }
 
+// ListResumableProfiles returns distinct profile IDs that had an active session
+// before the engine last stopped, excluding replay and explicitly stopped/errored sessions.
+func (s *Store) ListResumableProfiles() ([]string, error) {
+	rows, err := s.DB.Query(`
+		SELECT DISTINCT profile_id
+		FROM runtime_status
+		WHERE session_state NOT IN ('stopped', 'error')
+		  AND transport_type != 'replay'
+		ORDER BY profile_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) SaveLearningSuggestions(profileID, captureID string, suggestions any) error {
 	raw, _ := json.MarshalIndent(suggestions, "", "  ")
 	_, err := s.DB.Exec(`INSERT INTO learning_runs (id, profile_id, capture_id, suggestions_json, created_at) VALUES (?, ?, ?, ?, ?)`, util.NewID("learn"), profileID, captureID, string(raw), time.Now().UTC().Format(time.RFC3339Nano))
@@ -1343,4 +1369,91 @@ func parseOptionalTime(v string) *time.Time {
 		return nil
 	}
 	return &parsed
+}
+
+type Result struct {
+	ProfileID       string               `json:"profile_id"`
+	AnalyzerRunID   string               `json:"analyzer_run_id"`
+	DeviceID        string               `json:"device_id"`
+	CaptureID       string               `json:"capture_id"`
+	PatientID       string               `json:"patient_id,omitempty"`
+	SampleID        string               `json:"sample_id,omitempty"`
+	AccessionID     string               `json:"accession_id,omitempty"`
+	Observations    []models.Observation `json:"observations"`
+	FirstReceivedAt time.Time            `json:"first_received_at"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+}
+
+type ResultFilter struct {
+	ProfileID string
+	DeviceID  string
+	Since     *time.Time
+	Limit     int
+}
+
+func (s *Store) UpsertResult(msg models.InstrumentMessage, captureID string, receivedAt time.Time) error {
+	if strings.TrimSpace(msg.AnalyzerRunID) == "" {
+		return nil
+	}
+	obsJSON, _ := json.Marshal(msg.Observations)
+	now := receivedAt.UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.Exec(`
+		INSERT INTO results (profile_id, analyzer_run_id, device_id, capture_id, patient_id, sample_id, accession_id, observations_json, first_received_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(profile_id, analyzer_run_id) DO UPDATE SET
+			device_id = excluded.device_id,
+			capture_id = excluded.capture_id,
+			patient_id = excluded.patient_id,
+			sample_id = excluded.sample_id,
+			accession_id = excluded.accession_id,
+			observations_json = excluded.observations_json,
+			updated_at = excluded.updated_at`,
+		msg.SourceProfileID, msg.AnalyzerRunID, msg.SourceDeviceID, captureID,
+		msg.PatientID, msg.SampleID, msg.AccessionID, string(obsJSON), now, now)
+	return err
+}
+
+func (s *Store) ListResults(filter ResultFilter) ([]Result, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	clauses := []string{}
+	args := []any{}
+	if strings.TrimSpace(filter.ProfileID) != "" {
+		clauses = append(clauses, "profile_id = ?")
+		args = append(args, strings.TrimSpace(filter.ProfileID))
+	}
+	if strings.TrimSpace(filter.DeviceID) != "" {
+		clauses = append(clauses, "device_id = ?")
+		args = append(args, strings.TrimSpace(filter.DeviceID))
+	}
+	if filter.Since != nil {
+		clauses = append(clauses, "updated_at >= ?")
+		args = append(args, filter.Since.UTC().Format(time.RFC3339Nano))
+	}
+	query := `SELECT profile_id, analyzer_run_id, device_id, capture_id, COALESCE(patient_id,''), COALESCE(sample_id,''), COALESCE(accession_id,''), observations_json, first_received_at, updated_at FROM results`
+	if len(clauses) > 0 {
+		query += ` WHERE ` + strings.Join(clauses, ` AND `)
+	}
+	query += ` ORDER BY updated_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Result{}
+	for rows.Next() {
+		var r Result
+		var obsJSON, firstReceived, updatedAt string
+		if err := rows.Scan(&r.ProfileID, &r.AnalyzerRunID, &r.DeviceID, &r.CaptureID, &r.PatientID, &r.SampleID, &r.AccessionID, &obsJSON, &firstReceived, &updatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(obsJSON), &r.Observations)
+		r.FirstReceivedAt, _ = time.Parse(time.RFC3339Nano, firstReceived)
+		r.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

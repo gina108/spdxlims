@@ -10,6 +10,42 @@ def write_admin_export_workbook(path: str | Path, sheets: dict[str, list[list[st
     return _write_workbook_template(path, sheets)
 
 
+def build_invoice_excel_sheet(
+    invoice_number: str,
+    client_name: str,
+    invoice_date: str,
+    status: str,
+    total: str,
+    orders: list[dict],
+) -> dict[str, list[list[str]]]:
+    rows: list[list[str]] = [
+        ['Invoice Number', 'Client', 'Date', 'Status', 'Total'],
+        [invoice_number, client_name, invoice_date, status, total],
+        [],
+        ['Order Number', 'Order Date', 'Patient', 'Panel', 'Amount'],
+    ]
+    for order in orders:
+        rows.append([
+            str(order.get('order_number') or ''),
+            str(order.get('order_date') or ''),
+            str(order.get('patient_name') or ''),
+            str(order.get('panel') or ''),
+            f"{float(order.get('panel_total') or 0):.2f}",
+        ])
+    return {'Invoice': rows}
+
+
+def build_client_results_sheet(
+    rows: Sequence[tuple[str, str, str, str, str, str]],
+) -> dict[str, list[list[str]]]:
+    return {
+        'Results': [
+            ['Date', 'Patient', 'Panel', 'Test', 'Result', 'Unit'],
+            *[list(row) for row in rows],
+        ]
+    }
+
+
 def build_admin_export_sheets(
     billing_rows: Sequence[Sequence[str]],
     inventory_rows: Sequence[Sequence[str]],

@@ -10,6 +10,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from spdxlims.i18n import tr
+from spdxlims.whatsapp_phone import DEFAULT_COUNTRY_CODE, clean_country_code
+
 
 @dataclass(slots=True)
 class PatientRecord:
@@ -45,7 +48,32 @@ class LabSettingsRecord:
     sat_key_path: str
     ui_language: str
     report_flag_style: str
+    keep_panels_together: int
+    report_font_family: str
+    report_font_size: int
+    report_font_bold: int
+    report_abnormal_bold: int
+    report_subheading_font_family: str
+    report_subheading_font_size: int
+    report_subheading_font_bold: int
+    report_footer_gap_mm: int
     ui_state: str
+    report_sex_format: str = "short"
+    report_date_format: str = "auto"
+    report_show_doctor: int = 1
+    report_show_client: int = 1
+    report_show_sex: int = 1
+    report_show_age: int = 1
+    report_show_dob: int = 1
+    report_show_ordered_at: int = 1
+    report_show_reported_at: int = 1
+    report_doctor_col: str = "left"
+    report_client_col: str = "left"
+    report_sex_col: str = "left"
+    report_age_col: str = "right"
+    report_dob_col: str = "right"
+    report_ordered_at_col: str = "right"
+    report_reported_at_col: str = "right"
 
 
 @dataclass(slots=True)
@@ -111,6 +139,7 @@ class TestRecord:
     price: float | None
     is_active: int
     range_count: int
+    result_multiplier: float | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +147,8 @@ class PanelRecord:
     id: int
     code: str
     name: str
+    specimen_type: str | None
+    method: str | None
     is_active: int
     test_names: str | None
 
@@ -208,6 +239,7 @@ class OrderSummaryRecord:
     status: str
     created_at: str
     item_count: int
+    all_results_entered: bool
 
 
 @dataclass(slots=True)
@@ -234,6 +266,9 @@ class ResultWorkflowRecord:
     client_phone: str | None
     report_version: int | None
     report_finalized_at: str | None
+    result_count: int
+    completed_result_count: int
+    report_outdated: int = 0
 
 
 @dataclass(slots=True)
@@ -293,6 +328,7 @@ class ResultEntryRecord:
     test_status: str
     is_outsourced: int
     source_label: str | None
+    result_multiplier: float | None = None
 
 
 @dataclass(slots=True)
@@ -310,6 +346,28 @@ class InstrumentResultMappingRecord:
     unit_override: str | None
     reference_range_override: str | None
     is_active: int
+    value_slice_start: int | None = None
+    value_slice_end: int | None = None
+    value_multiplier: float | None = None
+    decimal_places: int | None = None
+    value_formula: str | None = None
+
+
+@dataclass(slots=True)
+class InstrumentOrderMatchRecord:
+    instrument_profile: str
+    instrument_field: str
+    order_field: str
+    auto_import: int = 1
+    broadcast_enabled: int = 0
+    broadcast_protocol: str = "hl7_orm"
+    broadcast_encoding: str = "ascii"
+    broadcast_patient_id: int = 1
+    broadcast_patient_name: int = 1
+    broadcast_dob: int = 1
+    broadcast_age: int = 1
+    broadcast_sex: int = 1
+    broadcast_doctor: int = 1
 
 
 @dataclass(slots=True)
@@ -324,6 +382,19 @@ class TestReferenceRangeRecord:
 
 
 class Database:
+    URINALYSIS_STRIP_TESTS = (
+        ("EGO-LEU", "Urine leukocytes", "Urinalysis", "Urine", "Strip reader", "text", ""),
+        ("EGO-NIT", "Urine nitrite", "Urinalysis", "Urine", "Strip reader", "text", ""),
+        ("EGO-URO", "Urine urobilinogen", "Urinalysis", "Urine", "Strip reader", "text", "mg/dL"),
+        ("EGO-PRO", "Urine protein", "Urinalysis", "Urine", "Strip reader", "text", "mg/dL"),
+        ("EGO-PH", "Urine pH", "Urinalysis", "Urine", "Strip reader", "text", ""),
+        ("EGO-BLO", "Urine blood", "Urinalysis", "Urine", "Strip reader", "text", ""),
+        ("EGO-SG", "Urine specific gravity", "Urinalysis", "Urine", "Strip reader", "text", ""),
+        ("EGO-KET", "Urine ketones", "Urinalysis", "Urine", "Strip reader", "text", ""),
+        ("EGO-BIL", "Urine bilirubin", "Urinalysis", "Urine", "Strip reader", "text", ""),
+        ("EGO-GLU", "Urine glucose", "Urinalysis", "Urine", "Strip reader", "text", ""),
+    )
+
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.assets_dir = db_path.parent / "assets" / "lab"
@@ -505,6 +576,7 @@ class Database:
                     select_options TEXT,
                     default_result_value TEXT,
                     price REAL NOT NULL DEFAULT 0,
+                    result_multiplier REAL,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY (category_id) REFERENCES test_categories(id)
@@ -539,6 +611,8 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     code TEXT NOT NULL UNIQUE,
                     name TEXT NOT NULL,
+                    specimen_type TEXT,
+                    method TEXT,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -736,6 +810,31 @@ class Database:
                     sat_key_path TEXT NOT NULL DEFAULT '',
                     ui_language TEXT NOT NULL DEFAULT 'es',
                     report_flag_style TEXT NOT NULL DEFAULT 'arrows',
+                    keep_panels_together INTEGER NOT NULL DEFAULT 0,
+                    report_font_family TEXT NOT NULL DEFAULT 'Segoe UI',
+                    report_font_size INTEGER NOT NULL DEFAULT 12,
+                    report_font_bold INTEGER NOT NULL DEFAULT 0,
+                    report_abnormal_bold INTEGER NOT NULL DEFAULT 0,
+                    report_subheading_font_family TEXT NOT NULL DEFAULT 'Segoe UI',
+                    report_subheading_font_size INTEGER NOT NULL DEFAULT 13,
+                    report_subheading_font_bold INTEGER NOT NULL DEFAULT 1,
+                    report_footer_gap_mm INTEGER NOT NULL DEFAULT 8,
+                    report_sex_format TEXT NOT NULL DEFAULT 'short',
+                    report_date_format TEXT NOT NULL DEFAULT 'auto',
+                    report_show_doctor INTEGER NOT NULL DEFAULT 1,
+                    report_show_client INTEGER NOT NULL DEFAULT 1,
+                    report_show_sex INTEGER NOT NULL DEFAULT 1,
+                    report_show_age INTEGER NOT NULL DEFAULT 1,
+                    report_show_dob INTEGER NOT NULL DEFAULT 1,
+                    report_show_ordered_at INTEGER NOT NULL DEFAULT 1,
+                    report_show_reported_at INTEGER NOT NULL DEFAULT 1,
+                    report_doctor_col TEXT NOT NULL DEFAULT 'left',
+                    report_client_col TEXT NOT NULL DEFAULT 'left',
+                    report_sex_col TEXT NOT NULL DEFAULT 'left',
+                    report_age_col TEXT NOT NULL DEFAULT 'right',
+                    report_dob_col TEXT NOT NULL DEFAULT 'right',
+                    report_ordered_at_col TEXT NOT NULL DEFAULT 'right',
+                    report_reported_at_col TEXT NOT NULL DEFAULT 'right',
                     ui_state TEXT NOT NULL DEFAULT '{}',
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -757,11 +856,14 @@ class Database:
             self._migrate_outsourced_panel_tables(connection)
             self._migrate_instrument_result_mappings_table(connection)
             self._migrate_equipment_table(connection)
+            self._migrate_instrument_order_match_config_table(connection)
+            self._migrate_instrument_captures_cache_table(connection)
             self._migrate_doctors_table(connection)
             self._migrate_clients_table(connection)
             self._migrate_inventory_items_table(connection)
             self._migrate_invoices_table(connection)
             self._migrate_suppliers_table(connection)
+            self._ensure_urinalysis_strip_tests(connection)
 
     def list_patients(self, *, status_filter: str = 'active') -> list[PatientRecord]:
         with self.connect() as connection:
@@ -1578,7 +1680,13 @@ class Database:
                                END
                            ),
                            0
-                       ) AS total_amount
+                       ) AS total_amount,
+                       GROUP_CONCAT(
+                           DISTINCT CASE
+                               WHEN ot.source_label IS NOT NULL AND ot.source_label != '' THEN ot.source_label
+                               ELSE NULL
+                           END
+                       ) AS panels
                 FROM invoice_orders io
                 INNER JOIN orders o ON o.id = io.order_id
                 INNER JOIN patients p ON p.id = o.patient_id
@@ -1587,6 +1695,43 @@ class Database:
                 LEFT JOIN tests t ON t.id = ot.test_id
                 GROUP BY o.id, o.order_number, order_date, c.name, patient_name
                 ORDER BY DATE(COALESCE(o.ordered_at, o.created_at)), o.id
+                """,
+                (int(invoice_id), int(invoice_id)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_invoice_order_panels(self, invoice_id: int) -> list[dict[str, Any]]:
+        """One row per (order, panel) with that panel's subtotal."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                WITH invoice_orders AS (
+                    SELECT order_id FROM invoices WHERE id = ? AND order_id IS NOT NULL
+                    UNION
+                    SELECT order_id FROM invoice_order_links WHERE invoice_id = ?
+                )
+                SELECT o.order_number,
+                       DATE(COALESCE(o.ordered_at, o.created_at)) AS order_date,
+                       TRIM(
+                           p.first_name || ' ' || p.last_name ||
+                           CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != ''
+                                THEN ' ' || p.middle_name ELSE '' END
+                       ) AS patient_name,
+                       ot.source_label AS panel,
+                       COALESCE(
+                           SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                                    THEN COALESCE(t.price, 0) ELSE 0 END),
+                           0
+                       ) AS panel_total
+                FROM invoice_orders io
+                INNER JOIN orders o ON o.id = io.order_id
+                INNER JOIN patients p ON p.id = o.patient_id
+                INNER JOIN order_tests ot ON ot.order_id = o.id
+                INNER JOIN tests t ON t.id = ot.test_id
+                WHERE ot.source_label IS NOT NULL AND ot.source_label != ''
+                  AND t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                GROUP BY o.id, o.order_number, order_date, patient_name, ot.source_label
+                ORDER BY order_date, o.id, ot.source_label
                 """,
                 (int(invoice_id), int(invoice_id)),
             ).fetchall()
@@ -1692,10 +1837,47 @@ class Database:
             )
             return int(cursor.lastrowid)
 
+    def update_equipment(self, equipment_id: int, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE equipment
+                SET name = ?,
+                    equipment_type = ?,
+                    manufacturer = ?,
+                    model = ?,
+                    serial_number = ?,
+                    location = ?,
+                    status = ?,
+                    last_maintenance_date = ?,
+                    next_maintenance_date = ?,
+                    notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    payload["name"].strip(),
+                    self._normalize_optional_text(payload.get("equipment_type")),
+                    self._normalize_optional_text(payload.get("manufacturer")),
+                    self._normalize_optional_text(payload.get("model")),
+                    self._normalize_optional_text(payload.get("serial_number")),
+                    self._normalize_optional_text(payload.get("location")),
+                    payload.get("status") or "active",
+                    self._normalize_optional_text(payload.get("last_maintenance_date")),
+                    self._normalize_optional_text(payload.get("next_maintenance_date")),
+                    self._normalize_optional_text(payload.get("notes")),
+                    int(equipment_id),
+                ),
+            )
+
+    def delete_equipment(self, equipment_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM equipment WHERE id = ?", (int(equipment_id),))
+
     def get_lab_settings(self) -> LabSettingsRecord:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT lab_name, address, phone, email, logo_path, header_image_path, footer_signature_image_path, report_footer, director_name, director_license, sat_rfc, sat_fiscal_regime, sat_postal_code, sat_certificate_path, sat_key_path, ui_language, report_flag_style, ui_state FROM lab_settings WHERE id = 1"
+                "SELECT lab_name, address, phone, email, logo_path, header_image_path, footer_signature_image_path, report_footer, director_name, director_license, sat_rfc, sat_fiscal_regime, sat_postal_code, sat_certificate_path, sat_key_path, ui_language, report_flag_style, keep_panels_together, report_font_family, report_font_size, report_font_bold, report_abnormal_bold, report_subheading_font_family, report_subheading_font_size, report_subheading_font_bold, report_footer_gap_mm, ui_state, report_sex_format, report_date_format, report_show_doctor, report_show_client, report_show_sex, report_show_age, report_show_dob, report_show_ordered_at, report_show_reported_at FROM lab_settings WHERE id = 1"
             ).fetchone()
         return LabSettingsRecord(**dict(row))
 
@@ -1705,7 +1887,7 @@ class Database:
         logo_path = self._copy_asset(payload.get("logo_path", ""), "logo")
         with self.connect() as connection:
             connection.execute(
-                "UPDATE lab_settings SET lab_name = ?, address = ?, phone = ?, email = ?, logo_path = ?, header_image_path = ?, footer_signature_image_path = ?, report_footer = ?, director_name = ?, director_license = ?, sat_rfc = ?, sat_fiscal_regime = ?, sat_postal_code = ?, sat_certificate_path = ?, sat_key_path = ?, ui_language = ?, report_flag_style = ?, ui_state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                "UPDATE lab_settings SET lab_name = ?, address = ?, phone = ?, email = ?, logo_path = ?, header_image_path = ?, footer_signature_image_path = ?, report_footer = ?, director_name = ?, director_license = ?, sat_rfc = ?, sat_fiscal_regime = ?, sat_postal_code = ?, sat_certificate_path = ?, sat_key_path = ?, ui_language = ?, report_flag_style = ?, keep_panels_together = ?, report_font_family = ?, report_font_size = ?, report_font_bold = ?, report_abnormal_bold = ?, report_subheading_font_family = ?, report_subheading_font_size = ?, report_subheading_font_bold = ?, report_footer_gap_mm = ?, ui_state = ?, report_sex_format = ?, report_date_format = ?, report_show_doctor = ?, report_show_client = ?, report_show_sex = ?, report_show_age = ?, report_show_dob = ?, report_show_ordered_at = ?, report_show_reported_at = ?, report_doctor_col = ?, report_client_col = ?, report_sex_col = ?, report_age_col = ?, report_dob_col = ?, report_ordered_at_col = ?, report_reported_at_col = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
                 (
                     payload.get("lab_name", "").strip(),
                     payload.get("address", "").strip(),
@@ -1724,9 +1906,65 @@ class Database:
                     payload.get("sat_key_path", "").strip(),
                     payload.get("ui_language", "es").strip() or "es",
                     payload.get("report_flag_style", "arrows").strip() or "arrows",
+                    1 if str(payload.get("keep_panels_together", "0")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    payload.get("report_font_family", "Segoe UI").strip() or "Segoe UI",
+                    self._bounded_int(payload.get("report_font_size"), 8, 18, 12),
+                    1 if str(payload.get("report_font_bold", "0")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    1 if str(payload.get("report_abnormal_bold", "0")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    payload.get("report_subheading_font_family", "Segoe UI").strip() or "Segoe UI",
+                    self._bounded_int(payload.get("report_subheading_font_size"), 8, 18, 13),
+                    1 if str(payload.get("report_subheading_font_bold", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    self._bounded_int(payload.get("report_footer_gap_mm"), 0, 60, 8),
                     payload.get("ui_state", self.get_ui_state_json()),
+                    payload.get("report_sex_format", "short").strip() or "short",
+                    payload.get("report_date_format", "auto").strip() or "auto",
+                    1 if str(payload.get("report_show_doctor", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    1 if str(payload.get("report_show_client", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    1 if str(payload.get("report_show_sex", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    1 if str(payload.get("report_show_age", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    1 if str(payload.get("report_show_dob", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    1 if str(payload.get("report_show_ordered_at", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    1 if str(payload.get("report_show_reported_at", "1")).strip() in {"1", "true", "True", "yes", "on"} else 0,
+                    payload.get("report_doctor_col", "left").strip() or "left",
+                    payload.get("report_client_col", "left").strip() or "left",
+                    payload.get("report_sex_col", "left").strip() or "left",
+                    payload.get("report_age_col", "right").strip() or "right",
+                    payload.get("report_dob_col", "right").strip() or "right",
+                    payload.get("report_ordered_at_col", "right").strip() or "right",
+                    payload.get("report_reported_at_col", "right").strip() or "right",
                 ),
             )
+
+    def get_report_layout_settings(self) -> dict[str, Any]:
+        settings = self.get_lab_settings()
+        return {
+            "flag_display_mode": settings.report_flag_style,
+            "keep_panels_together": bool(settings.keep_panels_together),
+            "report_font_family": settings.report_font_family,
+            "report_font_size": settings.report_font_size,
+            "report_font_bold": bool(settings.report_font_bold),
+            "report_abnormal_bold": bool(settings.report_abnormal_bold),
+            "report_subheading_font_family": settings.report_subheading_font_family,
+            "report_subheading_font_size": settings.report_subheading_font_size,
+            "report_subheading_font_bold": bool(settings.report_subheading_font_bold),
+            "report_footer_gap_mm": settings.report_footer_gap_mm,
+            "report_sex_format": settings.report_sex_format,
+            "report_date_format": settings.report_date_format,
+            "report_show_doctor": bool(settings.report_show_doctor),
+            "report_show_client": bool(settings.report_show_client),
+            "report_show_sex": bool(settings.report_show_sex),
+            "report_show_age": bool(settings.report_show_age),
+            "report_show_dob": bool(settings.report_show_dob),
+            "report_show_ordered_at": bool(settings.report_show_ordered_at),
+            "report_show_reported_at": bool(settings.report_show_reported_at),
+            "report_doctor_col": settings.report_doctor_col,
+            "report_client_col": settings.report_client_col,
+            "report_sex_col": settings.report_sex_col,
+            "report_age_col": settings.report_age_col,
+            "report_dob_col": settings.report_dob_col,
+            "report_ordered_at_col": settings.report_ordered_at_col,
+            "report_reported_at_col": settings.report_reported_at_col,
+        }
 
     def get_ui_state(self) -> dict[str, Any]:
         settings = self.get_lab_settings()
@@ -1745,6 +1983,15 @@ class Database:
                 "UPDATE lab_settings SET ui_state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
                 (json.dumps(ui_state, ensure_ascii=False),),
             )
+
+    def get_whatsapp_country_code(self) -> str:
+        ui_state = self.get_ui_state()
+        return clean_country_code(str(ui_state.get("whatsapp_country_code") or DEFAULT_COUNTRY_CODE))
+
+    def save_whatsapp_country_code(self, country_code: str) -> None:
+        ui_state = self.get_ui_state()
+        ui_state["whatsapp_country_code"] = clean_country_code(country_code)
+        self.save_ui_state(ui_state)
 
     def get_report_branding_options(self) -> dict[str, Any]:
         settings = self.get_lab_settings()
@@ -1822,6 +2069,7 @@ class Database:
             "show_patient_name": "1" if default_prefs.get("show_patient_name", str(default_prefs.get("code_type") or "barcode_name") == "barcode_name") else "0",
             "show_order_number_text": "1" if bool(default_prefs.get("show_order_number_text")) else "0",
             "show_datetime": "1" if bool(default_prefs.get("show_datetime")) else "0",
+            "printer": str(default_prefs.get("printer") or "niimbot:B1"),
         }
         if client_id is not None:
             client_map = stored.get("clients")
@@ -1833,6 +2081,49 @@ class Database:
                     if client_prefs.get("payload"):
                         preferences["payload"] = str(client_prefs["payload"])
         return preferences
+
+    def get_order_panel_codes(self, order_id: int) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT COALESCE(ot.source_label, '') AS panel_code
+                FROM order_tests ot
+                INNER JOIN tests t ON t.id = ot.test_id
+                WHERE ot.order_id = ?
+                  AND t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                  AND COALESCE(ot.source_label, '') != ''
+                ORDER BY panel_code
+                """,
+                (order_id,),
+            ).fetchall()
+        return [str(row["panel_code"]) for row in rows]
+
+    def get_panel_extra_copies(self) -> dict[str, int]:
+        ui_state = self.get_ui_state()
+        stored = ui_state.get("label_print_defaults")
+        if not isinstance(stored, dict):
+            return {}
+        extras = stored.get("panel_extra_copies")
+        if not isinstance(extras, dict):
+            return {}
+        result: dict[str, int] = {}
+        for k, v in extras.items():
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                result[str(k)] = n
+        return result
+
+    def save_panel_extra_copies(self, extra_copies: dict[str, int]) -> None:
+        ui_state = self.get_ui_state()
+        stored = ui_state.get("label_print_defaults")
+        if not isinstance(stored, dict):
+            stored = {}
+        stored["panel_extra_copies"] = {k: v for k, v in extra_copies.items() if v > 0}
+        ui_state["label_print_defaults"] = stored
+        self.save_ui_state(ui_state)
 
     def save_label_print_preferences(
         self,
@@ -1848,6 +2139,7 @@ class Database:
         show_patient_name: bool | None = None,
         show_order_number_text: bool | None = None,
         show_datetime: bool | None = None,
+        printer: str | None = None,
     ) -> None:
         ui_state = self.get_ui_state()
         stored = ui_state.get("label_print_defaults")
@@ -1875,6 +2167,8 @@ class Database:
                 default_prefs["show_order_number_text"] = bool(show_order_number_text)
             if show_datetime is not None:
                 default_prefs["show_datetime"] = bool(show_datetime)
+            if printer is not None:
+                default_prefs["printer"] = printer
             stored["default"] = default_prefs
         else:
             client_map = stored.get("clients")
@@ -1885,10 +2179,30 @@ class Database:
         ui_state["label_print_defaults"] = stored
         self.save_ui_state(ui_state)
 
+    def get_receipt_print_preferences(self) -> dict[str, str]:
+        ui_state = self.get_ui_state()
+        stored = ui_state.get("receipt_print_defaults")
+        if not isinstance(stored, dict):
+            stored = {}
+        return {
+            "auto_print": str(stored.get("auto_print") or "0"),
+            "paper_format": str(stored.get("paper_format") or "letter"),
+            "printer": str(stored.get("printer") or "system_default"),
+        }
+
+    def save_receipt_print_preferences(self, *, auto_print: bool, paper_format: str, printer: str = "system_default") -> None:
+        ui_state = self.get_ui_state()
+        ui_state["receipt_print_defaults"] = {
+            "auto_print": "1" if auto_print else "0",
+            "paper_format": paper_format,
+            "printer": printer,
+        }
+        self.save_ui_state(ui_state)
+
     def list_tests(self, *, status_filter: str = "active") -> list[TestRecord]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT t.id, t.code, t.name, tc.name AS category_name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.is_active, COUNT(trr.id) AS range_count FROM tests t LEFT JOIN test_categories tc ON tc.id = t.category_id LEFT JOIN test_reference_ranges trr ON trr.test_id = t.id WHERE (? = 'all' OR (? = 'active' AND t.is_active = 1) OR (? = 'archived' AND t.is_active = 0)) GROUP BY t.id, t.code, t.name, tc.name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.is_active ORDER BY t.is_active DESC, tc.name IS NULL, tc.name, t.name",
+                "SELECT t.id, t.code, t.name, tc.name AS category_name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.is_active, COUNT(trr.id) AS range_count, t.result_multiplier FROM tests t LEFT JOIN test_categories tc ON tc.id = t.category_id LEFT JOIN test_reference_ranges trr ON trr.test_id = t.id WHERE (? = 'all' OR (? = 'active' AND t.is_active = 1) OR (? = 'archived' AND t.is_active = 0)) GROUP BY t.id, t.code, t.name, tc.name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.is_active, t.result_multiplier ORDER BY t.is_active DESC, tc.name IS NULL, tc.name, t.name",
                 (status_filter, status_filter, status_filter),
             ).fetchall()
         return [TestRecord(**dict(row)) for row in rows]
@@ -1930,7 +2244,7 @@ class Database:
     def get_test_detail(self, test_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT t.id, t.code, t.name, tc.name AS category_name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.is_active FROM tests t LEFT JOIN test_categories tc ON tc.id = t.category_id WHERE t.id = ?",
+                "SELECT t.id, t.code, t.name, tc.name AS category_name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.result_multiplier, t.is_active FROM tests t LEFT JOIN test_categories tc ON tc.id = t.category_id WHERE t.id = ?",
                 (test_id,),
             ).fetchone()
             if row is None:
@@ -1953,7 +2267,7 @@ class Database:
         with self.connect() as connection:
             category_id = self._get_or_create_category(connection, payload.get("category_name", ""))
             cursor = connection.execute(
-                "INSERT INTO tests (code, name, category_id, specimen_type, method, result_kind, select_options, default_result_value, price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tests (code, name, category_id, specimen_type, method, result_kind, select_options, default_result_value, price, result_multiplier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     payload["code"].strip(),
                     payload["name"].strip(),
@@ -1964,6 +2278,7 @@ class Database:
                     self._serialize_select_options(payload.get("select_options")),
                     self._normalize_optional_text(payload.get("default_result_value")),
                     float(payload.get("price") or 0),
+                    float(payload["result_multiplier"]) if payload.get("result_multiplier") else None,
                 ),
             )
             test_id = int(cursor.lastrowid)
@@ -1973,7 +2288,7 @@ class Database:
         with self.connect() as connection:
             category_id = self._get_or_create_category(connection, payload.get("category_name", ""))
             connection.execute(
-                "UPDATE tests SET code = ?, name = ?, category_id = ?, specimen_type = ?, method = ?, result_kind = ?, select_options = ?, default_result_value = ? WHERE id = ?",
+                "UPDATE tests SET code = ?, name = ?, category_id = ?, specimen_type = ?, method = ?, result_kind = ?, select_options = ?, default_result_value = ?, result_multiplier = ? WHERE id = ?",
                 (
                     payload["code"].strip(),
                     payload["name"].strip(),
@@ -1983,6 +2298,7 @@ class Database:
                     payload["result_kind"],
                     self._serialize_select_options(payload.get("select_options")),
                     self._normalize_optional_text(payload.get("default_result_value")),
+                    float(payload["result_multiplier"]) if payload.get("result_multiplier") else None,
                     test_id,
                 ),
             )
@@ -2004,13 +2320,13 @@ class Database:
 
     def list_panels(self, *, status_filter: str = "active") -> list[PanelRecord]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT tp.id, tp.code, tp.name, tp.is_active, GROUP_CONCAT(CASE WHEN tpi.item_type = 'test' THEN t.name ELSE tpi.heading_text END, ', ') AS test_names FROM test_panels tp LEFT JOIN test_panel_items tpi ON tpi.panel_id = tp.id LEFT JOIN tests t ON t.id = tpi.test_id AND tpi.item_type = 'test' WHERE (? = 'all' OR (? = 'active' AND tp.is_active = 1) OR (? = 'archived' AND tp.is_active = 0)) GROUP BY tp.id, tp.code, tp.name, tp.is_active ORDER BY tp.is_active DESC, tp.name", (status_filter, status_filter, status_filter)).fetchall()
+            rows = connection.execute("SELECT tp.id, tp.code, tp.name, tp.specimen_type, tp.method, tp.is_active, GROUP_CONCAT(CASE WHEN tpi.item_type = 'test' THEN t.name ELSE tpi.heading_text END, ', ') AS test_names FROM test_panels tp LEFT JOIN test_panel_items tpi ON tpi.panel_id = tp.id LEFT JOIN tests t ON t.id = tpi.test_id AND tpi.item_type = 'test' WHERE (? = 'all' OR (? = 'active' AND tp.is_active = 1) OR (? = 'archived' AND tp.is_active = 0)) GROUP BY tp.id, tp.code, tp.name, tp.specimen_type, tp.method, tp.is_active ORDER BY tp.is_active DESC, tp.name", (status_filter, status_filter, status_filter)).fetchall()
         return [PanelRecord(**dict(row)) for row in rows]
 
     def list_panel_choices(self) -> list[tuple[int, str]]:
         with self.connect() as connection:
             rows = connection.execute("SELECT tp.id, tp.code, tp.name, SUM(CASE WHEN tpi.item_type = 'test' THEN 1 ELSE 0 END) AS item_count FROM test_panels tp LEFT JOIN test_panel_items tpi ON tpi.panel_id = tp.id WHERE tp.is_active = 1 GROUP BY tp.id, tp.code, tp.name ORDER BY tp.name").fetchall()
-        return [(row["id"], f'{row["name"]} ({row["code"]}) - {row["item_count"]} tests') for row in rows]
+        return [(row["id"], f'{row["code"]} - {row["name"]}') for row in rows]
 
     def get_panel_tests(self, panel_id: int) -> list[tuple[int, str]]:
         with self.connect() as connection:
@@ -2025,9 +2341,9 @@ class Database:
     def get_panel_detail(self, panel_id: int, *, include_inactive: bool = False) -> dict[str, Any] | None:
         with self.connect() as connection:
             if include_inactive:
-                row = connection.execute("SELECT id, code, name, is_active FROM test_panels WHERE id = ?", (panel_id,)).fetchone()
+                row = connection.execute("SELECT id, code, name, specimen_type, method, is_active FROM test_panels WHERE id = ?", (panel_id,)).fetchone()
             else:
-                row = connection.execute("SELECT id, code, name, is_active FROM test_panels WHERE id = ? AND is_active = 1", (panel_id,)).fetchone()
+                row = connection.execute("SELECT id, code, name, specimen_type, method, is_active FROM test_panels WHERE id = ? AND is_active = 1", (panel_id,)).fetchone()
             if row is None:
                 return None
             item_rows = connection.execute("SELECT tpi.item_type, tpi.test_id, t.code AS test_code, tpi.heading_text, tpi.sort_order, CASE WHEN tpi.item_type = 'test' THEN t.name || ' (' || t.code || ')' ELSE tpi.heading_text END AS label FROM test_panel_items tpi LEFT JOIN tests t ON t.id = tpi.test_id WHERE tpi.panel_id = ? ORDER BY tpi.sort_order, tpi.id", (panel_id,)).fetchall()
@@ -2041,15 +2357,27 @@ class Database:
             row = connection.execute("SELECT id FROM test_panels WHERE code = ? AND is_active = 1", (code.strip(),)).fetchone()
         return int(row["id"]) if row is not None else None
 
-    def create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]]) -> None:
+    def get_panel_report_metadata_by_name(self) -> dict[str, dict[str, str]]:
         with self.connect() as connection:
-            cursor = connection.execute("INSERT INTO test_panels (code, name, is_active) VALUES (?, ?, 1)", (code.strip(), name.strip()))
+            rows = connection.execute("SELECT name, specimen_type, method FROM test_panels WHERE is_active = 1").fetchall()
+        return {
+            str(row["name"] or "").strip(): {
+                "specimen_type": str(row["specimen_type"] or "").strip(),
+                "method": str(row["method"] or "").strip(),
+            }
+            for row in rows
+            if str(row["name"] or "").strip()
+        }
+
+    def create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> None:
+        with self.connect() as connection:
+            cursor = connection.execute("INSERT INTO test_panels (code, name, specimen_type, method, is_active) VALUES (?, ?, ?, ?, 1)", (code.strip(), name.strip(), specimen_type.strip() or None, method.strip() or None))
             panel_id = int(cursor.lastrowid)
             self._save_panel_items(connection, panel_id, panel_items)
 
-    def update_panel(self, panel_id: int, code: str, name: str, panel_items: list[dict[str, Any]]) -> None:
+    def update_panel(self, panel_id: int, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> None:
         with self.connect() as connection:
-            connection.execute("UPDATE test_panels SET code = ?, name = ?, is_active = 1 WHERE id = ?", (code.strip(), name.strip(), panel_id))
+            connection.execute("UPDATE test_panels SET code = ?, name = ?, specimen_type = ?, method = ?, is_active = 1 WHERE id = ?", (code.strip(), name.strip(), specimen_type.strip() or None, method.strip() or None, panel_id))
             connection.execute("DELETE FROM test_panel_items WHERE panel_id = ?", (panel_id,))
             self._save_panel_items(connection, panel_id, panel_items)
 
@@ -2230,13 +2558,67 @@ class Database:
                 "UPDATE orders SET accession_id = ?, sample_id = ?, patient_id = ?, doctor_id = ?, client_id = ?, status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 ((accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None, order_id),
             )
-            connection.execute("DELETE FROM results WHERE order_test_id IN (SELECT id FROM order_tests WHERE order_id = ?)", (order_id,))
-            connection.execute("DELETE FROM order_tests WHERE order_id = ?", (order_id,))
-            self._save_order_items(connection, order_id, unique_items)
+            heading_test_id = self._ensure_panel_heading_test(connection)
+            comment_test_id = self._ensure_panel_comment_test(connection)
+            structural_ids = (heading_test_id, comment_test_id)
+            # New set of real test IDs
+            new_test_ids = {
+                item["test_id"] for item in unique_items if item.get("item_type") == "test"
+            }
+            # Existing real-test rows — preserve results for tests still in the list
+            existing_rows = connection.execute(
+                "SELECT id, test_id FROM order_tests WHERE order_id = ? AND test_id NOT IN (?, ?)",
+                (order_id, heading_test_id, comment_test_id),
+            ).fetchall()
+            existing_map: dict[int, int] = {}
+            for r in existing_rows:
+                tid = int(r["test_id"])
+                ot_id = int(r["id"])
+                if tid not in new_test_ids:
+                    # Test removed — safe to delete its results
+                    connection.execute("DELETE FROM results WHERE order_test_id = ?", (ot_id,))
+                    connection.execute("DELETE FROM order_tests WHERE id = ?", (ot_id,))
+                else:
+                    existing_map[tid] = ot_id
+            # Headings and comments carry no results — delete and re-insert freely
+            connection.execute(
+                "DELETE FROM order_tests WHERE order_id = ? AND test_id IN (?, ?)",
+                (order_id, heading_test_id, comment_test_id),
+            )
+            # Reconcile each item in the new list
+            for index, item in enumerate(unique_items):
+                outsourced = 1 if item.get("is_outsourced") else 0
+                source = str(item.get("source") or "").strip() or None
+                if item["item_type"] == "heading":
+                    connection.execute(
+                        "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
+                        (order_id, heading_test_id, outsourced, source, item["label"], index),
+                    )
+                elif item["item_type"] == "comment":
+                    connection.execute(
+                        "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
+                        (order_id, comment_test_id, outsourced, source, item["label"], index),
+                    )
+                else:
+                    test_id = int(item["test_id"])
+                    if test_id in existing_map:
+                        # Already exists — just refresh sort order and outsourced flag
+                        connection.execute(
+                            "UPDATE order_tests SET sort_order = ?, is_outsourced = ?, source_label = ? WHERE id = ?",
+                            (index, outsourced, source, existing_map[test_id]),
+                        )
+                    else:
+                        # Genuinely new test
+                        test_row = connection.execute("SELECT name FROM tests WHERE id = ?", (test_id,)).fetchone()
+                        display_name = test_row["name"] if test_row else None
+                        connection.execute(
+                            "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
+                            (order_id, test_id, outsourced, source, display_name, index),
+                        )
 
     def list_recent_orders(self) -> list[OrderSummaryRecord]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, o.status, o.created_at, SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count FROM orders o INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id LEFT JOIN order_tests ot ON ot.order_id = o.id LEFT JOIN tests t ON t.id = ot.test_id WHERE COALESCE(o.is_preallocated, 0) = 0 GROUP BY o.id, o.order_number, patient_name, d.full_name, o.status, o.created_at ORDER BY o.created_at DESC, o.id DESC LIMIT 25").fetchall()
+            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, o.status, o.created_at, SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count, CASE WHEN COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) > 0 AND COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) = COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 AND COALESCE(NULLIF(TRIM(r.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL THEN 1 END) THEN 1 ELSE 0 END AS all_results_entered FROM orders o INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id LEFT JOIN order_tests ot ON ot.order_id = o.id LEFT JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE COALESCE(o.is_preallocated, 0) = 0 GROUP BY o.id, o.order_number, patient_name, d.full_name, o.status, o.created_at ORDER BY o.created_at DESC, o.id DESC LIMIT 25").fetchall()
         return [OrderSummaryRecord(**dict(row)) for row in rows]
 
     def search_orders(self, search_text: str = "") -> list[OrderBrowserRecord]:
@@ -2296,13 +2678,31 @@ class Database:
                        c.name AS client_name,
                        c.phone AS client_phone,
                        r.report_version,
-                       r.finalized_at AS report_finalized_at
+                       r.finalized_at AS report_finalized_at,
+                       CASE WHEN r.finalized_at IS NOT NULL AND (
+                           p.updated_at > r.finalized_at OR o.updated_at > r.finalized_at
+                       ) THEN 1 ELSE 0 END AS report_outdated,
+                       COUNT(CASE
+                           WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                                AND COALESCE(ot.is_outsourced, 0) = 0
+                           THEN 1
+                       END) AS result_count,
+                       COUNT(CASE
+                           WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                                AND COALESCE(ot.is_outsourced, 0) = 0
+                                AND COALESCE(NULLIF(TRIM(rst.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL
+                           THEN 1
+                       END) AS completed_result_count
                 FROM orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN doctors d ON d.id = o.doctor_id
                 LEFT JOIN clients c ON c.id = o.client_id
                 LEFT JOIN reports r ON r.order_id = o.id
+                LEFT JOIN order_tests ot ON ot.order_id = o.id
+                LEFT JOIN tests t ON t.id = ot.test_id
+                LEFT JOIN results rst ON rst.order_test_id = ot.id
                 WHERE COALESCE(o.is_preallocated, 0) = 0
+                GROUP BY o.id, o.order_number, order_date, patient_name, p.phone, d.full_name, c.name, c.phone, r.report_version, r.finalized_at, p.updated_at, o.updated_at
                 ORDER BY COALESCE(o.ordered_at, o.created_at) DESC, o.id DESC
                 LIMIT 100
                 """
@@ -2570,7 +2970,7 @@ class Database:
 
     def get_order_result_entries(self, order_id: int) -> list[ResultEntryRecord]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT ot.id AS order_test_id, o.id AS order_id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, p.sex AS patient_sex, p.date_of_birth, p.age_value, p.age_unit, t.id AS test_id, COALESCE(ot.display_name, t.name) AS test_name, t.specimen_type, CASE WHEN t.code = '__PANEL_HEADING__' THEN 'heading' WHEN t.code = '__PANEL_COMMENT__' THEN 'comment' ELSE 'test' END AS item_type, t.result_kind, t.select_options, t.default_result_value, r.result_value, r.unit, COALESCE(r.lower_value_text, CAST(r.lower_value AS TEXT)) AS lower_value, COALESCE(r.upper_value_text, CAST(r.upper_value AS TEXT)) AS upper_value, r.flag, r.reference_text, r.comments, ot.status AS test_status, COALESCE(ot.is_outsourced, 0) AS is_outsourced, ot.source_label FROM order_tests ot INNER JOIN orders o ON o.id = ot.order_id INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id INNER JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE o.id = ? ORDER BY ot.sort_order, ot.id", (order_id,)).fetchall()
+            rows = connection.execute("SELECT ot.id AS order_test_id, o.id AS order_id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, p.sex AS patient_sex, p.date_of_birth, p.age_value, p.age_unit, t.id AS test_id, COALESCE(ot.display_name, t.name) AS test_name, t.specimen_type, CASE WHEN t.code = '__PANEL_HEADING__' THEN 'heading' WHEN t.code = '__PANEL_COMMENT__' THEN 'comment' ELSE 'test' END AS item_type, t.result_kind, t.select_options, t.default_result_value, t.result_multiplier, r.result_value, r.unit, COALESCE(r.lower_value_text, CAST(r.lower_value AS TEXT)) AS lower_value, COALESCE(r.upper_value_text, CAST(r.upper_value AS TEXT)) AS upper_value, r.flag, r.reference_text, r.comments, ot.status AS test_status, COALESCE(ot.is_outsourced, 0) AS is_outsourced, ot.source_label FROM order_tests ot INNER JOIN orders o ON o.id = ot.order_id INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id INNER JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE o.id = ? ORDER BY ot.sort_order, ot.id", (order_id,)).fetchall()
             records: list[ResultEntryRecord] = []
             for row in rows:
                 data = dict(row)
@@ -2591,6 +2991,41 @@ class Database:
                             data["reference_text"] = reference["reference_text"]
                 records.append(ResultEntryRecord(**data))
             return records
+
+    def list_client_results_for_export(
+        self,
+        *,
+        client_id: int | None = None,
+        date_from: str = "",
+        date_to: str = "",
+    ) -> list[tuple[str, str, str, str, str, str]]:
+        """Returns (order_date, patient_name, panel, test_name, result_value, unit) rows."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT SUBSTR(COALESCE(o.ordered_at, o.created_at), 1, 10) AS order_date,
+                       TRIM(p.first_name || ' ' || p.last_name ||
+                            CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != ''
+                                 THEN ' ' || p.middle_name ELSE '' END) AS patient_name,
+                       COALESCE(ot.source_label, '') AS panel,
+                       COALESCE(ot.display_name, t.name) AS test_name,
+                       COALESCE(r.result_value, '') AS result_value,
+                       COALESCE(r.unit, '') AS unit
+                FROM order_tests ot
+                INNER JOIN orders o ON o.id = ot.order_id
+                INNER JOIN patients p ON p.id = o.patient_id
+                INNER JOIN tests t ON t.id = ot.test_id
+                LEFT JOIN results r ON r.order_test_id = ot.id
+                WHERE t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                  AND (? IS NULL OR o.client_id = ?)
+                  AND (? = '' OR SUBSTR(COALESCE(o.ordered_at, o.created_at), 1, 10) >= ?)
+                  AND (? = '' OR SUBSTR(COALESCE(o.ordered_at, o.created_at), 1, 10) <= ?)
+                ORDER BY COALESCE(o.ordered_at, o.created_at), p.last_name, p.first_name, ot.sort_order
+                """,
+                (client_id, client_id, date_from, date_from, date_to, date_to),
+            ).fetchall()
+        return [(str(r[0] or ""), str(r[1] or ""), str(r[2] or ""),
+                 str(r[3] or ""), str(r[4] or ""), str(r[5] or "")) for r in rows]
 
     def list_order_test_codes(self, order_id: int) -> dict[int, str]:
         with self.connect() as connection:
@@ -2617,7 +3052,12 @@ class Database:
                        t.name AS test_name,
                        m.unit_override,
                        m.reference_range_override,
-                       m.is_active
+                       m.is_active,
+                       m.value_slice_start,
+                       m.value_slice_end,
+                       m.value_multiplier,
+                       m.decimal_places,
+                       m.value_formula
                 FROM instrument_result_mappings m
                 INNER JOIN tests t ON t.id = m.test_id
                 WHERE (? = '' OR m.instrument_profile = ?)
@@ -2639,6 +3079,11 @@ class Database:
         test_id: int,
         unit_override: str = "",
         reference_range_override: str = "",
+        value_slice_start: int | None = None,
+        value_slice_end: int | None = None,
+        value_multiplier: float | None = None,
+        decimal_places: int | None = None,
+        value_formula: str | None = None,
     ) -> None:
         normalized_profile = self._normalize_instrument_key(instrument_profile)
         normalized_device = self._normalize_optional_instrument_key(device_id)
@@ -2652,14 +3097,21 @@ class Database:
                 """
                 INSERT INTO instrument_result_mappings (
                     instrument_profile, device_id, raw_code, raw_name, specimen_type, panel_hint,
-                    test_id, unit_override, reference_range_override, is_active, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                    test_id, unit_override, reference_range_override,
+                    value_slice_start, value_slice_end, value_multiplier, decimal_places, value_formula,
+                    is_active, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
                 ON CONFLICT(instrument_profile, device_id, raw_code, specimen_type, panel_hint)
                 DO UPDATE SET
                     raw_name = excluded.raw_name,
                     test_id = excluded.test_id,
                     unit_override = excluded.unit_override,
                     reference_range_override = excluded.reference_range_override,
+                    value_slice_start = excluded.value_slice_start,
+                    value_slice_end = excluded.value_slice_end,
+                    value_multiplier = excluded.value_multiplier,
+                    decimal_places = excluded.decimal_places,
+                    value_formula = excluded.value_formula,
                     is_active = 1,
                     updated_at = CURRENT_TIMESTAMP
                 """,
@@ -2673,6 +3125,11 @@ class Database:
                     int(test_id),
                     unit_override.strip() or None,
                     reference_range_override.strip() or None,
+                    value_slice_start,
+                    value_slice_end,
+                    value_multiplier,
+                    decimal_places,
+                    value_formula.strip() if value_formula and value_formula.strip() else None,
                 ),
             )
 
@@ -2692,6 +3149,10 @@ class Database:
         normalized_panel = self._normalize_optional_instrument_key(panel_hint)
         if not normalized_profile or not normalized_code:
             return None
+        # For TCP server captures the device_id includes the ephemeral source port
+        # (e.g. "10.0.0.3:51234"). Also try matching on the IP-only portion so that
+        # mappings saved with a fixed port ("10.0.0.3:5100") still resolve.
+        device_ip_only = normalized_device.rsplit(":", 1)[0] if normalized_device and ":" in normalized_device else None
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -2707,13 +3168,18 @@ class Database:
                        t.name AS test_name,
                        m.unit_override,
                        m.reference_range_override,
-                       m.is_active
+                       m.is_active,
+                       m.value_slice_start,
+                       m.value_slice_end,
+                       m.value_multiplier,
+                       m.decimal_places,
+                       m.value_formula
                 FROM instrument_result_mappings m
                 INNER JOIN tests t ON t.id = m.test_id
                 WHERE m.is_active = 1
                   AND m.instrument_profile = ?
                   AND m.raw_code = ?
-                  AND (m.device_id = ? OR m.device_id = '' OR m.device_id IS NULL)
+                  AND (m.device_id = ? OR (? IS NOT NULL AND m.device_id LIKE ? || ':%') OR m.device_id = '' OR m.device_id IS NULL)
                   AND (m.specimen_type = ? OR m.specimen_type = '' OR m.specimen_type IS NULL)
                   AND (m.panel_hint = ? OR m.panel_hint = '' OR m.panel_hint IS NULL)
                 ORDER BY
@@ -2727,6 +3193,8 @@ class Database:
                     normalized_profile,
                     normalized_code,
                     normalized_device,
+                    device_ip_only,
+                    device_ip_only,
                     normalized_specimen,
                     normalized_panel,
                     normalized_device,
@@ -2738,6 +3206,265 @@ class Database:
             return None
         return InstrumentResultMappingRecord(**dict(rows[0]))
 
+    def list_instrument_profiles(self) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT instrument_profile FROM instrument_result_mappings ORDER BY instrument_profile"
+            ).fetchall()
+        return [str(row["instrument_profile"]) for row in rows]
+
+    def delete_instrument_result_mapping(self, mapping_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM instrument_result_mappings WHERE id = ?", (mapping_id,))
+
+    def toggle_instrument_result_mapping_active(self, mapping_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE instrument_result_mappings SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (mapping_id,),
+            )
+
+    def update_instrument_result_mapping_profile(self, mapping_id: int, instrument_profile: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE instrument_result_mappings SET instrument_profile = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (instrument_profile, mapping_id),
+            )
+
+    def find_order_by_instrument_ids(
+        self,
+        *,
+        sample_id: str = "",
+        accession_id: str = "",
+        order_number: str = "",
+        patient_id: str = "",
+    ) -> int | None:
+        sample_id = (sample_id or "").strip()
+        accession_id = (accession_id or "").strip()
+        order_number = (order_number or "").strip()
+        patient_id = (patient_id or "").strip()
+        if not sample_id and not accession_id and not order_number and not patient_id:
+            return None
+        with self.connect() as connection:
+            _open = "status NOT IN ('finalized', 'cancelled') AND COALESCE(is_preallocated, 0) = 0"
+            for col, val in [
+                ("sample_id", sample_id),
+                ("accession_id", accession_id),
+                ("order_number", order_number),
+                ("order_number", patient_id),
+            ]:
+                if not val:
+                    continue
+                row = connection.execute(
+                    f"SELECT id FROM orders WHERE {col} = ? AND {_open} ORDER BY created_at DESC LIMIT 1",
+                    (val,),
+                ).fetchone()
+                if row is not None:
+                    return int(row["id"])
+        return None
+
+    def get_instrument_order_match(self, profile_id: str) -> InstrumentOrderMatchRecord | None:
+        profile_id = (profile_id or "").strip()
+        if not profile_id:
+            return None
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT instrument_profile, instrument_field, order_field, auto_import, broadcast_enabled, broadcast_protocol, broadcast_encoding, broadcast_patient_id, broadcast_patient_name, broadcast_dob, broadcast_age, broadcast_sex, broadcast_doctor FROM instrument_order_match_config WHERE instrument_profile = ?",
+                (profile_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return InstrumentOrderMatchRecord(
+            instrument_profile=str(row["instrument_profile"]),
+            instrument_field=str(row["instrument_field"]),
+            order_field=str(row["order_field"]),
+            auto_import=int(row["auto_import"]),
+            broadcast_enabled=int(row["broadcast_enabled"] or 0),
+            broadcast_protocol=str(row["broadcast_protocol"] or "hl7_orm"),
+            broadcast_encoding=str(row["broadcast_encoding"] or "ascii"),
+            broadcast_patient_id=int(row["broadcast_patient_id"] or 1),
+            broadcast_patient_name=int(row["broadcast_patient_name"] or 1),
+            broadcast_dob=int(row["broadcast_dob"] or 1),
+            broadcast_age=int(row["broadcast_age"] or 1),
+            broadcast_sex=int(row["broadcast_sex"] or 1),
+            broadcast_doctor=int(row["broadcast_doctor"] or 1),
+        )
+
+    def save_instrument_order_match(
+        self,
+        profile_id: str,
+        instrument_field: str,
+        order_field: str,
+        *,
+        auto_import: bool = True,
+        broadcast_enabled: bool = False,
+        broadcast_protocol: str = "hl7_orm",
+        broadcast_encoding: str = "ascii",
+        broadcast_patient_id: bool = True,
+        broadcast_patient_name: bool = True,
+        broadcast_dob: bool = True,
+        broadcast_age: bool = True,
+        broadcast_sex: bool = True,
+        broadcast_doctor: bool = True,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO instrument_order_match_config (
+                    instrument_profile, instrument_field, order_field, auto_import,
+                    broadcast_enabled, broadcast_protocol, broadcast_encoding, broadcast_patient_id,
+                    broadcast_patient_name, broadcast_dob, broadcast_age, broadcast_sex, broadcast_doctor,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (instrument_profile) DO UPDATE SET
+                    instrument_field = excluded.instrument_field,
+                    order_field = excluded.order_field,
+                    auto_import = excluded.auto_import,
+                    broadcast_enabled = excluded.broadcast_enabled,
+                    broadcast_protocol = excluded.broadcast_protocol,
+                    broadcast_encoding = excluded.broadcast_encoding,
+                    broadcast_patient_id = excluded.broadcast_patient_id,
+                    broadcast_patient_name = excluded.broadcast_patient_name,
+                    broadcast_dob = excluded.broadcast_dob,
+                    broadcast_age = excluded.broadcast_age,
+                    broadcast_sex = excluded.broadcast_sex,
+                    broadcast_doctor = excluded.broadcast_doctor,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    profile_id, instrument_field, order_field, 1 if auto_import else 0,
+                    1 if broadcast_enabled else 0, broadcast_protocol or "hl7_orm",
+                    broadcast_encoding or "ascii",
+                    1 if broadcast_patient_id else 0, 1 if broadcast_patient_name else 0,
+                    1 if broadcast_dob else 0, 1 if broadcast_age else 0, 1 if broadcast_sex else 0,
+                    1 if broadcast_doctor else 0,
+                ),
+            )
+
+    def list_instrument_order_match_configs(self) -> list[InstrumentOrderMatchRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT instrument_profile, instrument_field, order_field, auto_import, broadcast_enabled, broadcast_protocol, broadcast_encoding, broadcast_patient_id, broadcast_patient_name, broadcast_dob, broadcast_age, broadcast_sex, broadcast_doctor FROM instrument_order_match_config ORDER BY instrument_profile"
+            ).fetchall()
+        return [
+            InstrumentOrderMatchRecord(
+                instrument_profile=str(row["instrument_profile"]),
+                instrument_field=str(row["instrument_field"]),
+                order_field=str(row["order_field"]),
+                auto_import=int(row["auto_import"]),
+                broadcast_enabled=int(row["broadcast_enabled"] or 0),
+                broadcast_protocol=str(row["broadcast_protocol"] or "hl7_orm"),
+            broadcast_encoding=str(row["broadcast_encoding"] or "ascii"),
+                broadcast_patient_id=int(row["broadcast_patient_id"] or 1),
+                broadcast_patient_name=int(row["broadcast_patient_name"] or 1),
+                broadcast_dob=int(row["broadcast_dob"] or 1),
+                broadcast_sex=int(row["broadcast_sex"] or 1),
+                broadcast_doctor=int(row["broadcast_doctor"] or 1),
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _payload_has_data(payload: dict[str, Any]) -> bool:
+        text = str(payload.get("normalized_text") or payload.get("decoded_text") or "")
+        visible = "".join(c for c in text if c.isprintable()).strip()
+        return len(visible) > 1
+
+    def load_instrument_captures_cache(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT capture_id, payload_json FROM (
+                    SELECT capture_id, payload_json FROM instrument_captures_cache
+                    WHERE has_data = 1 ORDER BY received_at DESC LIMIT 500
+                )
+                UNION ALL
+                SELECT capture_id, payload_json FROM (
+                    SELECT capture_id, payload_json FROM instrument_captures_cache
+                    WHERE has_data = 0 ORDER BY received_at DESC LIMIT 10
+                )
+                """
+            ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                data = json.loads(row["payload_json"])
+                if isinstance(data, dict):
+                    result[str(row["capture_id"])] = data
+            except json.JSONDecodeError:
+                pass
+        return result
+
+    def upsert_instrument_captures_cache(self, captures: list[dict[str, Any]]) -> None:
+        if not captures:
+            return
+        with self.connect() as connection:
+            for capture in captures:
+                cid = str(capture.get("id") or "").strip()
+                if not cid:
+                    continue
+                received_at = str(capture.get("received_at") or "")
+                has_data = 1 if self._payload_has_data(capture) else 0
+                connection.execute(
+                    """
+                    INSERT INTO instrument_captures_cache (capture_id, received_at, payload_json, cached_at, has_data)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT (capture_id) DO UPDATE SET
+                        received_at = excluded.received_at,
+                        payload_json = excluded.payload_json,
+                        cached_at = CURRENT_TIMESTAMP,
+                        has_data = excluded.has_data
+                    """,
+                    (cid, received_at, json.dumps(capture), has_data),
+                )
+            connection.execute(
+                """
+                DELETE FROM instrument_captures_cache
+                WHERE has_data = 1 AND capture_id NOT IN (
+                    SELECT capture_id FROM instrument_captures_cache
+                    WHERE has_data = 1
+                    ORDER BY received_at DESC, cached_at DESC
+                    LIMIT 500
+                )
+                """
+            )
+            connection.execute(
+                """
+                DELETE FROM instrument_captures_cache
+                WHERE has_data = 0 AND capture_id NOT IN (
+                    SELECT capture_id FROM instrument_captures_cache
+                    WHERE has_data = 0
+                    ORDER BY received_at DESC, cached_at DESC
+                    LIMIT 10
+                )
+                """
+            )
+
+    def get_order_receipt_lines(self, order_id: int) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.order_number,
+                       TRIM(p.first_name || ' ' || p.last_name) AS patient_name,
+                       p.sex AS patient_sex,
+                       p.age_value,
+                       p.age_unit,
+                       COALESCE(o.ordered_at, o.created_at) AS order_date,
+                       COALESCE(ot.display_name, t.name) AS test_name,
+                       COALESCE(t.price, 0.0) AS price,
+                       t.code
+                FROM order_tests ot
+                INNER JOIN orders o ON o.id = ot.order_id
+                INNER JOIN patients p ON p.id = o.patient_id
+                INNER JOIN tests t ON t.id = ot.test_id
+                WHERE ot.order_id = ?
+                  AND t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                ORDER BY ot.sort_order, ot.id
+                """,
+                (order_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_order_label_entries(self, order_id: int) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -2748,6 +3475,9 @@ class Database:
                        o.sample_id,
                        o.client_id,
                        TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name,
+                       p.sex AS patient_sex,
+                       p.age_value,
+                       p.age_unit,
                        COALESCE(ot.display_name, t.name) AS display_name,
                        t.name AS test_name,
                        t.specimen_type,
@@ -2784,6 +3514,9 @@ class Database:
                 'sample_id': data.get('sample_id') or '',
                 'client_id': data.get('client_id'),
                 'patient_name': data.get('patient_name'),
+                'patient_sex': data.get('patient_sex'),
+                'age_value': data.get('age_value'),
+                'age_unit': data.get('age_unit'),
                 'test_name': data.get('display_name') or data.get('test_name'),
                 'specimen_type': specimen_type,
                 'specimen_code': self._specimen_code(specimen_type),
@@ -2803,6 +3536,7 @@ class Database:
         preview_items = [
             {
                 "order_test_id": entry.order_test_id,
+                "test_id": entry.test_id,
                 "item_type": entry.item_type,
                 "test_name": entry.test_name,
                 "result_value": entry.result_value,
@@ -2817,8 +3551,10 @@ class Database:
             }
             for index, entry in enumerate(entries)
             if entry.order_test_id not in outsourced_order_test_ids
+            and not (entry.item_type in {"heading", "comment"} and not (entry.source_label or "").strip())
         ]
         return {
+            **self.get_report_layout_settings(),
             "source": "live",
             "report_status": "draft",
             "report_version": None,
@@ -2846,13 +3582,16 @@ class Database:
             "footer_text": settings.report_footer,
             "header_image_path": settings.header_image_path,
             "footer_signature_image_path": settings.footer_signature_image_path,
-            "flag_display_mode": settings.report_flag_style,
             "general_comments": context["notes"],
             "outsourced_panels": self.get_outsourced_panel_preview_sections(order_id),
-            "items": self._inject_panel_title_rows(preview_items),
+            "items": self._inject_panel_title_rows(
+                self._restore_panel_catalog_structure(preview_items),
+                self.get_panel_report_metadata_by_name(),
+            ),
         }
 
     def get_saved_report_preview(self, order_id: int) -> dict[str, Any] | None:
+        current_settings = self.get_lab_settings()
         with self.connect() as connection:
             report_row = connection.execute(
                 """
@@ -2931,25 +3670,50 @@ class Database:
             ).fetchall()
         current_outsourced_sections = self.get_outsourced_panel_preview_sections(int(report_row["order_id"]))
         outsourced_sections = current_outsourced_sections or self._group_outsourced_rows(outsourced_rows)
+        saved_items = [
+            {
+                "order_test_id": row["order_test_id"],
+                "item_type": row["item_type_snapshot"] or "test",
+                "test_name": row["test_name_snapshot"],
+                "result_value": row["result_value_snapshot"],
+                "unit": row["unit_snapshot"],
+                "reference_text": row["reference_text_snapshot"],
+                "lower_value": row["lower_value_snapshot_text"],
+                "upper_value": row["upper_value_snapshot_text"],
+                "flag": row["flag_snapshot"],
+                "comments": row["comments_snapshot"],
+                "sort_order": row["sort_order"],
+            }
+            for row in item_rows
+        ]
+        live_preview = self.get_live_report_preview(int(report_row["order_id"]))
+        rendered_items = self._merge_saved_result_values_into_live_items(
+            saved_items,
+            list((live_preview or {}).get("items") or []),
+        )
+        # Prefer live patient/order data over the snapshot so edits are reflected
+        # immediately without having to re-finalize. Snapshots are the fallback.
+        live_ctx = live_preview or {}
         return {
+            **self.get_report_layout_settings(),
             "source": "saved",
             "report_status": report_row["status"],
             "report_version": report_row["report_version"],
             "finalized_at": report_row["finalized_at"],
             "order_id": report_row["order_id"],
-            "order_number": report_row["order_number"],
-            "accession_id": report_row["accession_id"],
-            "sample_id": report_row["sample_id"],
-            "ordered_at": report_row["ordered_at"],
-            "reported_at": report_row["reported_at"],
-            "order_status": report_row["order_status"],
-            "patient_name": report_row["patient_snapshot_name"],
-            "patient_sex": report_row["patient_snapshot_sex"],
-            "patient_dob": report_row["patient_snapshot_dob"],
-            "patient_age_value": report_row["patient_age_value"],
-            "patient_age_unit": report_row["patient_age_unit"],
-            "doctor_name": report_row["doctor_snapshot_name"],
-            "client_name": report_row["client_name"],
+            "order_number": live_ctx.get("order_number") or report_row["order_number"],
+            "accession_id": live_ctx.get("accession_id") or report_row["accession_id"],
+            "sample_id": live_ctx.get("sample_id") or report_row["sample_id"],
+            "ordered_at": live_ctx.get("ordered_at") or report_row["ordered_at"],
+            "reported_at": live_ctx.get("reported_at") or report_row["reported_at"],
+            "order_status": live_ctx.get("order_status") or report_row["order_status"],
+            "patient_name": live_ctx.get("patient_name") or report_row["patient_snapshot_name"],
+            "patient_sex": live_ctx.get("patient_sex") or report_row["patient_snapshot_sex"],
+            "patient_dob": live_ctx.get("patient_dob") or report_row["patient_snapshot_dob"],
+            "patient_age_value": live_ctx.get("patient_age_value") or report_row["patient_age_value"],
+            "patient_age_unit": live_ctx.get("patient_age_unit") or report_row["patient_age_unit"],
+            "doctor_name": live_ctx.get("doctor_name") or report_row["doctor_snapshot_name"],
+            "client_name": live_ctx.get("client_name") or report_row["client_name"],
             "lab_name": report_row["lab_snapshot_name"],
             "lab_address": report_row["lab_snapshot_address"],
             "lab_phone": report_row["lab_snapshot_phone"],
@@ -2957,30 +3721,151 @@ class Database:
             "director_name": report_row["director_snapshot_name"],
             "director_license": report_row["director_snapshot_license"],
             "footer_text": report_row["footer_snapshot_text"],
-            "header_image_path": report_row["header_image_snapshot_path"],
-            "footer_signature_image_path": report_row["footer_signature_snapshot_path"],
-            "flag_display_mode": self.get_lab_settings().report_flag_style,
+            "header_image_path": report_row["header_image_snapshot_path"] or current_settings.header_image_path,
+            "footer_signature_image_path": report_row["footer_signature_snapshot_path"] or current_settings.footer_signature_image_path,
             "general_comments": report_row["general_comments"],
             "outsourced_panels": self.get_outsourced_panel_preview_sections(order_id),
-            "items": [
-                {
-                    "order_test_id": row["order_test_id"],
-                    "item_type": row["item_type_snapshot"] or "test",
-                    "test_name": row["test_name_snapshot"],
-                    "result_value": row["result_value_snapshot"],
-                    "unit": row["unit_snapshot"],
-                    "reference_text": row["reference_text_snapshot"],
-                    "lower_value": row["lower_value_snapshot_text"],
-                    "upper_value": row["upper_value_snapshot_text"],
-                    "flag": row["flag_snapshot"],
-                    "comments": row["comments_snapshot"],
-                    "sort_order": row["sort_order"],
-                }
-                for row in item_rows
-            ],
+            "items": rendered_items,
         }
 
-    def _inject_panel_title_rows(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    @staticmethod
+    def _merge_saved_result_values_into_live_items(
+        saved_items: list[dict[str, Any]],
+        live_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not live_items:
+            return saved_items
+        saved_by_order_test_id = {
+            item.get("order_test_id"): item
+            for item in saved_items
+            if item.get("order_test_id") is not None
+        }
+        merged: list[dict[str, Any]] = []
+        for live_item in live_items:
+            item = dict(live_item)
+            saved_item = saved_by_order_test_id.get(item.get("order_test_id"))
+            if saved_item is not None:
+                for key in ("result_value", "unit", "reference_text", "lower_value", "upper_value", "flag", "comments"):
+                    item[key] = saved_item.get(key)
+            merged.append(item)
+        return merged
+
+    def _restore_panel_catalog_structure(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        structures = self._panel_catalog_structures()
+        if not structures:
+            return items
+        grouped_order_items: dict[str, list[dict[str, Any]]] = {}
+        group_order: list[str] = []
+        passthrough: list[dict[str, Any]] = []
+        for item in items:
+            raw_label = self._normalize_report_panel_label(str(item.get("source_label") or ""))
+            structure = structures.get(raw_label.casefold())
+            label = str((structure or {}).get("name") or raw_label).strip()
+            if not label:
+                passthrough.append(item)
+                continue
+            if label not in grouped_order_items:
+                group_order.append(label)
+            grouped_order_items.setdefault(label, []).append(item)
+        if not grouped_order_items:
+            return items
+        restored: list[dict[str, Any]] = []
+        restored.extend(passthrough)
+        for label in group_order:
+            order_items = grouped_order_items[label]
+            structure = structures.get(label.casefold())
+            if structure is None:
+                restored.extend(self._normalize_panel_source_items(order_items, label, structures))
+                continue
+            if any(str(item.get("item_type") or "test") in {"heading", "comment"} for item in order_items):
+                restored.extend(self._normalize_panel_source_items(order_items, structure["name"], structures))
+                continue
+            by_test_id = {
+                int(item["test_id"]): item
+                for item in order_items
+                if item.get("test_id") is not None
+            }
+            used_test_ids: set[int] = set()
+            for panel_item in structure["items"]:
+                item_type = str(panel_item.get("item_type") or "test")
+                if item_type in {"heading", "comment"}:
+                    restored.append(
+                        {
+                            "order_test_id": None,
+                            "test_id": None,
+                            "item_type": item_type,
+                            "test_name": str(panel_item.get("heading_text") or panel_item.get("label") or ""),
+                            "result_value": "",
+                            "unit": "",
+                            "reference_text": "",
+                            "lower_value": "",
+                            "upper_value": "",
+                            "flag": "",
+                            "comments": "",
+                            "source_label": structure["name"],
+                        }
+                    )
+                    continue
+                test_id = panel_item.get("test_id")
+                if test_id is None:
+                    continue
+                matched = by_test_id.get(int(test_id))
+                if matched is None:
+                    continue
+                normalized = dict(matched)
+                normalized["source_label"] = structure["name"]
+                restored.append(normalized)
+                used_test_ids.add(int(test_id))
+            for item in order_items:
+                test_id = item.get("test_id")
+                if test_id is None or int(test_id) not in used_test_ids:
+                    normalized = dict(item)
+                    normalized["source_label"] = structure["name"]
+                    restored.append(normalized)
+        return restored
+
+    def _normalize_panel_source_items(
+        self,
+        items: list[dict[str, Any]],
+        label: str,
+        structures: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        structure = structures.get(label.casefold())
+        resolved_label = str((structure or {}).get("name") or label).strip()
+        normalized_items: list[dict[str, Any]] = []
+        for item in items:
+            normalized = dict(item)
+            normalized["source_label"] = resolved_label
+            normalized_items.append(normalized)
+        return normalized_items
+
+    def _panel_catalog_structures(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as connection:
+            panel_rows = connection.execute("SELECT id, code, name FROM test_panels WHERE is_active = 1").fetchall()
+            item_rows = connection.execute(
+                "SELECT panel_id, item_type, test_id, heading_text, sort_order FROM test_panel_items ORDER BY panel_id, sort_order, id"
+            ).fetchall()
+        items_by_panel_id: dict[int, list[dict[str, Any]]] = {}
+        for row in item_rows:
+            items_by_panel_id.setdefault(int(row["panel_id"]), []).append(dict(row))
+        structures: dict[str, dict[str, Any]] = {}
+        for row in panel_rows:
+            name = str(row["name"] or "").strip()
+            code = str(row["code"] or "").strip()
+            if not name:
+                continue
+            structure = {
+                "name": name,
+                "code": code,
+                "items": items_by_panel_id.get(int(row["id"]), []),
+            }
+            for key in {name, code, self._normalize_report_panel_label(f"{name} ({code})"), self._normalize_report_panel_label(f"{name} ({code}) - 1 tests")}:
+                normalized_key = str(key or "").strip()
+                if normalized_key:
+                    structures[normalized_key.casefold()] = structure
+        return structures
+
+    def _inject_panel_title_rows(self, items: list[dict[str, Any]], panel_metadata: dict[str, dict[str, str]] | None = None) -> list[dict[str, Any]]:
         panel_counts: dict[str, int] = {}
         for item in items:
             label = self._normalize_report_panel_label(str(item.get("source_label") or ""))
@@ -2991,12 +3876,40 @@ class Database:
         rendered: list[dict[str, Any]] = []
         active_panel = ""
         next_sort_order = 0
+        metadata = panel_metadata or {}
+
+        def append_panel_meta(panel_name: str) -> None:
+            nonlocal next_sort_order
+            values = metadata.get(panel_name) or {}
+            specimen_type = str(values.get("specimen_type") or "").strip()
+            method = str(values.get("method") or "").strip()
+            if not specimen_type and not method:
+                return
+            rendered.append(
+                {
+                    "order_test_id": None,
+                    "item_type": "panel_meta",
+                    "test_name": "",
+                    "result_value": "",
+                    "unit": "",
+                    "reference_text": "",
+                    "lower_value": "",
+                    "upper_value": "",
+                    "flag": "",
+                    "comments": f"{tr('Methodology')}: {method} | {tr('Specimen Type')}: {specimen_type}",
+                    "sort_order": next_sort_order,
+                }
+            )
+            next_sort_order += 1
+
         for item in items:
             normalized = dict(item)
             item_type = str(normalized.get("item_type") or "test")
             label = self._normalize_report_panel_label(str(normalized.get("source_label") or ""))
             normalized["source_label"] = label
-            if item_type == "test" and label and label != active_panel:
+            if item_type in {"test", "heading", "comment"} and label and label != active_panel:
+                if active_panel:
+                    append_panel_meta(active_panel)
                 rendered.append(
                     {
                         "order_test_id": None,
@@ -3019,6 +3932,8 @@ class Database:
             next_sort_order += 1
             if item_type == "heading" and not label:
                 active_panel = ""
+        if active_panel:
+            append_panel_meta(active_panel)
         return rendered
 
     @staticmethod
@@ -3026,7 +3941,8 @@ class Database:
         label = value.strip()
         if not label:
             return ""
-        return re.sub(r"\s*-\s*\d+\s+tests\s*$", "", label, flags=re.IGNORECASE).strip()
+        label = re.sub(r"\s*-\s*\d+\s+tests\s*$", "", label, flags=re.IGNORECASE).strip()
+        return re.sub(r"\s+\([A-Z0-9_-]{1,20}\)$", "", label).strip()
 
     def finalize_report(
         self,
@@ -3152,6 +4068,9 @@ class Database:
                 connection.execute("DELETE FROM report_items WHERE report_id = ?", (report_id,))
                 connection.execute("DELETE FROM report_outsourced_rows WHERE report_id = ?", (report_id,))
             for item in preview["items"]:
+                order_test_id = item.get("order_test_id")
+                if not order_test_id:
+                    order_test_id = self._resolve_report_item_order_test_id(connection, order_id, item)
                 connection.execute(
                     """
                     INSERT INTO report_items (
@@ -3164,7 +4083,7 @@ class Database:
                     ,
                     (
                         report_id,
-                        item["order_test_id"] or self._resolve_report_order_test_id(connection, order_id, item["sort_order"]),
+                        order_test_id or None,
                         item["test_name"],
                         item["result_value"] or None,
                         item["unit"] or None,
@@ -3218,6 +4137,8 @@ class Database:
 
     def save_result_entry(self, order_test_id: int, result_value: str, unit: str, lower_value: str | None, upper_value: str | None, reference_text: str, comments: str, result_kind: str) -> None:
         normalized_value = result_value.strip()
+        if result_kind == "numeric":
+            normalized_value = normalized_value.replace(",", "")
         normalized_unit = unit.strip()
         normalized_reference = reference_text.strip()
         normalized_comments = comments.strip()
@@ -3285,6 +4206,14 @@ class Database:
             shutil.copy2(source, target)
         return str(target)
 
+    @staticmethod
+    def _bounded_int(value: Any, minimum: int, maximum: int, fallback: int) -> int:
+        try:
+            parsed = int(str(value))
+        except (TypeError, ValueError):
+            return fallback
+        return max(minimum, min(maximum, parsed))
+
     def _copy_report_branding_asset(self, raw_path: str, kind: str) -> str:
         if not raw_path:
             return ""
@@ -3332,7 +4261,7 @@ class Database:
 
     @staticmethod
     def _normalize_instrument_code(value: str) -> str:
-        return "".join(character for character in str(value or "").upper().strip() if character.isalnum() or character in {"-", "_"})
+        return "".join(character for character in str(value or "").upper().strip() if character.isalnum() or character in {"-", "_", "%", "#"})
 
     def _get_or_create_category(self, connection: sqlite3.Connection, category_name: str) -> int | None:
         normalized = category_name.strip()
@@ -3427,6 +4356,10 @@ class Database:
                 test_id INTEGER NOT NULL,
                 unit_override TEXT,
                 reference_range_override TEXT,
+                value_slice_start INTEGER,
+                value_slice_end INTEGER,
+                value_multiplier REAL,
+                value_formula TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -3441,6 +4374,17 @@ class Database:
             )
             """
         )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(instrument_result_mappings)").fetchall()}
+        if "value_slice_start" not in columns:
+            connection.execute("ALTER TABLE instrument_result_mappings ADD COLUMN value_slice_start INTEGER")
+        if "value_slice_end" not in columns:
+            connection.execute("ALTER TABLE instrument_result_mappings ADD COLUMN value_slice_end INTEGER")
+        if "value_multiplier" not in columns:
+            connection.execute("ALTER TABLE instrument_result_mappings ADD COLUMN value_multiplier REAL")
+        if "decimal_places" not in columns:
+            connection.execute("ALTER TABLE instrument_result_mappings ADD COLUMN decimal_places INTEGER")
+        if "value_formula" not in columns:
+            connection.execute("ALTER TABLE instrument_result_mappings ADD COLUMN value_formula TEXT")
 
     def _get_report_context(self, order_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
@@ -3470,6 +4414,26 @@ class Database:
                 (order_id,),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def _resolve_report_item_order_test_id(self, connection: sqlite3.Connection, order_id: int, item: dict[str, Any]) -> int:
+        item_type = str(item.get("item_type") or "test")
+        if item_type in {"heading", "comment", "panel_meta"} or not item.get("order_test_id"):
+            return self._ensure_report_placeholder_order_test(connection, order_id, item_type, str(item.get("test_name") or ""), int(item.get("sort_order") or 0))
+        return self._resolve_report_order_test_id(connection, order_id, int(item.get("sort_order") or 0))
+
+    def _ensure_report_placeholder_order_test(self, connection: sqlite3.Connection, order_id: int, item_type: str, label: str, sort_order: int) -> int:
+        test_id = self._ensure_panel_heading_test(connection) if item_type == "heading" else self._ensure_panel_comment_test(connection)
+        row = connection.execute(
+            "SELECT id FROM order_tests WHERE order_id = ? AND test_id = ? ORDER BY id LIMIT 1",
+            (order_id, test_id),
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+        cursor = connection.execute(
+            "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', 0, NULL, ?, ?)",
+            (order_id, test_id, label.strip() or item_type.title(), sort_order),
+        )
+        return int(cursor.lastrowid)
 
     @staticmethod
     def _resolve_report_order_test_id(connection: sqlite3.Connection, order_id: int, sort_order: int) -> int:
@@ -3595,6 +4559,56 @@ class Database:
             connection.execute("ALTER TABLE lab_settings ADD COLUMN sat_key_path TEXT NOT NULL DEFAULT ''")
         if "report_flag_style" not in columns:
             connection.execute("ALTER TABLE lab_settings ADD COLUMN report_flag_style TEXT NOT NULL DEFAULT 'arrows'")
+        if "keep_panels_together" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN keep_panels_together INTEGER NOT NULL DEFAULT 0")
+        if "report_font_family" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_font_family TEXT NOT NULL DEFAULT 'Segoe UI'")
+        if "report_font_size" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_font_size INTEGER NOT NULL DEFAULT 12")
+        if "report_font_bold" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_font_bold INTEGER NOT NULL DEFAULT 0")
+        if "report_abnormal_bold" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_abnormal_bold INTEGER NOT NULL DEFAULT 0")
+        if "report_subheading_font_family" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_subheading_font_family TEXT NOT NULL DEFAULT 'Segoe UI'")
+        if "report_subheading_font_size" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_subheading_font_size INTEGER NOT NULL DEFAULT 13")
+        if "report_subheading_font_bold" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_subheading_font_bold INTEGER NOT NULL DEFAULT 1")
+        if "report_footer_gap_mm" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_footer_gap_mm INTEGER NOT NULL DEFAULT 8")
+        if "report_sex_format" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_sex_format TEXT NOT NULL DEFAULT 'short'")
+        if "report_date_format" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_date_format TEXT NOT NULL DEFAULT 'auto'")
+        if "report_show_doctor" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_show_doctor INTEGER NOT NULL DEFAULT 1")
+        if "report_show_client" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_show_client INTEGER NOT NULL DEFAULT 1")
+        if "report_show_sex" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_show_sex INTEGER NOT NULL DEFAULT 1")
+        if "report_show_age" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_show_age INTEGER NOT NULL DEFAULT 1")
+        if "report_show_dob" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_show_dob INTEGER NOT NULL DEFAULT 1")
+        if "report_show_ordered_at" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_show_ordered_at INTEGER NOT NULL DEFAULT 1")
+        if "report_show_reported_at" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_show_reported_at INTEGER NOT NULL DEFAULT 1")
+        if "report_doctor_col" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_doctor_col TEXT NOT NULL DEFAULT 'left'")
+        if "report_client_col" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_client_col TEXT NOT NULL DEFAULT 'left'")
+        if "report_sex_col" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_sex_col TEXT NOT NULL DEFAULT 'left'")
+        if "report_age_col" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_age_col TEXT NOT NULL DEFAULT 'right'")
+        if "report_dob_col" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_dob_col TEXT NOT NULL DEFAULT 'right'")
+        if "report_ordered_at_col" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_ordered_at_col TEXT NOT NULL DEFAULT 'right'")
+        if "report_reported_at_col" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN report_reported_at_col TEXT NOT NULL DEFAULT 'right'")
 
     def _migrate_tests_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(tests)").fetchall()}
@@ -3604,6 +4618,8 @@ class Database:
             connection.execute("ALTER TABLE tests ADD COLUMN default_result_value TEXT")
         if "price" not in columns:
             connection.execute("ALTER TABLE tests ADD COLUMN price REAL NOT NULL DEFAULT 0")
+        if "result_multiplier" not in columns:
+            connection.execute("ALTER TABLE tests ADD COLUMN result_multiplier REAL")
 
     def _migrate_client_test_prices_table(self, connection: sqlite3.Connection) -> None:
         connection.execute(
@@ -3645,6 +4661,11 @@ class Database:
 
     def _migrate_test_panels_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(test_panels)").fetchall()}
+        if "specimen_type" not in columns:
+            connection.execute("ALTER TABLE test_panels ADD COLUMN specimen_type TEXT")
+        if "method" not in columns:
+            connection.execute("ALTER TABLE test_panels ADD COLUMN method TEXT")
+        columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(test_panels)").fetchall()}
         if "is_active" not in columns:
             connection.execute("ALTER TABLE test_panels ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
         index_rows = connection.execute("PRAGMA index_list(test_panels)").fetchall()
@@ -3667,6 +4688,8 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 code TEXT NOT NULL UNIQUE,
                 name TEXT NOT NULL,
+                specimen_type TEXT,
+                method TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -3674,8 +4697,8 @@ class Database:
         )
         connection.execute(
             """
-            INSERT INTO test_panels (id, code, name, is_active, created_at)
-            SELECT id, code, name, COALESCE(is_active, 1), created_at
+            INSERT INTO test_panels (id, code, name, specimen_type, method, is_active, created_at)
+            SELECT id, code, name, specimen_type, method, COALESCE(is_active, 1), created_at
             FROM test_panels_legacy
             """
         )
@@ -3751,6 +4774,78 @@ class Database:
         if "notes" not in columns:
             connection.execute("ALTER TABLE equipment ADD COLUMN notes TEXT")
 
+    def _migrate_instrument_order_match_config_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS instrument_order_match_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrument_profile TEXT NOT NULL UNIQUE,
+                instrument_field TEXT NOT NULL DEFAULT 'sample_id',
+                order_field TEXT NOT NULL DEFAULT 'sample_id',
+                auto_import INTEGER NOT NULL DEFAULT 1,
+                broadcast_enabled INTEGER NOT NULL DEFAULT 0,
+                broadcast_protocol TEXT NOT NULL DEFAULT 'hl7_orm',
+                broadcast_encoding TEXT NOT NULL DEFAULT 'ascii',
+                broadcast_patient_id INTEGER NOT NULL DEFAULT 1,
+                broadcast_patient_name INTEGER NOT NULL DEFAULT 1,
+                broadcast_dob INTEGER NOT NULL DEFAULT 1,
+                broadcast_age INTEGER NOT NULL DEFAULT 1,
+                broadcast_sex INTEGER NOT NULL DEFAULT 1,
+                broadcast_doctor INTEGER NOT NULL DEFAULT 1,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(instrument_order_match_config)").fetchall()}
+        if "auto_import" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN auto_import INTEGER NOT NULL DEFAULT 1")
+        if "broadcast_enabled" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_enabled INTEGER NOT NULL DEFAULT 0")
+        if "broadcast_protocol" not in columns:
+            if "broadcast_language" in columns:
+                connection.execute("ALTER TABLE instrument_order_match_config RENAME COLUMN broadcast_language TO broadcast_protocol")
+                connection.execute("UPDATE instrument_order_match_config SET broadcast_protocol = 'hl7_orm' WHERE broadcast_protocol IN ('es', 'en', '')")
+            else:
+                connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_protocol TEXT NOT NULL DEFAULT 'hl7_orm'")
+        if "broadcast_encoding" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_encoding TEXT NOT NULL DEFAULT 'ascii'")
+        if "broadcast_patient_id" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_patient_id INTEGER NOT NULL DEFAULT 1")
+        if "broadcast_patient_name" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_patient_name INTEGER NOT NULL DEFAULT 1")
+        if "broadcast_dob" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_dob INTEGER NOT NULL DEFAULT 1")
+        if "broadcast_sex" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_sex INTEGER NOT NULL DEFAULT 1")
+        if "broadcast_age" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_age INTEGER NOT NULL DEFAULT 1")
+        if "broadcast_doctor" not in columns:
+            connection.execute("ALTER TABLE instrument_order_match_config ADD COLUMN broadcast_doctor INTEGER NOT NULL DEFAULT 1")
+
+    def _migrate_instrument_captures_cache_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS instrument_captures_cache (
+                capture_id TEXT PRIMARY KEY,
+                received_at TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL,
+                cached_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                has_data INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(instrument_captures_cache)").fetchall()}
+        if "has_data" not in columns:
+            connection.execute("ALTER TABLE instrument_captures_cache ADD COLUMN has_data INTEGER NOT NULL DEFAULT 0")
+            rows = connection.execute("SELECT capture_id, payload_json FROM instrument_captures_cache").fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row["payload_json"])
+                    if isinstance(payload, dict) and self._payload_has_data(payload):
+                        connection.execute("UPDATE instrument_captures_cache SET has_data = 1 WHERE capture_id = ?", (row["capture_id"],))
+                except Exception:
+                    pass
+
     @staticmethod
     def _specimen_code(specimen_type: str) -> str:
         normalized = ''.join(character for character in specimen_type.upper() if character.isalnum() or character == ' ')
@@ -3776,7 +4871,7 @@ class Database:
     def _to_decimal(value: Any) -> Decimal | None:
         if value is None:
             return None
-        normalized = str(value).strip()
+        normalized = str(value).strip().replace(",", "")
         if not normalized:
             return None
         try:
@@ -3836,6 +4931,54 @@ class Database:
         cursor = connection.execute("INSERT INTO tests (code, name, category_id, specimen_type, method, result_kind, is_active, sort_order) VALUES ('__PANEL_COMMENT__', 'Panel Comment', NULL, NULL, NULL, 'text', 0, 0)")
         return int(cursor.lastrowid)
 
+    def _ensure_urinalysis_strip_tests(self, connection: sqlite3.Connection) -> None:
+        category_id = self._get_or_create_category(connection, "Urinalysis")
+        for code, name, _category, specimen_type, method, result_kind, unit in self.URINALYSIS_STRIP_TESTS:
+            row = connection.execute("SELECT id FROM tests WHERE code = ?", (code,)).fetchone()
+            if row is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO tests (
+                        code, name, category_id, specimen_type, method, result_kind,
+                        select_options, default_result_value, price, is_active
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, 1)
+                    """,
+                    (code, name, category_id, specimen_type, method, result_kind),
+                )
+                test_id = int(cursor.lastrowid)
+            else:
+                test_id = int(row["id"])
+                connection.execute(
+                    """
+                    UPDATE tests
+                    SET category_id = COALESCE(category_id, ?),
+                        specimen_type = COALESCE(NULLIF(specimen_type, ''), ?),
+                        method = COALESCE(NULLIF(method, ''), ?),
+                        result_kind = CASE WHEN result_kind IN ('numeric', 'text', 'select') THEN result_kind ELSE ? END,
+                        is_active = 1
+                    WHERE id = ?
+                    """,
+                    (category_id, specimen_type, method, result_kind, test_id),
+                )
+            if unit:
+                existing_range = connection.execute(
+                    "SELECT id FROM test_reference_ranges WHERE test_id = ? AND unit = ?",
+                    (test_id, unit),
+                ).fetchone()
+                if existing_range is None:
+                    connection.execute(
+                        """
+                        INSERT INTO test_reference_ranges (
+                            test_id, sex, age_min_days, age_max_days,
+                            lower_value, upper_value, lower_value_text,
+                            upper_value_text, unit, reference_text
+                        )
+                        VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, '')
+                        """,
+                        (test_id, unit),
+                    )
+
     def _resolve_reference_range(self, connection: sqlite3.Connection, test_id: int, patient_sex: str | None, patient_age_days: int | None) -> sqlite3.Row | None:
         rows = connection.execute("SELECT sex, age_min_days, age_max_days, COALESCE(lower_value_text, CAST(lower_value AS TEXT)) AS lower_value, COALESCE(upper_value_text, CAST(upper_value AS TEXT)) AS upper_value, unit, reference_text FROM test_reference_ranges WHERE test_id = ? ORDER BY CASE WHEN sex IS NULL OR sex = '' THEN 1 ELSE 0 END, CASE WHEN age_min_days IS NULL THEN 1 ELSE 0 END, age_min_days, CASE WHEN age_max_days IS NULL THEN 1 ELSE 0 END, age_max_days", (test_id,)).fetchall()
         for row in rows:
@@ -3876,10 +5019,9 @@ class Database:
     def _calculate_flag(result_kind: str, result_value: str, lower_value: str | None, upper_value: str | None) -> str:
         if result_kind != "numeric" or not result_value:
             return "none"
-        try:
-            numeric_value = Decimal(result_value)
-        except (InvalidOperation, ValueError):
-            return "abnormal"
+        numeric_value = Database._to_decimal(result_value)
+        if numeric_value is None:
+            return "none"
         lower_decimal = Database._to_decimal(lower_value)
         upper_decimal = Database._to_decimal(upper_value)
         if lower_decimal is not None and numeric_value < lower_decimal:
@@ -3895,3 +5037,4 @@ class Database:
         full_name = " ".join(part for part in [first_name, last_name, middle_name or ""] if part).strip()
         age_part = f' - {age_value} {age_unit}' if age_value is not None and age_unit else ''
         return f'{full_name}{age_part}'
+

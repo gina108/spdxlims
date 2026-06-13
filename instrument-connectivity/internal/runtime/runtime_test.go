@@ -95,3 +95,30 @@ func TestLoadOrCreateBundleHMACSecretMode(t *testing.T) {
 		t.Fatalf("configured secret = %q", configured)
 	}
 }
+
+func TestSharedTCPProfileMatchesRemoteHost(t *testing.T) {
+	prof := profile.Profile{
+		ID:        "mindray-bc30s",
+		Transport: profile.TransportSettings{RemoteAddress: "10.0.0.2:5100"},
+	}
+	if !profileMatchesRemoteHost(prof, "10.0.0.2") {
+		t.Fatal("expected remote_address host to match observed host")
+	}
+	if profileMatchesRemoteHost(prof, "10.0.0.3") {
+		t.Fatal("did not expect different remote host to match")
+	}
+}
+
+func TestHostOnlyAcceptsPlainIPAndEndpoint(t *testing.T) {
+	cases := map[string]string{
+		"10.0.0.2:5100":     "10.0.0.2",
+		"10.0.0.2":          "10.0.0.2",
+		"[fe80::1]:5100":    "fe80::1",
+		"analyzer.local:80": "analyzer.local",
+	}
+	for input, want := range cases {
+		if got := hostOnly(input); got != want {
+			t.Fatalf("hostOnly(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

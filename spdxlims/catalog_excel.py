@@ -1,5 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -27,6 +28,8 @@ TEST_IMPORT_COLUMNS = [
 PANEL_IMPORT_COLUMNS = [
     "panel_code",
     "panel_name",
+    "specimen_type",
+    "metodologia",
     "item_order",
     "item_type",
     "test_code",
@@ -45,12 +48,12 @@ TEST_TEMPLATE_SHEETS: dict[str, list[list[str]]] = {
     ],
     "Instructions": [
         ["Section / Sección", "Guidance / Guía"],
-        ["Workbook structure / Estructura del libro", "Use the Tests sheet for all test rows. A test may appear on multiple rows when it has multiple reference ranges. / Use la hoja Tests para todas las filas de pruebas. Una prueba puede repetirse en varias filas cuando tiene varios rangos de referencia."],
+        ["Workbook structure / Estructura del libro", "Use the Tests sheet for all test rows. A test may appear on multiple rows when it has multiple reference ranges. / Use la hoja Tests para todas las filas de analitos. Una analito puede repetirse en varias filas cuando tiene varios rangos de referencia."],
         ["Required columns / Columnas obligatorias", "code, name, equipment, result_kind. Keep the same headers on the Tests sheet. / code, name, equipment, result_kind. Mantenga los mismos encabezados en la hoja Tests."],
         ["Repeated rows / Filas repetidas", "Repeat the same code on multiple rows in the same sheet to define sex-specific or age-specific ranges. / Repita el mismo código en varias filas de la misma hoja para definir rangos por sexo o por edad."],
         ["Different sexes / Diferentes sexos", "Use range_sex = M or F on separate rows. / Use range_sex = M o F en filas separadas."],
         ["Different ages / Diferentes edades", "Use age_min_days and age_max_days on separate rows. / Use age_min_days y age_max_days en filas separadas."],
-        ["Selectable tests / Pruebas seleccionables", "For result_kind = select, put options in select_options separated by | and keep default_result equal to one option. / Para result_kind = select, escriba las opciones en select_options separadas por | y mantenga default_result igual a una opción."],
+        ["Selectable tests / Analitos seleccionables", "For result_kind = select, put options in select_options separated by | and keep default_result equal to one option. / Para result_kind = select, escriba las opciones en select_options separadas por | y mantenga default_result igual a una opción."],
         ["Import behavior / Comportamiento de importación", "All non-empty sheets except Instructions are imported. / Se importan todas las hojas no vacías excepto Instructions."],
     ],
 }
@@ -58,23 +61,23 @@ TEST_TEMPLATE_SHEETS: dict[str, list[list[str]]] = {
 PANEL_TEMPLATE_SHEETS: dict[str, list[list[str]]] = {
     "CMP-DEMO": [
         PANEL_IMPORT_COLUMNS,
-        ["CMP-DEMO", "Chemistry Demo Panel", "1", "heading", "", "Chemistry"],
-        ["CMP-DEMO", "Chemistry Demo Panel", "2", "test", "GLU", ""],
-        ["CMP-DEMO", "Chemistry Demo Panel", "3", "test", "TSH", ""],
-        ["CMP-DEMO", "Chemistry Demo Panel", "4", "comment", "", "Comments"],
+        ["CMP-DEMO", "Chemistry Demo Panel", "Serum", "Automated", "1", "heading", "", "Chemistry"],
+        ["CMP-DEMO", "Chemistry Demo Panel", "Serum", "Automated", "2", "test", "GLU", ""],
+        ["CMP-DEMO", "Chemistry Demo Panel", "Serum", "Automated", "3", "test", "TSH", ""],
+        ["CMP-DEMO", "Chemistry Demo Panel", "Serum", "Automated", "4", "comment", "", "Comments"],
     ],
     "CBC-DEMO": [
         PANEL_IMPORT_COLUMNS,
-        ["CBC-DEMO", "Hematology Demo Panel", "1", "heading", "", "Hematology"],
-        ["CBC-DEMO", "Hematology Demo Panel", "2", "test", "HGB", ""],
-        ["CBC-DEMO", "Hematology Demo Panel", "3", "comment", "", "Observations"],
+        ["CBC-DEMO", "Hematology Demo Panel", "Whole Blood", "Automated", "1", "heading", "", "Hematology"],
+        ["CBC-DEMO", "Hematology Demo Panel", "Whole Blood", "Automated", "2", "test", "HGB", ""],
+        ["CBC-DEMO", "Hematology Demo Panel", "Whole Blood", "Automated", "3", "comment", "", "Observations"],
     ],
     "Instructions": [
         ["Section / Sección", "Guidance / Guía"],
         ["Workbook structure / Estructura del libro", "Use one sheet per panel code. / Use una hoja por código de panel."],
-        ["Required columns / Columnas obligatorias", "panel_code, panel_name, item_order, item_type. Keep the same headers on every panel sheet. / panel_code, panel_name, item_order, item_type. Mantenga los mismos encabezados en cada hoja de panel."],
+        ["Required columns / Columnas obligatorias", "panel_code, panel_name, specimen_type, metodologia, item_order, item_type. Keep the same headers on every panel sheet. / panel_code, panel_name, specimen_type, metodologia, item_order, item_type. Mantenga los mismos encabezados en cada hoja de panel."],
         ["Item types / Tipos de elemento", "test uses test_code, heading uses label, comment uses label. / test usa test_code, heading usa label, comment usa label."],
-        ["Referenced tests / Pruebas referenciadas", "Every test_code in the panel workbook must already exist in the database or be imported from a test workbook first. / Cada test_code del libro de paneles debe existir ya en la base de datos o importarse primero desde un libro de pruebas."],
+        ["Referenced tests / Analitos referenciadas", "Every test_code in the panel workbook must already exist in the database or be imported from a test workbook first. / Cada test_code del libro de paneles debe existir ya en la base de datos o importarse primero desde un libro de analitos."],
         ["Import behavior / Comportamiento de importación", "All non-empty sheets except Instructions are imported. / Se importan todas las hojas no vacías excepto Instructions."],
     ],
 }
@@ -110,7 +113,7 @@ def read_test_workbook_rows(path: str | Path) -> list[dict[str, str]]:
 
 
 def read_panel_workbook_rows(path: str | Path) -> list[dict[str, str]]:
-    return _read_template_rows(path, required_columns=PANEL_IMPORT_COLUMNS)
+    return _read_template_rows(path, required_columns=PANEL_IMPORT_COLUMNS, column_aliases={"method": "metodologia", "methodology": "metodologia"})
 
 
 def build_test_export_sheets(test_details: Sequence[dict[str, object]]) -> dict[str, list[list[str]]]:
@@ -170,6 +173,8 @@ def build_panel_export_sheets(panel_details: Sequence[dict[str, object]]) -> dic
             rows.append([
                 code,
                 str(detail.get("name") or ""),
+                str(detail.get("specimen_type") or ""),
+                str(detail.get("method") or ""),
                 _stringify(item_dict.get("sort_order"), fallback=index),
                 item_type,
                 test_code,
@@ -196,6 +201,12 @@ def _join_options(value: object) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return "|".join(part.strip() for part in value.replace("|", "\n").splitlines() if part.strip())
+        if isinstance(parsed, Sequence) and not isinstance(parsed, str):
+            return "|".join(str(part).strip() for part in parsed if str(part).strip())
         return value
     if isinstance(value, Sequence):
         return '|'.join(str(part).strip() for part in value if str(part).strip())
@@ -361,7 +372,8 @@ def _read_sheet_paths(archive: ZipFile) -> dict[str, str]:
         name = sheet.attrib.get("name", "")
         target = relationships.get(rel_id or "")
         if name and target:
-            normalized = target if target.startswith("xl/") else f"xl/{target}"
+            normalized_target = target.lstrip("/")
+            normalized = normalized_target if normalized_target.startswith("xl/") else f"xl/{normalized_target}"
             sheet_paths[name] = normalized
     return sheet_paths
 

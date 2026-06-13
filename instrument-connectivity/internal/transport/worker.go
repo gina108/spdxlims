@@ -29,6 +29,11 @@ const (
 	astmETB byte = 0x17
 	astmCR  byte = 0x0D
 	astmLF  byte = 0x0A
+
+	// MLLP framing for HL7 over TCP
+	mllpStart byte = 0x0B // VT  — start of block
+	mllpEnd   byte = 0x1C // FS  — end of block
+	mllpCR    byte = 0x0D // CR  — must follow FS
 )
 
 type PayloadHandler func(raw []byte, deviceID string, transportType models.TransportType) error
@@ -68,6 +73,9 @@ type sessionProcessor struct {
 	hasQueryRecord   bool
 	querySampleID    string
 	queryHandler     QueryHandler
+	// HL7/MLLP state
+	hl7InBlock    bool
+	hl7AwaitingCR bool
 }
 
 func newSessionProcessor(mode string) *sessionProcessor {
@@ -80,6 +88,9 @@ func newSessionProcessor(mode string) *sessionProcessor {
 }
 
 func (sp *sessionProcessor) consume(chunk []byte, rw io.ReadWriter, meta map[string]any, flush func([]byte) error, onError ErrorHandler, onState StateHandler) error {
+	if sp.mode == "hl7" {
+		return sp.consumeHL7(chunk, rw, meta, flush, onError, onState)
+	}
 	if sp.mode != "astm" {
 		sp.buffer = append(sp.buffer, chunk...)
 		return nil
@@ -232,6 +243,127 @@ func (sp *sessionProcessor) flush(flush func([]byte) error) error {
 	payload := append([]byte(nil), sp.buffer...)
 	sp.buffer = sp.buffer[:0]
 	return flush(payload)
+}
+
+// consumeHL7 handles HL7/MLLP framing. Complete messages between 0x0B…0x1C 0x0D are
+// either dispatched to the queryHandler (for QRY messages) or flushed as payloads.
+func (sp *sessionProcessor) consumeHL7(chunk []byte, rw io.ReadWriter, meta map[string]any, flush func([]byte) error, onError ErrorHandler, onState StateHandler) error {
+	for _, b := range chunk {
+		if sp.hl7AwaitingCR {
+			sp.hl7AwaitingCR = false
+			if b == mllpCR {
+				msg := string(sp.frame)
+				sp.frame = sp.frame[:0]
+				sp.hl7InBlock = false
+				fmt.Fprintf(os.Stderr, "[HL7-RECV] %d bytes: %q\n", len(msg), msg)
+				if isHL7Query(msg) {
+					sampleID := extractSampleIDFromHL7QRY(msg)
+					fmt.Fprintf(os.Stderr, "[HL7-QUERY] sample_id=%q\n", sampleID)
+					if sp.queryHandler != nil && rw != nil {
+						sp.queryHandler(sampleID, rw)
+					}
+					if onState != nil {
+						onState("query_handled", mergeMeta(meta, map[string]any{"sample_id": sampleID}))
+					}
+				} else {
+					if err := flush([]byte(msg)); err != nil {
+						return err
+					}
+					if onState != nil {
+						onState("active", meta)
+					}
+				}
+				continue
+			}
+			// FS not followed by CR — treat FS as data
+			sp.frame = append(sp.frame, mllpEnd)
+		}
+
+		if sp.hl7InBlock {
+			if b == mllpEnd {
+				sp.hl7AwaitingCR = true
+				continue
+			}
+			sp.frame = append(sp.frame, b)
+		} else if b == mllpStart {
+			sp.hl7InBlock = true
+			sp.frame = sp.frame[:0]
+			fmt.Fprintf(os.Stderr, "[HL7-MLLP] start-of-block received\n")
+			if onState != nil {
+				onState("handshake", mergeMeta(meta, map[string]any{"event": "mllp_start"}))
+			}
+		}
+		// bytes outside an MLLP block are silently ignored
+	}
+	return nil
+}
+
+// isHL7Query returns true when the message is an HL7 host query that the engine
+// should answer with a worklist response.
+// Supports:
+//   - QRY^A19 / QBP^* (standard query types)
+//   - ORM^O01 with ORC-1=RF (Mindray BC-30s worklist request pattern)
+func isHL7Query(msg string) bool {
+	var msgType string
+	for _, line := range strings.FieldsFunc(msg, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		if strings.HasPrefix(line, "MSH|") {
+			parts := strings.Split(line, "|")
+			// MSH-9 (index 8) holds the message type
+			if len(parts) > 8 {
+				msgType = parts[8]
+				if strings.HasPrefix(msgType, "QRY") || strings.HasPrefix(msgType, "QBP") {
+					return true
+				}
+			}
+		} else if strings.HasPrefix(line, "ORC|") && strings.HasPrefix(msgType, "ORM") {
+			// Mindray sends ORM^O01 with ORC-1=RF as its worklist query
+			parts := strings.Split(line, "|")
+			if len(parts) > 1 && parts[1] == "RF" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// extractSampleIDFromHL7QRY extracts the sample / patient ID from an HL7 host query.
+// Handles three formats:
+//   - QRD-8 "Who Subject Filter" (QRY^A19)
+//   - QPD-3 (QBP^Q11, HL7 v2.5+)
+//   - ORC-3 Filler Order Number (Mindray ORM^O01 RF worklist request)
+func extractSampleIDFromHL7QRY(msg string) string {
+	var msgType string
+	for _, line := range strings.FieldsFunc(msg, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		parts := strings.Split(line, "|")
+		switch {
+		case strings.HasPrefix(line, "MSH|") && len(parts) > 8:
+			msgType = parts[8]
+		case strings.HasPrefix(line, "QRD|") && len(parts) > 8:
+			if id := strings.TrimSpace(parts[8]); id != "" {
+				return id
+			}
+		case strings.HasPrefix(line, "QPD|") && len(parts) > 3:
+			if id := strings.TrimSpace(parts[3]); id != "" {
+				return id
+			}
+		case strings.HasPrefix(line, "ORC|") && strings.HasPrefix(msgType, "ORM") && len(parts) > 3:
+			if id := strings.TrimSpace(parts[3]); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// SendHL7Response wraps hl7Message in MLLP framing (VT + message + FS + CR) and
+// writes it to rw. Used by the runtime to answer HL7 host queries.
+func SendHL7Response(rw io.Writer, hl7Message string) error {
+	out := make([]byte, 0, len(hl7Message)+3)
+	out = append(out, mllpStart)
+	out = append(out, []byte(hl7Message)...)
+	out = append(out, mllpEnd, mllpCR)
+	_, err := rw.Write(out)
+	return err
 }
 
 func StartProfileWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler, qhs ...QueryHandler) (Worker, error) {
@@ -681,13 +813,20 @@ func selectSessionMode(p profile.Profile) string {
 	return SelectSessionMode(p)
 }
 
-// SelectSessionMode returns "astm" for profiles that use ASTM framing, otherwise "".
+// SelectSessionMode returns the session framing mode: "astm", "hl7", or "".
+// An explicit transport.session_mode always wins. Otherwise the protocol_hint and
+// parsing.strategy are used to infer the mode for TCP transports only (HL7 over
+// TCP always uses MLLP; ASTM over serial uses ASTM framing).
 func SelectSessionMode(p profile.Profile) string {
 	if mode := strings.ToLower(strings.TrimSpace(p.Transport.SessionMode)); mode != "" {
 		return mode
 	}
 	if strings.EqualFold(p.ProtocolHint, "astm") || strings.EqualFold(p.Parsing.Strategy, "astm") {
 		return "astm"
+	}
+	tcpTransport := strings.EqualFold(p.Transport.Type, "tcp_client") || strings.EqualFold(p.Transport.Type, "tcp_server")
+	if tcpTransport && (strings.EqualFold(p.ProtocolHint, "hl7_v2") || strings.EqualFold(p.Parsing.Strategy, "hl7_oru")) {
+		return "hl7"
 	}
 	return ""
 }

@@ -1117,7 +1117,9 @@ class OrderLabelsDialog(QDialog):
         self.info.setWordWrap(True)
         root.addWidget(self.info)
 
+        self._panel_extras: dict[str, QSpinBox] = {}
         controls = QGridLayout()
+        self._controls = controls
         controls.setVerticalSpacing(8)
         controls.setHorizontalSpacing(10)
         self.size_combo = QComboBox()
@@ -1193,6 +1195,30 @@ class OrderLabelsDialog(QDialog):
         self.show_datetime.setText(tr("Show Date, Sex & Age"))
         self.client_id = self._resolve_client_id()
         self._load_saved_preferences()
+        if self.order_id is not None:
+            self._load_panel_extras()
+
+    def _load_panel_extras(self) -> None:
+        panel_codes = self.database.get_order_panel_codes(self.order_id)
+        if not panel_codes:
+            return
+        saved_extras = self.database.get_panel_extra_copies()
+        header_row = 2
+        header = QLabel("Copias extra por panel:")
+        self._controls.addWidget(header, header_row, 0, 1, 4)
+        for i, code in enumerate(panel_codes, start=1):
+            spin = QSpinBox()
+            spin.setRange(0, 20)
+            spin.setValue(saved_extras.get(code, 0))
+            spin.valueChanged.connect(self._on_panel_extra_changed)
+            self._controls.addWidget(QLabel(f"  {code}:"), header_row + i, 0)
+            self._controls.addWidget(spin, header_row + i, 1)
+            self._panel_extras[code] = spin
+        self._refresh_preview()
+
+    def _on_panel_extra_changed(self) -> None:
+        self.database.save_panel_extra_copies({code: spin.value() for code, spin in self._panel_extras.items()})
+        self._refresh_preview()
 
     def _resolve_client_id(self) -> int | None:
         if not self.label_rows:
@@ -1296,7 +1322,9 @@ class OrderLabelsDialog(QDialog):
         )
 
     def _copies_count(self) -> int:
-        return max(1, int(self.copies_input.value()))
+        base = max(1, int(self.copies_input.value()))
+        extras = sum(spin.value() for spin in self._panel_extras.values())
+        return base + extras
 
     def print_labels(self) -> None:
         printer = QPrinter(QPrinter.HighResolution)
@@ -1941,6 +1969,7 @@ class OrdersPage(DataAwarePage):
 
     def refresh_on_show(self) -> None:
         self.refresh_page_data()
+        QTimer.singleShot(0, self.scan_input.setFocus)
 
     def refresh_page_data(self) -> None:
         self.refresh_choices()
@@ -2013,22 +2042,20 @@ class OrdersPage(DataAwarePage):
             (
                 record.order_number,
                 record.patient_name,
-                self._display_status(record.status),
+                "",
                 self._format_recent_order_date(record.created_at),
             )
             for record in self.recent_order_records
         ]
         self.set_table_rows(self.orders_table, rows)
-        for row_index in range(self.orders_table.rowCount()):
-            status_item = self.orders_table.item(row_index, 2)
-            if status_item is not None:
-                status_item.setTextAlignment(Qt.AlignCenter)
+        for row_index, record in enumerate(self.recent_order_records):
+            self.orders_table.setCellWidget(row_index, 2, self.build_order_status_indicator(record.status, all_results_entered=record.all_results_entered))
             date_item = self.orders_table.item(row_index, 3)
             if date_item is not None:
                 date_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.orders_table.setColumnWidth(0, 92)
         self.orders_table.setColumnWidth(1, 170)
-        self.orders_table.setColumnWidth(2, 96)
+        self.orders_table.setColumnWidth(2, 52)
         self.orders_table.setColumnWidth(3, 88)
         self._apply_orders_table_column_visibility()
 
@@ -2169,17 +2196,16 @@ class OrdersPage(DataAwarePage):
             return
         lookup = self.database.find_order_by_number(query)
         if lookup is not None:
-            record = self.database.get_order_edit_record(lookup.id)
-            if record is None:
-                QMessageBox.warning(self, tr("Missing Selection"), tr("Barcode order not found."))
-                return
-            self._load_order_record(record)
-            self.scan_input.clear()
             if lookup.is_preallocated:
+                record = self.database.get_order_edit_record(lookup.id)
+                if record is None:
+                    QMessageBox.warning(self, tr("Missing Selection"), tr("Barcode order not found."))
+                    return
+                self._load_order_record(record)
+                self.scan_input.clear()
                 QMessageBox.information(self, tr("Saved"), tr("Barcode order loaded. Assign the patient and tests, then save."))
                 return
-            self.refresh_recent_orders()
-            self._select_recent_order(lookup.id)
+            self._highlight_order_in_table(lookup.id)
             return
         matches = self.database.search_orders(query)
         if not matches:
@@ -2191,14 +2217,17 @@ class OrdersPage(DataAwarePage):
             order_id = self._pick_order_from_list(matches)
             if order_id is None:
                 return
-        record = self.database.get_order_edit_record(order_id)
-        if record is None:
-            QMessageBox.warning(self, tr("Missing Selection"), tr("Order could not be loaded."))
-            return
-        self._load_order_record(record)
+        self._highlight_order_in_table(order_id)
+
+    def _highlight_order_in_table(self, order_id: int) -> None:
         self.scan_input.clear()
         self.refresh_recent_orders()
         self._select_recent_order(order_id)
+        row = self.orders_table.currentRow()
+        if row >= 0:
+            item = self.orders_table.item(row, 0)
+            if item is not None:
+                self.orders_table.scrollToItem(item)
 
     def _pick_order_from_list(self, matches: list) -> int | None:
         dialog = QDialog(self)
@@ -2522,6 +2551,10 @@ class OrdersPage(DataAwarePage):
         size_key = str(prefs.get("size") or "small_tall")
         payload_key = str(prefs.get("payload") or "order_only")
         copies = max(1, int(str(prefs.get("copies") or "1")))
+        panel_codes = self.database.get_order_panel_codes(order_id)
+        if panel_codes:
+            panel_extra_copies = self.database.get_panel_extra_copies()
+            copies += sum(panel_extra_copies.get(code, 0) for code in panel_codes)
         show_barcode = str(prefs.get("show_barcode") or "1") == "1"
         show_patient_name = str(prefs.get("show_patient_name") or "1") == "1"
         show_order_number_text = str(prefs.get("show_order_number_text") or "0") == "1"
@@ -3081,7 +3114,7 @@ class OrdersPage(DataAwarePage):
             if order_id is None:
                 QMessageBox.warning(self, tr("Not Available"), tr("Receipt printing is not available for server-mode orders."))
                 return
-            self._maybe_broadcast_order(patient_id)
+            self._maybe_broadcast_order(patient_id, order_id)
             self.clear_order_form()
             self.refresh_recent_orders()
             self.notify_data_changed()

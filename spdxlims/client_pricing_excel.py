@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -44,10 +44,10 @@ def build_client_price_sheets(
 
     instructions = [
         ["Section / Seccion", "Guidance / Guia"],
-        ["Editable sheet / Hoja editable", "Edit only the Client Prices sheet. Blank cells mean use the default test price. / Edite solo la hoja Client Prices. Las celdas en blanco significan usar el precio predeterminado de la prueba."],
+        ["Editable sheet / Hoja editable", "Edit only the Client Prices sheet. Blank cells mean use the default test price. / Edite solo la hoja Client Prices. Las celdas en blanco significan usar el precio predeterminado de la analito."],
         ["Columns / Columnas", "The first columns are test_code, test_name, and default_price. Every remaining column belongs to one client. / Las primeras columnas son test_code, test_name y default_price. Cada columna restante pertenece a un cliente."],
         ["Client headers / Encabezados de clientes", "Keep client header cells unchanged so the importer can map prices back to the right client. / Mantenga sin cambios los encabezados de clientes para que la importacion pueda asignar los precios al cliente correcto."],
-        ["Blank values / Valores vacios", "Leave a client price blank to remove any custom override and fall back to the default test price. / Deje vacio un precio de cliente para quitar cualquier precio personalizado y volver al precio predeterminado de la prueba."],
+        ["Blank values / Valores vacios", "Leave a client price blank to remove any custom override and fall back to the default test price. / Deje vacio un precio de cliente para quitar cualquier precio personalizado y volver al precio predeterminado de la analito."],
         ["Numbers only / Solo numeros", "Enter plain numbers like 250 or 250.50. / Ingrese numeros simples como 250 o 250.50."],
     ]
 

@@ -49,6 +49,14 @@ pwsh .\scripts\install-service.ps1 -BinaryPath .\bin\instrument-agent.exe -DataD
 4. Verify the service is present in `services.msc`.
 5. Open `http://127.0.0.1:9088`.
 
+## Analyzer Setup Checklist
+- Confirm the workstation has a static IP on the analyzer network.
+- For analyzers that send results to the PC, use a `tcp_server` profile with a listener such as `0.0.0.0:5100`. Do not bind the profile to one specific adapter IP unless the site requires it.
+- Confirm Windows is listening after starting capture: `netstat -ano | Select-String ":5100"`.
+- Run a full scan for the analyzer subnet. Devices with open TCP ports and ARP-reachable devices should both appear.
+- For COR 50-style inbound analyzers, the analyzer may appear as `arp_seen` rather than `tcp_open`; that is expected when the analyzer sends results instead of accepting a PC connection.
+- After the analyzer sends a test result, verify `GET /api/v1/captures?profile_id=cor50-lis&limit=5` returns a capture.
+
 ## Uninstall
 
 ```powershell

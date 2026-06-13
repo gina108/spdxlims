@@ -274,6 +274,7 @@ class ReportsPage(DataAwarePage):
         self.load_branding_options()
         if current_order_id is not None:
             self._set_combo_value(current_order_id)
+            self._load_preview_for_order(current_order_id)
 
     def refresh_filter_choices(self) -> None:
         self.set_combo_items(
@@ -604,7 +605,7 @@ class ReportsPage(DataAwarePage):
         self._set_preview_html(self._build_report_html(preview))
 
     def _build_report_html(self, preview: dict[str, object]) -> str:
-        return build_report_html(preview)
+        return build_report_html({**self.database.get_report_layout_settings(), **preview})
 
     def _export_pdf_with_webengine(self, html: str, pdf_path: Path) -> Path | None:
         if QWebEnginePage is None:

@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import { FileBlob, SpreadsheetFile } from "@oai/artifact-tool";
 
 const inputPath = "C:/SPDXLIMS/client_prices.xlsx";
@@ -39,7 +39,7 @@ rulesSheet.getRange("A:F").format.autofitColumns();
 
 const instructionsSheet = workbook.worksheets.getItem("Instructions");
 instructionsSheet.getRange("A7:B8").values = [
-  ["Instrument matching / Coincidencia de equipos", "Use the Instrument Rules sheet to tag which tests can be auto-imported from each analyzer profile. Keep pricing columns unchanged. / Use la hoja Instrument Rules para indicar que pruebas pueden importarse automaticamente desde cada perfil de analizador. Mantenga sin cambios las columnas de precios."],
+  ["Instrument matching / Coincidencia de equipos", "Use the Instrument Rules sheet to tag which tests can be auto-imported from each analyzer profile. Keep pricing columns unchanged. / Use la hoja Instrument Rules para indicar que analitos pueden importarse automaticamente desde cada perfil de analizador. Mantenga sin cambios las columnas de precios."],
   ["Why this sheet exists / Por que existe esta hoja", "The same clinical code can appear on different machines, so analyzer eligibility must be tracked separately from test_code. / El mismo codigo clinico puede aparecer en diferentes equipos, por lo que la elegibilidad del analizador debe registrarse por separado del test_code."],
 ];
 instructionsSheet.getRange("A7:B8").format.wrapText = true;

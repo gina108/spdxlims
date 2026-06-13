@@ -95,7 +95,7 @@ class OrdersBrowserPage(DataAwarePage):
         self.table.setColumnWidth(1, 250)
         self.table.setColumnWidth(2, 220)
         self.table.setColumnWidth(3, 220)
-        self.table.setColumnWidth(4, 120)
+        self.table.setColumnWidth(4, 52)
         self.table.setColumnWidth(5, 150)
 
         for row_index, record in enumerate(self.current_records):
@@ -103,7 +103,7 @@ class OrdersBrowserPage(DataAwarePage):
             self._set_item(row_index, 1, record.patient_name)
             self._set_item(row_index, 2, record.client_name or "")
             self._set_item(row_index, 3, record.doctor_name or "")
-            self._set_item(row_index, 4, record.status)
+            self.table.setCellWidget(row_index, 4, self.build_order_status_indicator(record.status))
             self._set_item(row_index, 5, self._format_order_date(record.order_date))
 
     def _set_item(self, row: int, column: int, value: str) -> None:

@@ -831,7 +831,7 @@ class MachineSetupWizard(QDialog):
             try:
                 self.database.save_instrument_result_mapping(
                     instrument_profile=profile_id,
-                    device_id=self._connection_label(),
+                    device_id="" if self._connection_type == "tcp_server" else self._connection_label(),
                     raw_code=code,
                     raw_name=row["name"].text().strip(),
                     test_id=int(test_id),
@@ -897,6 +897,18 @@ class MachineSetupWizard(QDialog):
         return "\n".join(lines)
 
     def _build_final_profile(self, profile_id: str, name: str) -> dict[str, Any]:
+        # ASTM session handling is needed when: serial, detected-as-astm, or bidirectional
+        # ASTM over TCP (bidir implies the analyzer uses ASTM Q records regardless of
+        # whether the probe step detected it).
+        is_astm = (
+            self._connection_type == "serial"
+            or self._detected_protocol == "astm"
+            or (
+                self._bidir_check.isChecked()
+                and self._connection_type in ("tcp_server", "tcp_client")
+            )
+        )
+
         transport: dict[str, Any]
         if self._connection_type == "serial":
             transport = {
@@ -912,8 +924,12 @@ class MachineSetupWizard(QDialog):
             parts = self._network_address.split(":")
             port = parts[-1] if len(parts) > 1 else "5000"
             transport = {"type": "tcp_server", "listen_address": f"0.0.0.0:{port}"}
+            if is_astm:
+                transport["session_mode"] = "astm"
         elif self._connection_type == "tcp_client":
             transport = {"type": "tcp_client", "remote_address": self._network_address}
+            if is_astm:
+                transport["session_mode"] = "astm"
         else:
             transport = {"type": "file_drop", "watch_directories": [self._watch_dir or "incoming"]}
 
@@ -930,13 +946,13 @@ class MachineSetupWizard(QDialog):
                 "normalized_units": row["unit"].text().strip() or "",
             })
 
-        protocol_hint = self._detected_protocol or ("astm" if self._connection_type == "serial" else "hl7_v2")
+        protocol_hint = self._detected_protocol or ("astm" if is_astm else "hl7_v2")
         return {
             "id": profile_id,
             "name": name,
             "protocol_hint": protocol_hint,
             "transport": transport,
-            "parsing": {"strategy": "astm" if self._connection_type == "serial" else "hl7_oru"},
+            "parsing": {"strategy": "astm" if is_astm else "hl7_oru"},
             "mapping": {"test_mappings": test_mappings},
             "learning_mode": {"enabled": True},
         }

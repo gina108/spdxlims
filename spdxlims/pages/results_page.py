@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import ast as _ast
 import importlib
 import json
+import operator as _operator
+from decimal import Decimal, InvalidOperation
+import re
 import subprocess
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -42,11 +46,42 @@ from spdxlims.report_layout import build_report_html
 from spdxlims.report_service import ReportService
 from spdxlims.result_service import ResultService
 from spdxlims.whatsapp_templates import default_whatsapp_templates, get_whatsapp_templates
+from spdxlims.whatsapp_phone import normalize_whatsapp_phone
 
 try:
     from PySide6.QtWebEngineCore import QWebEnginePage
 except ImportError:  # pragma: no cover
     QWebEnginePage = None
+
+_FORMULA_OPS: dict = {
+    _ast.Add: _operator.add,
+    _ast.Sub: _operator.sub,
+    _ast.Mult: _operator.mul,
+    _ast.Div: _operator.truediv,
+    _ast.USub: _operator.neg,
+    _ast.UAdd: _operator.pos,
+}
+
+
+def _safe_eval_formula(formula: str, x: float) -> float:
+    """Evaluate a simple arithmetic formula with variable x.
+    If the formula starts with an operator (e.g. *1000, /10, +5, -2) x is implied."""
+    normalized = formula.strip()
+    if normalized and normalized[0] in ("*", "/", "+", "-") and "x" not in normalized:
+        normalized = "x " + normalized
+    def _eval(node: _ast.AST) -> float:
+        if isinstance(node, _ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, _ast.Name) and node.id == "x":
+            return x
+        if isinstance(node, _ast.BinOp) and type(node.op) in _FORMULA_OPS:
+            return _FORMULA_OPS[type(node.op)](_eval(node.left), _eval(node.right))
+        if isinstance(node, _ast.UnaryOp) and type(node.op) in _FORMULA_OPS:
+            return _FORMULA_OPS[type(node.op)](_eval(node.operand))
+        raise ValueError(f"Unsupported expression: {type(node).__name__}")
+    return _eval(_ast.parse(normalized, mode="eval"))
 
 
 class ReportPreviewDialog(QDialog):
@@ -59,6 +94,8 @@ class ReportPreviewDialog(QDialog):
         approved: bool,
         header_options: list[tuple[str, str]],
         selected_header: str,
+        footer_options: list[tuple[str, str]] | None = None,
+        selected_footer: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -90,7 +127,7 @@ class ReportPreviewDialog(QDialog):
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
 
-        header_row = QHBoxLayout()
+        image_row = QHBoxLayout()
         header_label = QLabel(tr("Header Image"))
         self.header_combo = QComboBox()
         self.header_combo.addItem(tr("No Header Image"), "")
@@ -99,9 +136,41 @@ class ReportPreviewDialog(QDialog):
         selected_index = self.header_combo.findData(selected_header)
         self.header_combo.setCurrentIndex(selected_index if selected_index >= 0 else 0)
         self.header_combo.currentIndexChanged.connect(self._header_changed)
-        header_row.addWidget(header_label)
-        header_row.addWidget(self.header_combo, 1)
-        layout.addLayout(header_row)
+        footer_label = QLabel(tr("Footer Image"))
+        self.footer_combo = QComboBox()
+        self.footer_combo.addItem(tr("No Footer Image"), "")
+        for label, value in (footer_options or []):
+            self.footer_combo.addItem(label, value)
+        selected_footer_index = self.footer_combo.findData(selected_footer)
+        self.footer_combo.setCurrentIndex(selected_footer_index if selected_footer_index >= 0 else 0)
+        self.footer_combo.currentIndexChanged.connect(self._footer_changed)
+        image_row.addWidget(header_label)
+        image_row.addWidget(self.header_combo, 1)
+        image_row.addSpacing(16)
+        image_row.addWidget(footer_label)
+        image_row.addWidget(self.footer_combo, 1)
+        layout.addLayout(image_row)
+
+        fields_row = QHBoxLayout()
+        fields_row.addWidget(QLabel(tr("Header Fields")))
+        _field_defs = [
+            ("report_show_doctor", tr("Doctor")),
+            ("report_show_client", tr("Origin")),
+            ("report_show_sex", tr("Sex")),
+            ("report_show_age", tr("Age")),
+            ("report_show_dob", tr("DOB")),
+            ("report_show_ordered_at", tr("Appt. Date")),
+            ("report_show_reported_at", tr("Print Date")),
+        ]
+        self._header_field_checkboxes: dict[str, QCheckBox] = {}
+        for key, label in _field_defs:
+            cb = QCheckBox(label)
+            cb.setChecked(bool(self._preview.get(key, True)))
+            cb.stateChanged.connect(lambda _state, k=key, c=cb: self._header_field_changed(k, c))
+            self._header_field_checkboxes[key] = cb
+            fields_row.addWidget(cb)
+        fields_row.addStretch(1)
+        layout.addLayout(fields_row)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
@@ -135,6 +204,10 @@ class ReportPreviewDialog(QDialog):
         return str(self.header_combo.currentData() or "")
 
     @property
+    def selected_footer(self) -> str:
+        return str(self.footer_combo.currentData() or "")
+
+    @property
     def approved_preview(self) -> dict[str, object] | None:
         return None if self._approved_preview is None else dict(self._approved_preview)
 
@@ -156,12 +229,23 @@ class ReportPreviewDialog(QDialog):
         self._preview_dirty = True
         self._set_preview_html(self._render_preview_html())
 
+    def _footer_changed(self) -> None:
+        self._preview["footer_signature_image_path"] = self.selected_footer
+        self._preview_dirty = True
+        self._set_preview_html(self._render_preview_html())
+
+    def _header_field_changed(self, key: str, checkbox: QCheckBox) -> None:
+        self._preview[key] = checkbox.isChecked()
+        self._preview_dirty = True
+        self._set_preview_html(self._render_preview_html())
+
     def _edit_report(self) -> None:
         dialog = ReportEditorDialog(self._preview, parent=self)
         if dialog.exec() != QDialog.Accepted:
             return
         self._preview = dialog.edited_preview
         self._preview["header_image_path"] = self.selected_header
+        self._preview["footer_signature_image_path"] = self.selected_footer
         self._preview_dirty = True
         self._set_preview_html(self._render_preview_html())
 
@@ -221,6 +305,14 @@ class ReportPreviewDialog(QDialog):
 
 
 class ReportEditorDialog(QDialog):
+    _FLAG_OPTIONS = (
+        ("", "None"),
+        ("none", "None"),
+        ("low", "Low"),
+        ("normal", "Normal"),
+        ("high", "High"),
+        ("abnormal", "Abnormal"),
+    )
     _ROW_COLUMNS = (
         "item_type",
         "test_name",
@@ -284,7 +376,7 @@ class ReportEditorDialog(QDialog):
         )
         self.items_table.setColumnWidth(0, 140)
         self.items_table.setColumnWidth(1, 170)
-        self.items_table.setColumnWidth(2, 100)
+        self.items_table.setColumnWidth(2, 145)
         self.items_table.setColumnWidth(3, 100)
         self.items_table.setColumnWidth(4, 90)
         self.items_table.setColumnWidth(5, 120)
@@ -323,10 +415,10 @@ class ReportEditorDialog(QDialog):
             item_type_combo.setCurrentIndex(current_index if current_index >= 0 else 0)
             self.items_table.setCellWidget(row_index, 0, item_type_combo)
             self._set_table_text(row_index, 1, str(item.get("test_name") or ""), metadata=dict(item))
-            self._set_table_text(row_index, 2, str(item.get("flag") or ""))
+            self._set_flag_combo(row_index, str(item.get("flag") or ""))
             self._set_table_text(row_index, 3, str(item.get("result_value") or ""))
             self._set_table_text(row_index, 4, str(item.get("unit") or ""))
-            self._set_table_text(row_index, 5, str(item.get("reference_text") or ""))
+            self._set_table_text(row_index, 5, self._display_reference_text(item))
             self._set_table_text(row_index, 6, str(item.get("comments") or ""))
 
     def _set_table_text(self, row: int, column: int, value: str, metadata: dict[str, object] | None = None) -> None:
@@ -360,7 +452,7 @@ class ReportEditorDialog(QDialog):
         values = {
             "item_type": str(item_type or "test"),
             "test_name": self._item_text(row, 1),
-            "flag": self._item_text(row, 2),
+            "flag": self._flag_value(row),
             "result_value": self._item_text(row, 3),
             "unit": self._item_text(row, 4),
             "reference_text": self._item_text(row, 5),
@@ -375,7 +467,7 @@ class ReportEditorDialog(QDialog):
             index = combo.findData(str(row_data.get("item_type") or "test"))
             combo.setCurrentIndex(index if index >= 0 else 0)
         self._set_table_text(row, 1, str(row_data.get("test_name") or ""), metadata=dict(row_data.get("__source_item") or {}))
-        self._set_table_text(row, 2, str(row_data.get("flag") or ""))
+        self._set_flag_combo(row, str(row_data.get("flag") or ""))
         self._set_table_text(row, 3, str(row_data.get("result_value") or ""))
         self._set_table_text(row, 4, str(row_data.get("unit") or ""))
         self._set_table_text(row, 5, str(row_data.get("reference_text") or ""))
@@ -384,6 +476,22 @@ class ReportEditorDialog(QDialog):
     def _item_text(self, row: int, column: int) -> str:
         item = self.items_table.item(row, column)
         return item.text().strip() if item is not None else ""
+
+    def _set_flag_combo(self, row: int, value: str) -> None:
+        combo = QComboBox()
+        combo.setMinimumWidth(120)
+        for flag_value, label in self._FLAG_OPTIONS:
+            combo.addItem(tr(label), flag_value)
+        normalized = (value or "").strip().lower()
+        index = combo.findData(normalized)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        self.items_table.setCellWidget(row, 2, combo)
+
+    def _flag_value(self, row: int) -> str:
+        combo = self.items_table.cellWidget(row, 2)
+        if isinstance(combo, QComboBox):
+            return str(combo.currentData() or "")
+        return self._item_text(row, 2)
 
     def _item_metadata(self, row: int, column: int) -> dict[str, object]:
         item = self.items_table.item(row, column)
@@ -402,13 +510,13 @@ class ReportEditorDialog(QDialog):
                 **source_item,
                 "item_type": item_type,
                 "test_name": self._item_text(row_index, 1),
-                "flag": self._item_text(row_index, 2),
+                "flag": self._flag_value(row_index),
                 "result_value": self._item_text(row_index, 3),
                 "unit": self._item_text(row_index, 4),
-                "reference_text": self._item_text(row_index, 5),
                 "comments": self._item_text(row_index, 6),
                 "sort_order": len(edited_items),
             }
+            self._apply_edited_reference(item, self._item_text(row_index, 5), source_item)
             if item_type in {"heading", "comment"}:
                 item["order_test_id"] = None
                 item["flag"] = ""
@@ -428,6 +536,50 @@ class ReportEditorDialog(QDialog):
         self.accept()
 
     @staticmethod
+    def _display_reference_text(item: dict[str, object]) -> str:
+        reference_text = str(item.get("reference_text") or "").strip()
+        lower_value = str(item.get("lower_value") or "").strip()
+        upper_value = str(item.get("upper_value") or "").strip()
+        range_text = " - ".join(part for part in (lower_value, upper_value) if part)
+        if reference_text and range_text:
+            return f"{range_text} / {reference_text}"
+        return reference_text or range_text
+
+    @classmethod
+    def _apply_edited_reference(cls, item: dict[str, object], edited_text: str, source_item: dict[str, object]) -> None:
+        edited_text = edited_text.strip()
+        original_reference = str(source_item.get("reference_text") or "").strip()
+        if edited_text == cls._display_reference_text(source_item):
+            item["reference_text"] = original_reference
+            return
+        lower_value, upper_value = cls._parse_reference_range_text(edited_text)
+        if lower_value is not None or upper_value is not None:
+            item["lower_value"] = lower_value or ""
+            item["upper_value"] = upper_value or ""
+            item["reference_text"] = ""
+            return
+        item["lower_value"] = ""
+        item["upper_value"] = ""
+        item["reference_text"] = edited_text
+
+    @staticmethod
+    def _parse_reference_range_text(value: str) -> tuple[str | None, str | None]:
+        normalized = value.strip()
+        if not normalized:
+            return None, None
+        decimal_pattern = r"[+-]?\d+(?:\.\d+)?"
+        match = re.fullmatch(rf"\s*({decimal_pattern})\s*(?:-|–|—|a|to)\s*({decimal_pattern})\s*", normalized, flags=re.IGNORECASE)
+        if match:
+            return match.group(1), match.group(2)
+        match = re.fullmatch(rf"\s*(?:<=|≤|<)\s*({decimal_pattern})\s*", normalized)
+        if match:
+            return None, match.group(1)
+        match = re.fullmatch(rf"\s*(?:>=|≥|>)\s*({decimal_pattern})\s*", normalized)
+        if match:
+            return match.group(1), None
+        return None, None
+
+    @staticmethod
     def _clone_preview(preview: dict[str, object]) -> dict[str, object]:
         cloned = dict(preview)
         cloned["items"] = [dict(item) for item in list(preview.get("items") or [])]
@@ -437,6 +589,7 @@ class ReportEditorDialog(QDialog):
 class ResultsPage(DataAwarePage):
     APPROVALS_KEY = "results_report_approvals"
     ORDER_HEADERS_KEY = "results_report_headers"
+    ORDER_FOOTERS_KEY = "results_report_footers"
     WHATSAPP_SENT_KEY = "results_whatsapp_sent"
     LINKED_INSTRUMENT_CAPTURES_KEY = "results_linked_instrument_captures"
 
@@ -458,6 +611,7 @@ class ResultsPage(DataAwarePage):
         self.current_orders: list[ResultWorkflowRecord] = []
         self.previewed_orders: set[int] = set()
         self.instrument_captures: list[dict[str, object]] = []
+        self._instrument_captures_cache: dict[str, dict[str, object]] = self.database.load_instrument_captures_cache()
         self.instrument_result: dict[str, object] | None = None
         self.instrument_order_entries: list[ResultEntryRecord] = []
         self.engine_url = "http://127.0.0.1:9088"
@@ -469,6 +623,13 @@ class ResultsPage(DataAwarePage):
             root.addWidget(self._build_instrument_group())
         if self.show_review:
             root.addWidget(self._build_queue_group())
+
+        if self.show_instruments:
+            from PySide6.QtCore import QTimer
+            self._auto_import_timer = QTimer(self)
+            self._auto_import_timer.setInterval(30000)
+            self._auto_import_timer.timeout.connect(self._auto_import_pending)
+            self._auto_import_timer.start()
 
         self.retranslate_ui()
         self.refresh_on_show()
@@ -482,24 +643,34 @@ class ResultsPage(DataAwarePage):
         layout.addWidget(self.instrument_summary_label)
 
         controls = QHBoxLayout()
-        self.instrument_profile_input = QLineEdit()
+        self.instrument_profile_input = QComboBox()
         self.instrument_profile_input.setMinimumWidth(180)
+        self.instrument_profile_input.currentIndexChanged.connect(self.refresh_instrument_captures)
         self.refresh_instrument_button = QPushButton()
         self.refresh_instrument_button.clicked.connect(self.refresh_instrument_captures)
+        self.reimport_recent_button = QPushButton()
+        self.reimport_recent_button.clicked.connect(self.reimport_recent_captures)
         self.replay_instrument_button = QPushButton()
         self.replay_instrument_button.clicked.connect(self.preview_instrument_capture)
-        controls.addWidget(QLabel(tr("Profile")))
-        controls.addWidget(self.instrument_profile_input)
+        self.instrument_order_combo = QComboBox()
+        self.instrument_order_combo.setMinimumWidth(280)
+        self.link_instrument_button = QPushButton()
+        self.link_instrument_button.clicked.connect(self.link_instrument_capture_to_order)
         self.hide_empty_instrument_captures_checkbox = QCheckBox()
         self.hide_empty_instrument_captures_checkbox.setChecked(True)
         self.hide_empty_instrument_captures_checkbox.stateChanged.connect(lambda _state: self.refresh_instrument_captures())
+        controls.addWidget(QLabel(tr("Profile")))
+        controls.addWidget(self.instrument_profile_input)
         controls.addWidget(self.hide_empty_instrument_captures_checkbox)
         controls.addWidget(self.refresh_instrument_button)
-        controls.addWidget(self.replay_instrument_button)
-        controls.addStretch(1)
+        controls.addWidget(self.reimport_recent_button)
+        controls.addSpacing(12)
+        controls.addWidget(QLabel(tr("Order")))
+        controls.addWidget(self.instrument_order_combo, 1)
+        controls.addWidget(self.link_instrument_button)
         layout.addLayout(controls)
 
-        self.instrument_captures_table = QTableWidget(0, 7)
+        self.instrument_captures_table = QTableWidget(0, 8)
         self.instrument_captures_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.instrument_captures_table.setSelectionMode(QTableWidget.SingleSelection)
         self.instrument_captures_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -508,11 +679,12 @@ class ResultsPage(DataAwarePage):
         capture_header = self.instrument_captures_table.horizontalHeader()
         capture_header.setSectionResizeMode(0, QHeaderView.Fixed)
         capture_header.setSectionResizeMode(1, QHeaderView.Fixed)
-        capture_header.setSectionResizeMode(2, QHeaderView.Fixed)
+        capture_header.setSectionResizeMode(2, QHeaderView.Stretch)
         capture_header.setSectionResizeMode(3, QHeaderView.Fixed)
         capture_header.setSectionResizeMode(4, QHeaderView.Fixed)
-        capture_header.setSectionResizeMode(5, QHeaderView.Stretch)
+        capture_header.setSectionResizeMode(5, QHeaderView.Fixed)
         capture_header.setSectionResizeMode(6, QHeaderView.Fixed)
+        capture_header.setSectionResizeMode(7, QHeaderView.Fixed)
         layout.addWidget(self.instrument_captures_table)
 
         self.instrument_observations_table = QTableWidget(0, 5)
@@ -526,28 +698,26 @@ class ResultsPage(DataAwarePage):
         observation_header.setSectionResizeMode(2, QHeaderView.Fixed)
         observation_header.setSectionResizeMode(3, QHeaderView.Fixed)
         observation_header.setSectionResizeMode(4, QHeaderView.Fixed)
+        self.instrument_observations_table.itemSelectionChanged.connect(
+            self._instrument_observation_selection_changed
+        )
         layout.addWidget(self.instrument_observations_table)
 
-        link_row = QHBoxLayout()
-        self.instrument_order_combo = QComboBox()
-        self.instrument_order_combo.setMinimumWidth(420)
-        self.link_instrument_button = QPushButton()
-        self.link_instrument_button.clicked.connect(self.link_instrument_capture_to_order)
-        link_row.addWidget(QLabel(tr("Order")))
-        link_row.addWidget(self.instrument_order_combo, 1)
-        link_row.addWidget(self.link_instrument_button)
-        layout.addLayout(link_row)
-
-        mapping_row = QHBoxLayout()
+        self.instrument_order_combo.currentIndexChanged.connect(self._refresh_instrument_target_test_choices)
         self.instrument_target_test_combo = QComboBox()
         self.instrument_target_test_combo.setMinimumWidth(420)
         self.save_instrument_mapping_button = QPushButton()
         self.save_instrument_mapping_button.clicked.connect(self.save_selected_instrument_mapping)
-        self.instrument_order_combo.currentIndexChanged.connect(self._refresh_instrument_target_test_choices)
-        mapping_row.addWidget(QLabel(tr("Map To")))
-        mapping_row.addWidget(self.instrument_target_test_combo, 1)
-        mapping_row.addWidget(self.save_instrument_mapping_button)
-        layout.addLayout(mapping_row)
+        self.remove_instrument_mapping_button = QPushButton()
+        self.remove_instrument_mapping_button.clicked.connect(self.remove_selected_instrument_mapping)
+
+        if self.show_review:
+            mapping_row = QHBoxLayout()
+            mapping_row.addWidget(QLabel(tr("Map To")))
+            mapping_row.addWidget(self.instrument_target_test_combo, 1)
+            mapping_row.addWidget(self.save_instrument_mapping_button)
+            mapping_row.addWidget(self.remove_instrument_mapping_button)
+            layout.addLayout(mapping_row)
 
         self.instrument_status_label = QLabel()
         self.instrument_status_label.setWordWrap(True)
@@ -561,6 +731,12 @@ class ResultsPage(DataAwarePage):
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
+
+        self.review_search = QLineEdit()
+        self.review_search.setPlaceholderText(tr("Search by order number or patient name"))
+        self.review_search.setClearButtonEnabled(True)
+        self.review_search.textChanged.connect(self._refresh_table)
+        layout.addWidget(self.review_search)
 
         self.orders_table = QTableWidget(0, 8)
         self.orders_table.setFont(QFont("Segoe UI", 10))
@@ -589,14 +765,14 @@ class ResultsPage(DataAwarePage):
             self.instrument_summary_label.setText(
                 tr("Load recent machine captures, preview the results, map analyzer codes to order tests, then link the selected capture to the correct order.")
             )
-            self.instrument_profile_input.setPlaceholderText(tr("All profiles"))
             self.refresh_instrument_button.setText(tr("Refresh Captures"))
-            self.replay_instrument_button.setText(tr("Preview Capture"))
+            self.reimport_recent_button.setText(tr("Reimport Last 20"))
             self.hide_empty_instrument_captures_checkbox.setText(tr("Only captures with data"))
             self.link_instrument_button.setText(tr("Link to Order"))
             self.save_instrument_mapping_button.setText(tr("Save Mapping"))
+            self.remove_instrument_mapping_button.setText(tr("Remove Mapping"))
             self.instrument_captures_table.setHorizontalHeaderLabels(
-                [tr("Received"), tr("Sample"), tr("Patient"), tr("Capture"), tr("Device"), tr("Preview"), tr("Profile")]
+                [tr("Received"), tr("Sample"), tr("Patient"), tr("Capture"), tr("Device"), tr("Preview"), tr("Profile"), tr("Status")]
             )
             self.instrument_observations_table.setHorizontalHeaderLabels(
                 [tr("Code"), tr("Test"), tr("Result"), tr("Unit"), tr("Status")]
@@ -604,6 +780,7 @@ class ResultsPage(DataAwarePage):
         if self.show_review:
             self.queue_group.setTitle(tr("Results Review"))
             self.summary_label.setText(tr("Pending report approvals and WhatsApp delivery are managed here."))
+            self.review_search.setPlaceholderText(tr("Search by order number or patient name"))
             self.orders_table.setHorizontalHeaderLabels(
                 [
                     tr("Order Date"),
@@ -621,48 +798,89 @@ class ResultsPage(DataAwarePage):
     def refresh_on_show(self) -> None:
         self.current_orders = self.database.list_results_workflow_orders()
         if self.show_instruments:
+            self._refresh_instrument_profile_choices()
             self._refresh_instrument_order_choices()
             self.refresh_instrument_captures()
         if self.show_review:
             self._refresh_table()
 
+    def _refresh_instrument_profile_choices(self) -> None:
+        current = self.instrument_profile_input.currentData()
+        self.instrument_profile_input.blockSignals(True)
+        self.instrument_profile_input.clear()
+        self.instrument_profile_input.addItem(tr("All profiles"), "")
+        for profile in self.database.list_instrument_profiles():
+            self.instrument_profile_input.addItem(profile, profile)
+        index = self.instrument_profile_input.findData(current)
+        self.instrument_profile_input.setCurrentIndex(index if index >= 0 else 0)
+        self.instrument_profile_input.blockSignals(False)
+
     def refresh_instrument_captures(self) -> None:
-        profile_id = self.instrument_profile_input.text().strip()
-        linked = self._linked_instrument_capture_ids()
+        profile_id = self.instrument_profile_input.currentData() or ""
         hide_empty = self.hide_empty_instrument_captures_checkbox.isChecked()
-        limit = 500 if hide_empty else 50
-        query = f"/api/v1/captures?limit={limit}"
+        query = "/api/v1/captures?limit=500"
         if profile_id:
             query += f"&profile_id={quote(profile_id)}"
         try:
-            captures = self._instrument_request_json(query)
+            fresh = self._instrument_request_json(query)
         except Exception as exc:
-            self.instrument_captures = []
             self.instrument_result = None
+            all_cached = sorted(
+                self._instrument_captures_cache.values(),
+                key=lambda c: str(c.get("received_at") or ""),
+                reverse=True,
+            )
+            self.instrument_captures = [
+                c for c in all_cached
+                if (not hide_empty or self._capture_has_data(c))
+                and (not profile_id or str(c.get("profile_id") or "") == profile_id)
+            ]
             self._refresh_instrument_tables()
             self.instrument_status_label.setText(tr("Instrument engine is offline or unavailable: {error}", error=str(exc)))
             return
-        if not isinstance(captures, list):
-            captures = []
+        if not isinstance(fresh, list):
+            fresh = []
+        # Merge new captures into the in-memory cache so older ones don't
+        # disappear when the engine's rolling window pushes them off the limit.
+        _existing_ids = set(self._instrument_captures_cache.keys())
+        for capture in fresh:
+            if isinstance(capture, dict):
+                cid = str(capture.get("id") or "")
+                if cid:
+                    self._instrument_captures_cache[cid] = dict(capture)
+        _new_captures = [
+            self._instrument_captures_cache[cid]
+            for cid in self._instrument_captures_cache
+            if cid not in _existing_ids
+        ]
+        if _new_captures:
+            self.database.upsert_instrument_captures_cache(_new_captures)
+        # Build the display list from the full cache, sorted newest-first.
+        all_captures = sorted(
+            self._instrument_captures_cache.values(),
+            key=lambda c: str(c.get("received_at") or ""),
+            reverse=True,
+        )
         self.instrument_captures = [
-            dict(capture)
-            for capture in captures
-            if (
-                isinstance(capture, dict)
-                and str(capture.get("id") or "") not in linked
-                and (not hide_empty or self._capture_has_data(capture))
-            )
+            c for c in all_captures
+            if (not hide_empty or self._capture_has_data(c))
+            and (not profile_id or str(c.get("profile_id") or "") == profile_id)
         ]
         self.instrument_result = None
         self._refresh_instrument_tables()
-        if hide_empty:
-            self.instrument_status_label.setText(
-                tr("Loaded {count} pending instrument captures with data.", count=len(self.instrument_captures))
+        linked_count = sum(
+            1 for c in self.instrument_captures
+            if str(c.get("id") or "") in self._linked_instrument_capture_ids()
+        )
+        pending_count = len(self.instrument_captures) - linked_count
+        self.instrument_status_label.setText(
+            tr(
+                "{total} captures — {pending} pending, {linked} imported.",
+                total=len(self.instrument_captures),
+                pending=pending_count,
+                linked=linked_count,
             )
-        else:
-            self.instrument_status_label.setText(
-                tr("Loaded {count} pending instrument captures.", count=len(self.instrument_captures))
-            )
+        )
 
     def preview_instrument_capture(self) -> None:
         capture = self._selected_instrument_capture()
@@ -670,7 +888,7 @@ class ResultsPage(DataAwarePage):
             QMessageBox.information(self, tr("Missing Selection"), tr("Select an instrument capture first."))
             return
         capture_id = str(capture.get("id") or "").strip()
-        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.text().strip() or "urinalysis-com6")
+        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.currentData() or "" or "urinalysis-com6")
         try:
             payload = self._instrument_request_json(
                 "/api/v1/replay",
@@ -712,7 +930,7 @@ class ResultsPage(DataAwarePage):
         if target_entry is None:
             QMessageBox.warning(self, tr("Missing Data"), tr("The selected order test is no longer available."))
             return
-        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.text().strip() or "urinalysis-com6")
+        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.currentData() or "" or "urinalysis-com6")
         device_id = str(capture.get("device_id") or "")
         raw_code = self._observation_raw_code(obs)
         if not raw_code:
@@ -730,6 +948,7 @@ class ResultsPage(DataAwarePage):
             reference_range_override=target_entry.reference_text or "",
         )
         self._refresh_instrument_observations_table()
+        self._instrument_observation_selection_changed()
         self.instrument_status_label.setText(
             tr(
                 "Saved mapping: {profile} {code} -> {test}.",
@@ -737,6 +956,35 @@ class ResultsPage(DataAwarePage):
                 code=raw_code,
                 test=target_entry.test_name,
             )
+        )
+
+    def remove_selected_instrument_mapping(self) -> None:
+        capture = self._selected_instrument_capture()
+        if capture is None:
+            QMessageBox.information(self, tr("Missing Selection"), tr("Select an instrument capture first."))
+            return
+        obs = self._selected_instrument_observation()
+        if obs is None:
+            QMessageBox.information(self, tr("Missing Selection"), tr("Select an observation to unmap."))
+            return
+        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.currentData() or "" or "")
+        device_id = str(capture.get("device_id") or "")
+        code = self._observation_raw_code(obs)
+        mapping = self.database.resolve_instrument_result_mapping(
+            instrument_profile=profile_id,
+            device_id=device_id,
+            raw_code=code,
+            specimen_type=str(obs.get("specimen_type") or obs.get("sample_type") or ""),
+            panel_hint=str(obs.get("panel_hint") or obs.get("panel") or ""),
+        )
+        if mapping is None:
+            self.instrument_status_label.setText(tr("No mapping found for this observation."))
+            return
+        self.database.delete_instrument_result_mapping(mapping.id)
+        self._refresh_instrument_observations_table()
+        self.instrument_target_test_combo.setCurrentIndex(0)
+        self.instrument_status_label.setText(
+            tr("Removed mapping: {profile} {code}.", profile=profile_id, code=code)
         )
 
     def link_instrument_capture_to_order(self) -> None:
@@ -759,76 +1007,10 @@ class ResultsPage(DataAwarePage):
         if self.result_service.uses_server_backend():
             self._link_server_instrument_capture(capture, order_id)
             return
-        entries = [entry for entry in self.database.get_order_result_entries(int(order_id)) if entry.item_type == "test"]
-        order_test_codes = self.database.list_order_test_codes(int(order_id))
-        entries_by_test_id = {int(entry.test_id): entry for entry in entries}
-        entries_by_code: dict[str, ResultEntryRecord] = {}
-        for entry in entries:
-            code = self._normalize_test_code(order_test_codes.get(int(entry.order_test_id), ""))
-            if code:
-                entries_by_code[code] = entry
-        for entry in entries:
-            code = self._extract_code_from_test_name(entry.test_name)
-            if code:
-                entries_by_code[code] = entry
-
-        imported_count = 0
-        unmatched_codes: list[str] = []
         capture_id = str(capture.get("id") or "").strip()
-        profile_id = str(capture.get("profile_id") or "").strip()
-        device_id = str(capture.get("device_id") or "").strip()
-        for obs in observations:
-            code = self._observation_raw_code(obs)
-            mapping = self.database.resolve_instrument_result_mapping(
-                instrument_profile=profile_id or self.instrument_profile_input.text().strip(),
-                device_id=device_id,
-                raw_code=code,
-                specimen_type=str(obs.get("specimen_type") or obs.get("sample_type") or ""),
-                panel_hint=str(obs.get("panel_hint") or obs.get("panel") or ""),
-            )
-            if mapping is None:
-                for candidate_entry in entries:
-                    candidate_mapping = self.database.resolve_instrument_result_mapping(
-                        instrument_profile=profile_id or self.instrument_profile_input.text().strip(),
-                        device_id=device_id,
-                        raw_code=code,
-                        specimen_type=candidate_entry.specimen_type or "",
-                        panel_hint=candidate_entry.source_label or "",
-                    )
-                    if candidate_mapping is not None and candidate_mapping.test_id == candidate_entry.test_id:
-                        mapping = candidate_mapping
-                        break
-            entry = entries_by_test_id.get(mapping.test_id) if mapping is not None else None
-            if entry is None:
-                entry = entries_by_code.get(code)
-            if entry is None:
-                unmatched_codes.append(code or tr("unknown"))
-                continue
-            result_value = self._instrument_observation_value(obs, entry.result_kind)
-            unit = str(
-                (mapping.unit_override if mapping is not None else "")
-                or obs.get("units_normalized")
-                or obs.get("units_raw")
-                or entry.unit
-                or ""
-            ).strip()
-            reference_text = (
-                mapping.reference_range_override
-                if mapping is not None and mapping.reference_range_override
-                else entry.reference_text or ""
-            )
-            comment = self._instrument_link_comment(capture_id, profile_id, device_id, code, mapping)
-            self.database.save_result_entry(
-                order_test_id=int(entry.order_test_id),
-                result_value=result_value,
-                unit=unit,
-                lower_value=entry.lower_value,
-                upper_value=entry.upper_value,
-                reference_text=reference_text,
-                comments=comment,
-                result_kind=entry.result_kind,
-            )
-            imported_count += 1
+        imported_count, unmatched_codes = self._apply_capture_to_order(
+            capture, observations, int(order_id)
+        )
         if imported_count == 0:
             QMessageBox.warning(
                 self,
@@ -838,7 +1020,8 @@ class ResultsPage(DataAwarePage):
             return
         self._mark_instrument_capture_linked(capture_id, int(order_id))
         self.current_orders = self.database.list_results_workflow_orders()
-        self._refresh_table()
+        if self.show_review:
+            self._refresh_table()
         self.refresh_instrument_captures()
         detail = ""
         if unmatched_codes:
@@ -877,6 +1060,252 @@ class ResultsPage(DataAwarePage):
             tr("Imported"),
             tr("Linked {count} instrument results to the selected order.", count=imported_count) + detail,
         )
+
+    def _apply_capture_to_order(
+        self,
+        capture: dict[str, object],
+        observations: list[dict[str, object]],
+        order_id: int,
+    ) -> tuple[int, list[str]]:
+        profile_id = str(capture.get("profile_id") or "").strip()
+        device_id = str(capture.get("device_id") or "").strip()
+        capture_id = str(capture.get("id") or "").strip()
+        entries = [entry for entry in self.database.get_order_result_entries(order_id) if entry.item_type == "test"]
+        order_test_codes = self.database.list_order_test_codes(order_id)
+        entries_by_test_id = {int(entry.test_id): entry for entry in entries}
+        entries_by_code: dict[str, ResultEntryRecord] = {}
+        for entry in entries:
+            code = self._normalize_test_code(order_test_codes.get(int(entry.order_test_id), ""))
+            if code:
+                entries_by_code[code] = entry
+        for entry in entries:
+            code = self._extract_code_from_test_name(entry.test_name)
+            if code:
+                entries_by_code[code] = entry
+        imported_count = 0
+        unmatched_codes: list[str] = []
+        for obs in observations:
+            code = self._observation_raw_code(obs)
+            mapping = self.database.resolve_instrument_result_mapping(
+                instrument_profile=profile_id,
+                device_id=device_id,
+                raw_code=code,
+                specimen_type=str(obs.get("specimen_type") or obs.get("sample_type") or ""),
+                panel_hint=str(obs.get("panel_hint") or obs.get("panel") or ""),
+            )
+            if mapping is None:
+                for candidate_entry in entries:
+                    candidate_mapping = self.database.resolve_instrument_result_mapping(
+                        instrument_profile=profile_id,
+                        device_id=device_id,
+                        raw_code=code,
+                        specimen_type=candidate_entry.specimen_type or "",
+                        panel_hint=candidate_entry.source_label or "",
+                    )
+                    if candidate_mapping is not None and candidate_mapping.test_id == candidate_entry.test_id:
+                        mapping = candidate_mapping
+                        break
+            entry = entries_by_test_id.get(mapping.test_id) if mapping is not None else None
+            if entry is None:
+                entry = entries_by_code.get(code)
+            if entry is None:
+                unmatched_codes.append(code or tr("unknown"))
+                continue
+            result_value = self._instrument_observation_value(obs, entry.result_kind)
+            if mapping is not None and result_value:
+                slice_start = mapping.value_slice_start
+                slice_end = mapping.value_slice_end
+                if slice_start is not None or slice_end is not None:
+                    py_start = (slice_start - 1) if slice_start is not None else 0
+                    py_end = slice_end if slice_end is not None else None
+                    result_value = result_value[py_start:py_end].strip()
+            value_formula = mapping.value_formula if mapping is not None else None
+            multiplier = (mapping.value_multiplier if mapping is not None and mapping.value_multiplier else None) or entry.result_multiplier
+            if entry.result_kind == "numeric" and result_value:
+                if value_formula:
+                    try:
+                        raw = float(Decimal(result_value.replace(",", "")))
+                        transformed = Decimal(str(_safe_eval_formula(value_formula, raw)))
+                        formatted = format(transformed, "f")
+                        if "." in formatted:
+                            int_part, dec_part = formatted.split(".", 1)
+                            result_value = formatted if dec_part.rstrip("0") else int_part
+                        else:
+                            result_value = formatted
+                    except (ValueError, TypeError, InvalidOperation, ZeroDivisionError):
+                        pass
+                elif multiplier:
+                    try:
+                        multiplied = Decimal(result_value.replace(",", "")) * Decimal(str(multiplier))
+                        formatted = format(multiplied, "f")
+                        if "." in formatted:
+                            int_part, dec_part = formatted.split(".", 1)
+                            result_value = formatted if dec_part.rstrip("0") else int_part
+                        else:
+                            result_value = formatted
+                    except (ValueError, TypeError, InvalidOperation):
+                        pass
+            decimal_places = mapping.decimal_places if mapping is not None else None
+            if decimal_places is not None and entry.result_kind == "numeric" and result_value:
+                try:
+                    result_value = str(round(Decimal(result_value.replace(",", "")), decimal_places))
+                except (ValueError, TypeError, InvalidOperation):
+                    pass
+            unit = str(entry.unit or "").strip()
+            reference_text = (
+                mapping.reference_range_override
+                if mapping is not None and mapping.reference_range_override
+                else entry.reference_text or ""
+            )
+            self.database.save_result_entry(
+                order_test_id=int(entry.order_test_id),
+                result_value=result_value,
+                unit=unit,
+                lower_value=entry.lower_value,
+                upper_value=entry.upper_value,
+                reference_text=reference_text,
+                comments="",
+                result_kind=entry.result_kind,
+            )
+            imported_count += 1
+        return imported_count, unmatched_codes
+
+    def _auto_import_pending(self) -> None:
+        if self.result_service.uses_server_backend():
+            return
+        linked = self._linked_instrument_capture_ids()
+        imported_total = 0
+        for capture in list(self.instrument_captures):
+            capture_id = str(capture.get("id") or "").strip()
+            if capture_id in linked:
+                continue
+            result = self._instrument_result_from_capture(capture)
+            if result is None:
+                continue
+            message = result.get("message")
+            if not isinstance(message, dict):
+                continue
+            patient_id = str(message.get("patient_id") or "").strip()
+            sample_id = str(message.get("sample_id") or "").strip()
+            accession_id = str(message.get("accession_id") or "").strip()
+            order_number = str(message.get("analyzer_run_id") or "").strip()
+            if not patient_id and not sample_id and not accession_id and not order_number:
+                continue
+            profile_id = str(capture.get("profile_id") or "").strip()
+            match_cfg = self.database.get_instrument_order_match(profile_id) if profile_id else None
+            if match_cfg is not None and not match_cfg.auto_import:
+                continue
+            if match_cfg is not None:
+                _field_values = {
+                    "sample_id": sample_id,
+                    "accession_id": accession_id,
+                    "analyzer_run_id": order_number,
+                    "patient_id": patient_id,
+                }
+                order_id = self.database.find_order_by_instrument_ids(
+                    **{match_cfg.order_field: _field_values.get(match_cfg.instrument_field, "")}
+                )
+            else:
+                order_id = self.database.find_order_by_instrument_ids(
+                    sample_id=sample_id,
+                    accession_id=accession_id,
+                    order_number=order_number,
+                    patient_id=patient_id,
+                )
+            if order_id is None:
+                continue
+            observations = []
+            observations_raw = message.get("observations")
+            if isinstance(observations_raw, list):
+                observations = [dict(o) for o in observations_raw if isinstance(o, dict)]
+            if not observations:
+                continue
+            imported_count, _ = self._apply_capture_to_order(capture, observations, order_id)
+            if imported_count > 0:
+                self._mark_instrument_capture_linked(capture_id, order_id)
+                imported_total += imported_count
+        if imported_total > 0:
+            self.current_orders = self.database.list_results_workflow_orders()
+            if self.show_review:
+                self._refresh_table()
+            self.refresh_instrument_captures()
+            self.instrument_status_label.setText(
+                tr("Auto-imported {count} result(s) from instrument captures.", count=imported_total)
+            )
+
+    def reimport_recent_captures(self) -> None:
+        if self.result_service.uses_server_backend():
+            QMessageBox.information(self, tr("Not Available"), tr("Reimport is only available in local mode."))
+            return
+        profile_id = self.instrument_profile_input.currentData() or ""
+        candidates = [
+            c for c in self.instrument_captures
+            if (not profile_id or str(c.get("profile_id") or "") == profile_id)
+            and self._capture_has_data(c)
+        ][:20]
+        if not candidates:
+            self.instrument_status_label.setText(tr("No captures to reimport."))
+            return
+        imported_total = 0
+        unmatched_total: list[str] = []
+        no_order: list[str] = []
+        for capture in candidates:
+            capture_id = str(capture.get("id") or "").strip()
+            result = self._instrument_result_from_capture(capture)
+            if result is None:
+                continue
+            message = result.get("message")
+            if not isinstance(message, dict):
+                continue
+            patient_id = str(message.get("patient_id") or "").strip()
+            sample_id = str(message.get("sample_id") or "").strip()
+            accession_id = str(message.get("accession_id") or "").strip()
+            order_number = str(message.get("analyzer_run_id") or "").strip()
+            if not patient_id and not sample_id and not accession_id and not order_number:
+                continue
+            cap_profile = str(capture.get("profile_id") or "").strip()
+            match_cfg = self.database.get_instrument_order_match(cap_profile) if cap_profile else None
+            if match_cfg is not None:
+                _field_values = {
+                    "sample_id": sample_id,
+                    "accession_id": accession_id,
+                    "analyzer_run_id": order_number,
+                    "patient_id": patient_id,
+                }
+                order_id = self.database.find_order_by_instrument_ids(
+                    **{match_cfg.order_field: _field_values.get(match_cfg.instrument_field, "")}
+                )
+            else:
+                order_id = self.database.find_order_by_instrument_ids(
+                    sample_id=sample_id,
+                    accession_id=accession_id,
+                    order_number=order_number,
+                    patient_id=patient_id,
+                )
+            if order_id is None:
+                no_order.append(sample_id or accession_id or order_number or capture_id[:8])
+                continue
+            observations = []
+            observations_raw = message.get("observations")
+            if isinstance(observations_raw, list):
+                observations = [dict(o) for o in observations_raw if isinstance(o, dict)]
+            if not observations:
+                continue
+            imported_count, unmatched = self._apply_capture_to_order(capture, observations, order_id)
+            unmatched_total.extend(unmatched)
+            if imported_count > 0:
+                self._mark_instrument_capture_linked(capture_id, order_id)
+                imported_total += imported_count
+        self.current_orders = self.database.list_results_workflow_orders()
+        if self.show_review:
+            self._refresh_table()
+        self.refresh_instrument_captures()
+        parts = [tr("Reimported {count} result(s).", count=imported_total)]
+        if no_order:
+            parts.append(tr("{n} capture(s) had no matching order.", n=len(no_order)))
+        if unmatched_total:
+            parts.append(tr("Unmatched codes: {codes}.", codes=", ".join(sorted(set(unmatched_total)))))
+        self.instrument_status_label.setText("  ".join(parts))
 
     def _refresh_instrument_order_choices(self) -> None:
         selected = self.instrument_order_combo.currentData()
@@ -917,23 +1346,35 @@ class ResultsPage(DataAwarePage):
                 self.instrument_target_test_combo.setCurrentIndex(index)
 
     def _refresh_instrument_tables(self) -> None:
+        linked_map = self._linked_instrument_captures()
         self.instrument_captures_table.blockSignals(True)
         self.instrument_captures_table.clearContents()
         self.instrument_captures_table.setRowCount(len(self.instrument_captures))
         self.instrument_captures_table.setColumnWidth(0, 135)
         self.instrument_captures_table.setColumnWidth(1, 105)
-        self.instrument_captures_table.setColumnWidth(2, 150)
         self.instrument_captures_table.setColumnWidth(3, 125)
         self.instrument_captures_table.setColumnWidth(4, 90)
+        self.instrument_captures_table.setColumnWidth(5, 130)
         self.instrument_captures_table.setColumnWidth(6, 120)
+        self.instrument_captures_table.setColumnWidth(7, 160)
         for row_index, capture in enumerate(self.instrument_captures):
-            self._set_instrument_capture_item(row_index, 0, self._format_capture_datetime(str(capture.get("received_at") or "")), capture)
-            self._set_instrument_capture_item(row_index, 1, self._capture_sample_id(capture), capture)
-            self._set_instrument_capture_item(row_index, 2, self._capture_patient_name(capture), capture)
-            self._set_instrument_capture_item(row_index, 3, str(capture.get("id") or ""), capture)
-            self._set_instrument_capture_item(row_index, 4, str(capture.get("device_id") or ""), capture)
-            self._set_instrument_capture_item(row_index, 5, self._capture_preview(capture), capture)
-            self._set_instrument_capture_item(row_index, 6, str(capture.get("profile_id") or ""), capture)
+            capture_id = str(capture.get("id") or "")
+            link_info = linked_map.get(capture_id)
+            is_linked = link_info is not None
+            if is_linked:
+                order_id = link_info.get("order_id")
+                order = next((o for o in self.current_orders if str(o.id) == str(order_id)), None)
+                status_text = f"✓ {order.order_number}" if order else tr("Imported")
+            else:
+                status_text = tr("Pending")
+            self._set_instrument_capture_item(row_index, 0, self._format_capture_datetime(str(capture.get("received_at") or "")), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 1, self._capture_sample_id(capture), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 2, self._capture_patient_name(capture), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 3, str(capture.get("id") or ""), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 4, str(capture.get("device_id") or ""), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 5, self._capture_preview(capture), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 6, str(capture.get("profile_id") or ""), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 7, status_text, capture, linked=is_linked)
         self.instrument_captures_table.blockSignals(False)
         if self.instrument_captures and self.instrument_captures_table.currentRow() < 0:
             self.instrument_captures_table.selectRow(0)
@@ -945,11 +1386,11 @@ class ResultsPage(DataAwarePage):
         self.instrument_observations_table.clearContents()
         self.instrument_observations_table.setRowCount(len(observations))
         self.instrument_observations_table.setColumnWidth(0, 90)
-        self.instrument_observations_table.setColumnWidth(2, 110)
+        self.instrument_observations_table.setColumnWidth(2, 120)
         self.instrument_observations_table.setColumnWidth(3, 90)
         self.instrument_observations_table.setColumnWidth(4, 100)
         capture = self._selected_instrument_capture() or {}
-        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.text().strip() or "")
+        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.currentData() or "" or "")
         device_id = str(capture.get("device_id") or "")
         for row_index, obs in enumerate(observations):
             code = self._observation_raw_code(obs)
@@ -970,11 +1411,53 @@ class ResultsPage(DataAwarePage):
     def _instrument_capture_selection_changed(self) -> None:
         self.instrument_result = self._instrument_result_from_capture(self._selected_instrument_capture() or {})
         self._refresh_instrument_observations_table()
+        self._instrument_observation_selection_changed()
+        capture = self._selected_instrument_capture()
+        capture_id = str(capture.get("id") or "") if capture else ""
+        linked_order_id = None
+        if capture_id:
+            linked_map = self._linked_instrument_captures()
+            entry = linked_map.get(capture_id)
+            if isinstance(entry, dict):
+                linked_order_id = entry.get("order_id")
+        self.instrument_order_combo.blockSignals(True)
+        if linked_order_id is not None:
+            index = self.instrument_order_combo.findData(linked_order_id)
+            self.instrument_order_combo.setCurrentIndex(index if index >= 0 else 0)
+        else:
+            self.instrument_order_combo.setCurrentIndex(0)
+        self.instrument_order_combo.blockSignals(False)
+        self._refresh_instrument_target_test_choices()
 
-    def _set_instrument_capture_item(self, row: int, column: int, value: str, capture: dict[str, object]) -> None:
+    def _instrument_observation_selection_changed(self) -> None:
+        obs = self._selected_instrument_observation()
+        if obs is None:
+            return
+        capture = self._selected_instrument_capture() or {}
+        profile_id = str(capture.get("profile_id") or self.instrument_profile_input.currentData() or "" or "")
+        device_id = str(capture.get("device_id") or "")
+        code = self._observation_raw_code(obs)
+        mapping = self.database.resolve_instrument_result_mapping(
+            instrument_profile=profile_id,
+            device_id=device_id,
+            raw_code=code,
+            specimen_type=str(obs.get("specimen_type") or obs.get("sample_type") or ""),
+            panel_hint=str(obs.get("panel_hint") or obs.get("panel") or ""),
+        )
+        if mapping is not None:
+            index = self.instrument_target_test_combo.findData(mapping.test_id)
+            if index >= 0:
+                self.instrument_target_test_combo.setCurrentIndex(index)
+                return
+        self.instrument_target_test_combo.setCurrentIndex(0)
+
+    def _set_instrument_capture_item(self, row: int, column: int, value: str, capture: dict[str, object], *, linked: bool = False) -> None:
+        from PySide6.QtGui import QColor
         item = QTableWidgetItem(value)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         item.setData(Qt.UserRole, capture)
+        if linked:
+            item.setForeground(QColor("#5ad08c"))
         self.instrument_captures_table.setItem(row, column, item)
 
     def _set_observation_item(self, row: int, column: int, value: str) -> None:
@@ -1053,12 +1536,15 @@ class ResultsPage(DataAwarePage):
         except json.JSONDecodeError as exc:
             raise RuntimeError(tr("Instrument engine returned invalid JSON.")) from exc
 
-    def _linked_instrument_capture_ids(self) -> set[str]:
+    def _linked_instrument_captures(self) -> dict[str, dict]:
         ui_state = self.database.get_ui_state()
         raw = ui_state.get(self.LINKED_INSTRUMENT_CAPTURES_KEY, {})
         if not isinstance(raw, dict):
-            return set()
-        return {str(capture_id) for capture_id in raw.keys()}
+            return {}
+        return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+
+    def _linked_instrument_capture_ids(self) -> set[str]:
+        return set(self._linked_instrument_captures().keys())
 
     def _mark_instrument_capture_linked(self, capture_id: str, order_id: int) -> None:
         if not capture_id:
@@ -1154,11 +1640,14 @@ class ResultsPage(DataAwarePage):
 
     @staticmethod
     def _format_capture_datetime(raw_value: str) -> str:
-        value = str(raw_value or "").strip().replace("T", " ")
+        value = str(raw_value or "").strip()
         if not value:
             return ""
-        value = value.replace("Z", "")
-        return value[:16]
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return value.replace("T", " ").replace("Z", "")[:16]
 
     @staticmethod
     def _normalize_test_code(value: str) -> str:
@@ -1174,44 +1663,44 @@ class ResultsPage(DataAwarePage):
 
     @staticmethod
     def _instrument_observation_value(obs: dict[str, object], result_kind: str) -> str:
-        if result_kind == "numeric" and obs.get("value_numeric") is not None:
-            return f"{float(obs['value_numeric']):g}"
+        if result_kind == "numeric":
+            # Prefer the raw string from the instrument so trailing zeros are preserved
+            # (e.g. "1.020" must not become "1.02" via float conversion)
+            for key in ("value_raw", "value_text"):
+                raw = obs.get(key)
+                if raw is not None:
+                    s = str(raw).strip().replace(",", "")
+                    if s:
+                        try:
+                            float(s)
+                            return s
+                        except ValueError:
+                            pass
+            if obs.get("value_numeric") is not None:
+                val = float(obs["value_numeric"])
+                return str(int(val)) if val == int(val) else str(val)
+            return ""
         for key in ("value_text", "value_raw", "value_numeric"):
             value = obs.get(key)
             if value is not None and str(value).strip():
-                return str(value).strip()
+                s = str(value).strip()
+                return s.split("^")[0].strip() if "^" in s else s
         return ""
 
     @classmethod
     def _observation_raw_code(cls, obs: dict[str, object]) -> str:
         return cls._normalize_test_code(str(obs.get("instrument_test_code") or obs.get("mapped_lis_test_id") or ""))
 
-    @staticmethod
-    def _instrument_link_comment(
-        capture_id: str,
-        profile_id: str,
-        device_id: str,
-        code: str,
-        mapping: InstrumentResultMappingRecord | None = None,
-    ) -> str:
-        payload = {
-            "source": "instrument",
-            "capture_id": capture_id,
-            "profile": profile_id,
-            "device": device_id,
-            "instrument_code": code,
-        }
-        if mapping is not None:
-            payload["mapping_id"] = mapping.id
-            payload["mapped_test_code"] = mapping.test_code
-        return json.dumps(
-            payload,
-            ensure_ascii=True,
-        )
-
     def _refresh_table(self) -> None:
+        query = self.review_search.text().strip().casefold() if hasattr(self, "review_search") else ""
+        filtered_orders = [
+            o for o in self.current_orders
+            if not query
+            or query in (o.order_number or "").casefold()
+            or query in (o.patient_name or "").casefold()
+        ]
         self.orders_table.clearContents()
-        self.orders_table.setRowCount(len(self.current_orders))
+        self.orders_table.setRowCount(len(filtered_orders))
         self.orders_table.setColumnWidth(0, 104)
         self.orders_table.setColumnWidth(1, 74)
         self.orders_table.setColumnWidth(2, 210)
@@ -1222,20 +1711,25 @@ class ResultsPage(DataAwarePage):
         self.orders_table.setColumnWidth(7, 104)
 
         approvals = self._approved_versions()
-        for row_index, order in enumerate(self.current_orders):
+        for row_index, order in enumerate(filtered_orders):
             self._set_item(row_index, 0, self._format_order_date(order.order_date))
             self._set_item(row_index, 1, order.order_number)
             self._set_item(row_index, 2, order.patient_name)
             self._set_item(row_index, 3, order.client_name or "")
 
-            approved = approvals.get(order.id) == int(order.report_version or 0) and int(order.report_version or 0) > 0
+            approved = (
+                approvals.get(order.id) == int(order.report_version or 0)
+                and int(order.report_version or 0) > 0
+                and not int(order.report_outdated or 0)
+            )
+            ready = int(order.result_count or 0) > 0 and int(order.completed_result_count or 0) >= int(order.result_count or 0)
 
             preview_button = QPushButton(tr("Preview Report"))
             preview_button.setStyleSheet(self._results_action_button_style())
             preview_button.clicked.connect(lambda _checked=False, order_id=order.id: self.preview_report(order_id))
             self.orders_table.setCellWidget(row_index, 4, self._build_centered_cell_widget(preview_button))
 
-            self.orders_table.setCellWidget(row_index, 5, self._build_status_indicator(approved, order.id in self.previewed_orders))
+            self.orders_table.setCellWidget(row_index, 5, self._build_status_indicator(approved, order.id in self.previewed_orders, ready))
 
             send_patient_button = QPushButton(tr("Send Patient"))
             send_patient_button.setEnabled(approved and bool((order.patient_phone or "").strip()))
@@ -1263,7 +1757,7 @@ class ResultsPage(DataAwarePage):
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self.orders_table.setItem(row, column, item)
 
-    def _build_status_indicator(self, approved: bool, previewed: bool) -> QWidget:
+    def _build_status_indicator(self, approved: bool, previewed: bool, ready: bool = False) -> QWidget:
         container = QWidget()
         container.setAttribute(Qt.WA_TranslucentBackground, True)
         container.setStyleSheet("background-color: transparent; border: none;")
@@ -1276,6 +1770,9 @@ class ResultsPage(DataAwarePage):
         if approved:
             color = "#3ddc84"
             tooltip = tr("Approved")
+        elif ready:
+            color = "#4db8ff"
+            tooltip = tr("Ready to approve")
         elif previewed:
             color = "#f5c451"
             tooltip = tr("Previewed")
@@ -1441,6 +1938,37 @@ class ResultsPage(DataAwarePage):
             options.append((Path(value).name or value, value))
         return options
 
+    def _footer_options(self) -> list[tuple[str, str]]:
+        branding = self.database.get_report_branding_options()
+        options: list[tuple[str, str]] = []
+        for raw_path in branding.get("footers", []):
+            value = str(raw_path or "").strip()
+            if not value:
+                continue
+            options.append((Path(value).name or value, value))
+        return options
+
+    def _selected_footer_for_order(self, order_id: int, preview: dict[str, object]) -> str:
+        ui_state = self.database.get_ui_state()
+        raw = ui_state.get(self.ORDER_FOOTERS_KEY, {})
+        if isinstance(raw, dict):
+            stored = raw.get(str(order_id))
+            if isinstance(stored, str):
+                return stored
+        branding = self.database.get_report_branding_options()
+        preview_footer = str(preview.get("footer_signature_image_path") or "").strip()
+        if preview_footer:
+            return preview_footer
+        return str(branding.get("selected_footer") or "")
+
+    def _save_selected_footer_for_order(self, order_id: int, footer_path: str) -> None:
+        ui_state = self.database.get_ui_state()
+        raw = ui_state.get(self.ORDER_FOOTERS_KEY, {})
+        mappings = dict(raw) if isinstance(raw, dict) else {}
+        mappings[str(order_id)] = footer_path.strip()
+        ui_state[self.ORDER_FOOTERS_KEY] = mappings
+        self.database.save_ui_state(ui_state)
+
     def _find_order(self, order_id: int) -> ResultWorkflowRecord | None:
         for order in self.current_orders:
             if order.id == order_id:
@@ -1454,30 +1982,56 @@ class ResultsPage(DataAwarePage):
             return
         self.previewed_orders.add(order_id)
         selected_header = self._selected_header_for_order(order_id, preview)
+        selected_footer = self._selected_footer_for_order(order_id, preview)
         preview["header_image_path"] = selected_header
+        preview["footer_signature_image_path"] = selected_footer
         order = self._find_order(order_id)
         current_version = int(order.report_version or 0) if order is not None else int(preview.get("report_version") or 0)
-        approved = self._approved_versions().get(order_id) == current_version and current_version > 0
+        approved = (
+            self._approved_versions().get(order_id) == current_version
+            and current_version > 0
+            and not int((order.report_outdated if order is not None else 0) or 0)
+        )
+        preview_with_layout = {**self.database.get_report_layout_settings(), **preview}
         dialog = ReportPreviewDialog(
-            preview,
+            preview_with_layout,
             self._build_report_html,
             can_approve=True,
             approved=approved,
             header_options=self._header_options(),
             selected_header=selected_header,
+            footer_options=self._footer_options(),
+            selected_footer=selected_footer,
             parent=self,
         )
         dialog.exec()
         self._save_selected_header_for_order(order_id, dialog.selected_header)
+        self._save_selected_footer_for_order(order_id, dialog.selected_footer)
         if dialog.approved_clicked:
             self.approve_report(order_id, preview_override=dialog.approved_preview, export_pdf=True)
             return
         if approved and dialog.preview_changed:
-            self.approve_report(
-                order_id,
-                preview_override=dialog.current_preview,
-                export_pdf=False,
-                success_message=tr("Approved report changes saved. WhatsApp sending will use the updated report."),
+            try:
+                self.report_service.finalize_report(
+                    order_id,
+                    header_image_path=dialog.selected_header,
+                    footer_signature_image_path=dialog.selected_footer,
+                    preview_override=dialog.current_preview,
+                )
+            except Exception as exc:
+                QMessageBox.critical(self, tr("Save Failed"), str(exc))
+                return
+            approvals = self._approved_versions()
+            approvals.pop(order_id, None)
+            ui_state = self.database.get_ui_state()
+            ui_state[self.APPROVALS_KEY] = {str(k): v for k, v in approvals.items()}
+            self.database.save_ui_state(ui_state)
+            self.refresh_on_show()
+            self.notify_data_changed()
+            QMessageBox.information(
+                self,
+                tr("Changes Saved"),
+                tr("Report changes saved as a new version. Please re-approve to export the updated report."),
             )
             return
         self._refresh_table()
@@ -1494,8 +2048,14 @@ class ResultsPage(DataAwarePage):
             QMessageBox.information(self, tr("Missing Selection"), tr("Preview the report before approving it."))
             return
         selected_header = self._selected_header_for_order(order_id, {})
+        selected_footer = self._selected_footer_for_order(order_id, {})
+        if preview_override is not None:
+            if "header_image_path" in preview_override:
+                selected_header = str(preview_override["header_image_path"] or "")
+            if "footer_signature_image_path" in preview_override:
+                selected_footer = str(preview_override["footer_signature_image_path"] or "")
         try:
-            self.report_service.finalize_report(order_id, header_image_path=selected_header, preview_override=preview_override)
+            self.report_service.finalize_report(order_id, header_image_path=selected_header, footer_signature_image_path=selected_footer, preview_override=preview_override)
         except Exception as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
             return
@@ -1554,7 +2114,7 @@ class ResultsPage(DataAwarePage):
         self._open_whatsapp(order.client_phone or "", message, order_id, recipient="client")
 
     def _open_whatsapp(self, phone: str, message: str, order_id: int, *, recipient: str) -> None:
-        normalized_phone = "".join(character for character in phone if character.isdigit())
+        normalized_phone = normalize_whatsapp_phone(phone, self.database.get_whatsapp_country_code())
         if not normalized_phone:
             QMessageBox.warning(self, tr("Missing Data"), tr("Phone number not available for this contact."))
             return
@@ -1677,7 +2237,7 @@ class ResultsPage(DataAwarePage):
         return date_text
 
     def _build_report_html(self, preview: dict[str, object]) -> str:
-        return build_report_html(preview)
+        return build_report_html({**self.database.get_report_layout_settings(), **preview})
 
 
 class InstrumentResultsPage(ResultsPage):

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from spdxlims.admin_cfdi import write_cfdi_preview_xml
-from spdxlims.admin_excel import build_admin_export_sheets, write_admin_export_workbook
+from spdxlims.admin_excel import build_admin_export_sheets, build_client_results_sheet, build_invoice_excel_sheet, write_admin_export_workbook
 from spdxlims.database import (
     BillingCustomerRecord,
     ClientRecord,
@@ -45,6 +45,7 @@ from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pages.orders_page import ClientDialog, DoctorDialog
 from spdxlims.sat_catalogs import FORMA_PAGO_OPTIONS, METODO_PAGO_OPTIONS, USO_CFDI_OPTIONS
+from spdxlims.whatsapp_phone import normalize_whatsapp_phone
 
 
 class AdministrativePage(DataAwarePage):
@@ -82,6 +83,7 @@ class AdministrativePage(DataAwarePage):
         elif self.section_mode == 'collections':
             grid.addWidget(self._build_billing_group(), 0, 0)
             grid.addWidget(self._build_invoice_group(), 0, 1)
+            grid.addWidget(self._build_client_results_export_group(), 1, 0, 1, 2)
         else:
             grid.addWidget(self._build_billing_group(), 0, 0)
             grid.addWidget(self._build_doctor_group(), 0, 1)
@@ -286,12 +288,13 @@ class AdministrativePage(DataAwarePage):
         self.invoice_notes.setMinimumHeight(72)
         self.invoice_filter_status = QLabel()
         self.invoice_filter_status.setWordWrap(True)
+        today = QDate.currentDate()
         for widget in (self.invoice_filter_date_from, self.invoice_filter_date_to):
             widget.setCalendarPopup(True)
             widget.setDisplayFormat("yyyy-MM-dd")
             widget.setMinimumDate(self.FILTER_DATE_MIN)
-            widget.setSpecialValueText(" ")
-            widget.setDate(self.FILTER_DATE_MIN)
+        self.invoice_filter_date_from.setDate(today.addMonths(-1))
+        self.invoice_filter_date_to.setDate(today)
         for key, field in [('invoice_mode', self.invoice_mode), ('invoice_number', self.invoice_number), ('invoice_date', self.invoice_date), ('invoice_client', self.invoice_client), ('invoice_order', self.invoice_order), ('receipt_order', self.receipt_order), ('invoice_status', self.invoice_status), ('invoice_total', self.invoice_total), ('invoice_cfdi_use', self.invoice_cfdi_use), ('invoice_payment_form', self.invoice_payment_form), ('invoice_payment_method', self.invoice_payment_method), ('invoice_currency', self.invoice_currency), ('invoice_notes', self.invoice_notes)]:
             label = QLabel()
             self.invoice_labels[key] = label
@@ -329,6 +332,8 @@ class AdministrativePage(DataAwarePage):
         self.print_invoice_button.clicked.connect(self.print_selected_invoice)
         self.export_invoice_pdf_button = QPushButton()
         self.export_invoice_pdf_button.clicked.connect(self.export_selected_invoice_pdf)
+        self.export_invoice_excel_button = QPushButton()
+        self.export_invoice_excel_button.clicked.connect(self.export_selected_invoice_excel)
         self.send_invoice_whatsapp_button = QPushButton()
         self.send_invoice_whatsapp_button.clicked.connect(self.send_selected_invoice_whatsapp)
         button_row.addWidget(self.apply_invoice_filter_button)
@@ -338,6 +343,7 @@ class AdministrativePage(DataAwarePage):
         button_row.addWidget(self.create_receipt_button)
         button_row.addWidget(self.print_invoice_button)
         button_row.addWidget(self.export_invoice_pdf_button)
+        button_row.addWidget(self.export_invoice_excel_button)
         button_row.addWidget(self.send_invoice_whatsapp_button)
         button_row.addWidget(self.export_cfdi_button)
         button_row.addStretch(1)
@@ -355,6 +361,34 @@ class AdministrativePage(DataAwarePage):
         self.receipt_table.setSelectionMode(QTableWidget.SingleSelection)
         layout.addWidget(self.receipt_table)
         return self.invoice_group
+
+    def _build_client_results_export_group(self) -> QWidget:
+        self.client_results_group, layout = self._styled_group()
+        self.client_results_info = QLabel()
+        self.client_results_info.setWordWrap(True)
+        controls = QHBoxLayout()
+        self.client_results_client = QComboBox()
+        self.client_results_date_from = QDateEdit()
+        self.client_results_date_from.setCalendarPopup(True)
+        self.client_results_date_from.setDate(QDate.currentDate().addMonths(-1))
+        self.client_results_date_to = QDateEdit()
+        self.client_results_date_to.setCalendarPopup(True)
+        self.client_results_date_to.setDate(QDate.currentDate())
+        self.client_results_export_button = QPushButton()
+        self.client_results_export_button.clicked.connect(self._export_client_results)
+        self.client_results_status = QLabel()
+        self.client_results_status.setWordWrap(True)
+        controls.addWidget(self.client_results_client, 2)
+        controls.addWidget(QLabel(tr("From")))
+        controls.addWidget(self.client_results_date_from)
+        controls.addWidget(QLabel(tr("To")))
+        controls.addWidget(self.client_results_date_to)
+        controls.addWidget(self.client_results_export_button)
+        controls.addStretch(1)
+        layout.addWidget(self.client_results_info)
+        layout.addLayout(controls)
+        layout.addWidget(self.client_results_status)
+        return self.client_results_group
 
     def _build_export_group(self) -> QWidget:
         self.export_group, layout = self._styled_group()
@@ -459,6 +493,7 @@ class AdministrativePage(DataAwarePage):
             self.create_receipt_button.setText(tr('Create Receipt for Selected Order'))
             self.print_invoice_button.setText(tr('Print Invoice'))
             self.export_invoice_pdf_button.setText(tr('Export Invoice PDF'))
+            self.export_invoice_excel_button.setText(tr('Export Invoice Excel'))
             self.send_invoice_whatsapp_button.setText(tr('Send via WhatsApp'))
             self.export_cfdi_button.setText(tr('Export CFDI Preview XML'))
             self.invoice_table.setHorizontalHeaderLabels([tr('Invoice Number'), tr('Customer'), tr('Invoice Date'), tr('Status'), tr('Total Amount'), tr('Orders')])
@@ -477,6 +512,11 @@ class AdministrativePage(DataAwarePage):
                 self.movement_type.addItem(tr(label), value)
             index = self.movement_type.findData(current_movement)
             self.movement_type.setCurrentIndex(index if index >= 0 else 0)
+
+        if self.section_mode == 'collections':
+            self.client_results_group.setTitle(tr('Client Results Export'))
+            self.client_results_info.setText(tr('Export all test results for a client between two dates to Excel.'))
+            self.client_results_export_button.setText(tr('Export to Excel'))
 
         if self.section_mode == 'inventory':
             self.export_group.setTitle(tr('Excel Export'))
@@ -520,6 +560,8 @@ class AdministrativePage(DataAwarePage):
             self.refresh_receipt_table()
 
     def refresh_choices(self) -> None:
+        if self.section_mode == 'collections':
+            self.set_combo_items(self.client_results_client, [(label, client_id) for client_id, label in self.database.list_client_choices(active_only=False)], placeholder=tr('All clients'), selected_data=self.client_results_client.currentData())
         if self.section_mode != 'inventory':
             self.set_combo_items(self.invoice_client, [(label, client_id) for client_id, label in self.database.list_client_choices(active_only=True, include_ids=[self.invoice_client.currentData()] if self.invoice_client.currentData() is not None else None)], placeholder=tr('Select client'), selected_data=self.invoice_client.currentData())
             self.set_combo_items(self.invoice_filter_client, [(label, client_id) for client_id, label in self.database.list_client_choices(active_only=True)], placeholder=tr('All clients'), selected_data=self.invoice_filter_client.currentData())
@@ -718,8 +760,9 @@ class AdministrativePage(DataAwarePage):
 
     def clear_invoice_filters(self) -> None:
         self.invoice_filter_client.setCurrentIndex(0)
-        self.invoice_filter_date_from.setDate(self.FILTER_DATE_MIN)
-        self.invoice_filter_date_to.setDate(self.FILTER_DATE_MIN)
+        today = QDate.currentDate()
+        self.invoice_filter_date_from.setDate(today.addMonths(-1))
+        self.invoice_filter_date_to.setDate(today)
         self.refresh_choices()
 
     def save_invoice(self) -> None:
@@ -756,13 +799,25 @@ class AdministrativePage(DataAwarePage):
         if self.invoice_filter_client.currentData() is None:
             QMessageBox.warning(self, tr('Missing Data'), tr('Select a client before creating a client invoice.'))
             return
+        client_id = self.invoice_filter_client.currentData()
+        date_from = self._filter_date_value(self.invoice_filter_date_from)
+        date_to = self._filter_date_value(self.invoice_filter_date_to)
         choices = self.database.list_filtered_invoice_order_choices(
-            client_id=self.invoice_filter_client.currentData(),
-            date_from=self._filter_date_value(self.invoice_filter_date_from),
-            date_to=self._filter_date_value(self.invoice_filter_date_to),
+            client_id=client_id,
+            date_from=date_from,
+            date_to=date_to,
         )
         if not choices:
-            QMessageBox.information(self, tr('No Matches'), tr('No orders matched the selected invoice filters.'))
+            all_choices = self.database.list_filtered_invoice_order_choices(
+                client_id=client_id,
+                date_from=date_from,
+                date_to=date_to,
+                exclude_invoiced=False,
+            )
+            if all_choices:
+                QMessageBox.information(self, tr('No Matches'), tr('All orders for this client in the selected date range already have invoices.'))
+            else:
+                QMessageBox.information(self, tr('No Matches'), tr('No orders found for this client in the selected date range. Make sure orders have the correct client assigned.'))
             return
         created, linked_orders, skipped = self.database.create_client_invoices_for_orders(
             [int(order_id) for order_id, _label in choices],
@@ -867,7 +922,7 @@ class AdministrativePage(DataAwarePage):
             currency=invoice.currency or 'MXN',
             path=str(path),
         )
-        phone = ''.join(character for character in client.phone if character.isdigit())
+        phone = normalize_whatsapp_phone(client.phone, self.database.get_whatsapp_country_code())
         if not phone:
             QMessageBox.warning(self, tr('Missing Data'), tr('The selected customer phone number is not valid for WhatsApp.'))
             return
@@ -875,6 +930,28 @@ class AdministrativePage(DataAwarePage):
             QMessageBox.warning(self, tr('Open Failed'), tr('Could not open WhatsApp.'))
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+    def export_selected_invoice_excel(self) -> None:
+        invoice = self._selected_invoice()
+        if invoice is None:
+            return
+        order_panels = self.database.list_invoice_order_panels(invoice.id)
+        safe_number = ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in invoice.invoice_number)
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr('Save Invoice Excel'), f'{safe_number}.xlsx', tr('Excel Workbook (*.xlsx)')
+        )
+        if not path:
+            return
+        sheets = build_invoice_excel_sheet(
+            invoice_number=invoice.invoice_number,
+            client_name=invoice.client_name or '',
+            invoice_date=invoice.invoice_date,
+            status=self._format_invoice_status(invoice.status),
+            total=self._format_decimal(invoice.total_amount),
+            orders=order_panels,
+        )
+        target = write_admin_export_workbook(path, sheets)
+        QMessageBox.information(self, tr('Saved'), tr('Invoice exported: {path}', path=str(target)))
 
     def _selected_invoice(self) -> InvoiceRecord | None:
         row = self.invoice_table.currentRow()
@@ -974,6 +1051,30 @@ class AdministrativePage(DataAwarePage):
         </body>
         </html>
         """
+
+    def _export_client_results(self) -> None:
+        client_id = self.client_results_client.currentData()
+        date_from = self._filter_date_value(self.client_results_date_from)
+        date_to = self._filter_date_value(self.client_results_date_to)
+        rows = self.database.list_client_results_for_export(
+            client_id=client_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if not rows:
+            QMessageBox.information(self, tr('No Data'), tr('No results found for the selected criteria.'))
+            return
+        client_label = self.client_results_client.currentText().strip().replace(' ', '_') or 'all'
+        default_name = f'results_{client_label}_{date_from or "start"}_{date_to or "end"}.xlsx'
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr('Save Results Export'), default_name, tr('Excel Workbook (*.xlsx)')
+        )
+        if not path:
+            return
+        sheets = build_client_results_sheet(rows)
+        target = write_admin_export_workbook(path, sheets)
+        self.client_results_status.setText(tr('Saved: {path}', path=str(target)))
+        QMessageBox.information(self, tr('Saved'), tr('Results exported: {path}', path=str(target)))
 
     def export_admin_workbook(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, tr('Save Administrative Export'), 'administrative_export.xlsx', tr('Excel Workbook (*.xlsx)'))

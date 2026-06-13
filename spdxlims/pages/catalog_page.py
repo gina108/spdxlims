@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,8 @@ class TestDialog(QDialog):
         self.test_id = test_id
         self._editing = test_id is not None
         self.pending_ranges: list[dict[str, Any]] = []
+        self._loaded_specimen_type = ""
+        self._loaded_method = ""
 
         self.setModal(True)
         self.resize(940, 560)
@@ -77,8 +80,6 @@ class TestDialog(QDialog):
         self.test_name = QLineEdit()
         self.category_name = QComboBox()
         self.category_name.setEditable(False)
-        self.specimen_type = QLineEdit()
-        self.method = QLineEdit()
         self.result_kind = QComboBox()
         self.result_kind.addItem(tr("Numeric"), "numeric")
         self.result_kind.addItem(tr("Text"), "text")
@@ -87,17 +88,19 @@ class TestDialog(QDialog):
         self.select_options = QTextEdit()
         self.select_options.setFixedHeight(90)
         self.default_result_value = QLineEdit()
+        self.result_multiplier = QLineEdit()
+        self.result_multiplier.setPlaceholderText(tr("e.g. 1000"))
 
         form.addRow(tr("Code"), self.test_code)
         form.addRow(tr("Name"), self.test_name)
         form.addRow(tr("Equipment"), self.category_name)
-        form.addRow(tr("Specimen Type"), self.specimen_type)
-        form.addRow(tr("Method"), self.method)
         form.addRow(tr("Result Kind"), self.result_kind)
         self.select_options_label = QLabel(tr("Dropdown Options"))
         self.default_result_label = QLabel(tr("Default Result"))
         form.addRow(self.select_options_label, self.select_options)
         form.addRow(self.default_result_label, self.default_result_value)
+        self.result_multiplier_label = QLabel(tr("Result Multiplier"))
+        form.addRow(self.result_multiplier_label, self.result_multiplier)
         content_layout.addLayout(form)
 
         range_group = QGroupBox(tr("Reference Ranges"))
@@ -148,6 +151,7 @@ class TestDialog(QDialog):
         self.ranges_table.horizontalHeader().setStretchLastSection(True)
         self.ranges_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.ranges_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.ranges_table.itemSelectionChanged.connect(self._load_selected_range_into_form)
         range_layout.addWidget(self.ranges_table)
 
         remove_range_button = QPushButton(tr("Remove Selected Range"))
@@ -186,13 +190,15 @@ class TestDialog(QDialog):
         self.test_code.setText(detail["code"])
         self.test_name.setText(detail["name"])
         self._set_equipment_value(detail.get("category_name") or "")
-        self.specimen_type.setText(detail.get("specimen_type") or "")
-        self.method.setText(detail.get("method") or "")
+        self._loaded_specimen_type = str(detail.get("specimen_type") or "")
+        self._loaded_method = str(detail.get("method") or "")
         result_index = self.result_kind.findData(detail["result_kind"])
         if result_index >= 0:
             self.result_kind.setCurrentIndex(result_index)
         self.select_options.setPlainText("\n".join(self._deserialize_select_options(detail.get("select_options"))))
         self.default_result_value.setText(detail.get("default_result_value") or "")
+        multiplier = detail.get("result_multiplier")
+        self.result_multiplier.setText(str(multiplier) if multiplier is not None else "")
         self._update_select_fields_visibility()
         self.pending_ranges = [dict(reference) for reference in detail.get("reference_ranges", [])]
         self._refresh_ranges_table()
@@ -243,24 +249,20 @@ class TestDialog(QDialog):
 
     def add_reference_range(self) -> None:
         try:
-            reference = {
-                "sex": self.range_sex.currentData(),
-                "age_min_days": self._optional_int(self.range_age_min.text()),
-                "age_max_days": self._optional_int(self.range_age_max.text()),
-                "lower_value": self._optional_float(self.range_lower.text()),
-                "upper_value": self._optional_float(self.range_upper.text()),
-                "unit": self.range_unit.text().strip(),
-                "reference_text": self.range_reference_text.toPlainText().strip(),
-            }
+            reference = self._range_from_form()
         except ValueError as exc:
             QMessageBox.warning(self, tr("Invalid Range"), str(exc))
             return
 
-        if not reference["unit"] and not reference["reference_text"]:
-            QMessageBox.warning(self, tr("Missing Data"), tr("Add either a unit or reference text before saving the range."))
+        if not self._range_has_values(reference):
+            QMessageBox.warning(self, tr("Missing Data"), tr("Add at least one value before saving the range."))
             return
 
-        self.pending_ranges.append(reference)
+        row = self.ranges_table.currentRow()
+        if 0 <= row < len(self.pending_ranges):
+            self.pending_ranges[row] = reference
+        else:
+            self.pending_ranges.append(reference)
         self._refresh_ranges_table()
         self._clear_range_form()
 
@@ -306,18 +308,31 @@ class TestDialog(QDialog):
                 return
         else:
             select_options = []
-            default_result_value = ""
+
+        multiplier_text = self.result_multiplier.text().strip()
+        try:
+            result_multiplier = float(multiplier_text) if multiplier_text else None
+        except ValueError:
+            QMessageBox.warning(self, tr("Invalid Data"), tr("Result multiplier must be a number."))
+            return
 
         payload = {
             "code": self.test_code.text(),
             "name": self.test_name.text(),
             "category_name": self.category_name.currentText(),
-            "specimen_type": self.specimen_type.text(),
-            "method": self.method.text(),
+            "specimen_type": self._loaded_specimen_type,
+            "method": self._loaded_method,
             "result_kind": result_kind,
             "select_options": select_options,
             "default_result_value": default_result_value,
+            "result_multiplier": result_multiplier,
         }
+
+        try:
+            self._commit_range_form_if_needed()
+        except ValueError as exc:
+            QMessageBox.warning(self, tr("Invalid Range"), str(exc))
+            return
 
         try:
             if self.test_id is None:
@@ -334,8 +349,9 @@ class TestDialog(QDialog):
         is_select = self.result_kind.currentData() == "select"
         self.select_options_label.setVisible(is_select)
         self.select_options.setVisible(is_select)
-        self.default_result_label.setVisible(is_select)
-        self.default_result_value.setVisible(is_select)
+        is_numeric = self.result_kind.currentData() == "numeric"
+        self.result_multiplier_label.setVisible(is_numeric)
+        self.result_multiplier.setVisible(is_numeric)
 
     def _load_equipment_choices(self) -> None:
         current_value = self.category_name.currentText().strip()
@@ -410,8 +426,11 @@ class TestDialog(QDialog):
             for record in self.pending_ranges
         ]
         DataAwarePage.set_table_rows(self.ranges_table, rows)
+        if self.pending_ranges and self.ranges_table.currentRow() < 0:
+            self.ranges_table.selectRow(0)
 
     def _clear_range_form(self) -> None:
+        self.ranges_table.clearSelection()
         self.range_sex.setCurrentIndex(0)
         self.range_age_min.clear()
         self.range_age_max.clear()
@@ -419,6 +438,48 @@ class TestDialog(QDialog):
         self.range_upper.clear()
         self.range_unit.clear()
         self.range_reference_text.clear()
+
+    def _commit_range_form_if_needed(self) -> None:
+        reference = self._range_from_form()
+        if not self._range_has_values(reference):
+            return
+        row = self.ranges_table.currentRow()
+        if 0 <= row < len(self.pending_ranges):
+            self.pending_ranges[row] = reference
+            return
+        self.pending_ranges.append(reference)
+
+    def _range_from_form(self) -> dict[str, Any]:
+        return {
+            "sex": self.range_sex.currentData(),
+            "age_min_days": self._optional_int(self.range_age_min.text()),
+            "age_max_days": self._optional_int(self.range_age_max.text()),
+            "lower_value": self._optional_float(self.range_lower.text()),
+            "upper_value": self._optional_float(self.range_upper.text()),
+            "unit": self.range_unit.text().strip(),
+            "reference_text": self.range_reference_text.toPlainText().strip(),
+        }
+
+    @staticmethod
+    def _range_has_values(reference: dict[str, Any]) -> bool:
+        return any(
+            reference.get(key) not in (None, "")
+            for key in ("age_min_days", "age_max_days", "lower_value", "upper_value", "unit", "reference_text")
+        )
+
+    def _load_selected_range_into_form(self) -> None:
+        row = self.ranges_table.currentRow()
+        if row < 0 or row >= len(self.pending_ranges):
+            return
+        record = self.pending_ranges[row]
+        sex_index = self.range_sex.findData(record.get("sex") or "")
+        self.range_sex.setCurrentIndex(sex_index if sex_index >= 0 else 0)
+        self.range_age_min.setText("" if record.get("age_min_days") is None else str(record.get("age_min_days")))
+        self.range_age_max.setText("" if record.get("age_max_days") is None else str(record.get("age_max_days")))
+        self.range_lower.setText(str(record.get("lower_value") or ""))
+        self.range_upper.setText(str(record.get("upper_value") or ""))
+        self.range_unit.setText(str(record.get("unit") or ""))
+        self.range_reference_text.setPlainText(str(record.get("reference_text") or ""))
 
     @staticmethod
     def _optional_int(value: str) -> int | None:
@@ -429,7 +490,7 @@ class TestDialog(QDialog):
 
     @staticmethod
     def _optional_float(value: str) -> str | None:
-        normalized = value.strip()
+        normalized = value.strip().replace(",", "")
         if not normalized:
             return None
         try:
@@ -483,6 +544,8 @@ class PanelDialog(QDialog):
         form_row.setSpacing(12)
         self.panel_code = QLineEdit()
         self.panel_name = QLineEdit()
+        self.panel_specimen_type = QLineEdit()
+        self.panel_method = QLineEdit()
         panel_code_label = QLabel(tr("Panel Code"))
         panel_name_label = QLabel(tr("Panel Name"))
         form_row.addWidget(panel_code_label)
@@ -490,6 +553,13 @@ class PanelDialog(QDialog):
         form_row.addWidget(panel_name_label)
         form_row.addWidget(self.panel_name, 3)
         root.addLayout(form_row)
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(12)
+        meta_row.addWidget(QLabel(tr("Specimen Type")))
+        meta_row.addWidget(self.panel_specimen_type, 1)
+        meta_row.addWidget(QLabel(tr("Methodology")))
+        meta_row.addWidget(self.panel_method, 1)
+        root.addLayout(meta_row)
 
         content = QHBoxLayout()
 
@@ -574,6 +644,8 @@ class PanelDialog(QDialog):
                 return
             self.panel_code.setText(detail["code"])
             self.panel_name.setText(detail["name"])
+            self.panel_specimen_type.setText(detail.get("specimen_type") or "")
+            self.panel_method.setText(detail.get("method") or "")
             self.pending_items = [dict(item) for item in detail.get("items", [])]
             self.archive_panel_button.setText(tr("Unarchive Panel") if not detail.get("is_active") else tr("Archive Panel"))
 
@@ -592,19 +664,19 @@ class PanelDialog(QDialog):
             return self.panel_service.get_panel_detail(panel_id, include_inactive=include_inactive)
         return self.database.get_panel_detail(int(panel_id), include_inactive=include_inactive)
 
-    def _create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]]) -> None:
+    def _create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str, method: str) -> None:
         if self.panel_service is not None:
-            self.panel_service.create_panel(code, name, panel_items)
+            self.panel_service.create_panel(code, name, panel_items, specimen_type=specimen_type, method=method)
             return
-        self.database.create_panel(code, name, panel_items)
+        self.database.create_panel(code, name, panel_items, specimen_type=specimen_type, method=method)
 
-    def _update_panel(self, panel_id: int | str | None, code: str, name: str, panel_items: list[dict[str, Any]]) -> None:
+    def _update_panel(self, panel_id: int | str | None, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str, method: str) -> None:
         if panel_id is None:
             return
         if self.panel_service is not None:
-            self.panel_service.update_panel(panel_id, code, name, panel_items)
+            self.panel_service.update_panel(panel_id, code, name, panel_items, specimen_type=specimen_type, method=method)
             return
-        self.database.update_panel(int(panel_id), code, name, panel_items)
+        self.database.update_panel(int(panel_id), code, name, panel_items, specimen_type=specimen_type, method=method)
 
     def _archive_panel(self, panel_id: int | str | None) -> None:
         if panel_id is None:
@@ -644,7 +716,7 @@ class PanelDialog(QDialog):
             elif item.get("item_type") == "comment":
                 label = f'{tr("Comment")}: {item.get("heading_text") or item.get("label") or ""}'
             else:
-                label = str(item.get("label") or "")
+                label = self._display_test_label(str(item.get("label") or ""))
             list_item = QListWidgetItem(label)
             list_item.setData(Qt.UserRole, dict(item))
             self.panel_items.addItem(list_item)
@@ -657,9 +729,13 @@ class PanelDialog(QDialog):
         test_id = item.data(Qt.UserRole)
         if any(existing.get("item_type") == "test" and existing.get("test_id") == test_id for existing in self.pending_items):
             return
-        self.pending_items.append({"item_type": "test", "test_id": test_id, "label": item.text()})
+        self.pending_items.append({"item_type": "test", "test_id": test_id, "label": self._display_test_label(item.text())})
         self._refresh_panel_items()
         self.panel_items.setCurrentRow(self.panel_items.count() - 1)
+
+    @staticmethod
+    def _display_test_label(label: str) -> str:
+        return re.sub(r"\s+\([A-Z0-9_-]{1,20}\)$", "", label.strip()).strip()
 
     def add_subheading(self) -> None:
         heading_text, accepted = QInputDialog.getText(self, tr("Add Subheading"), tr("Enter Subheading"))
@@ -727,9 +803,9 @@ class PanelDialog(QDialog):
 
         try:
             if self.panel_id is None:
-                self._create_panel(self.panel_code.text(), self.panel_name.text(), self.pending_items)
+                self._create_panel(self.panel_code.text(), self.panel_name.text(), self.pending_items, self.panel_specimen_type.text(), self.panel_method.text())
             else:
-                self._update_panel(self.panel_id, self.panel_code.text(), self.panel_name.text(), self.pending_items)
+                self._update_panel(self.panel_id, self.panel_code.text(), self.panel_name.text(), self.pending_items, self.panel_specimen_type.text(), self.panel_method.text())
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
             return
@@ -748,6 +824,7 @@ class CatalogPage(DataAwarePage):
         self.test_records: list[TestRecord] = []
         self.filtered_test_records: list[TestRecord] = []
         self.panel_records: list[PanelRecord] = []
+        self.filtered_panel_records: list[PanelRecord] = []
         self.status_filter = "active"
         self.catalog_error_message = ""
 
@@ -875,6 +952,10 @@ class CatalogPage(DataAwarePage):
         buttons.addStretch(1)
         layout.addLayout(buttons)
 
+        self.panels_search = QLineEdit()
+        self.panels_search.textChanged.connect(self._refresh_panels_table)
+        layout.addWidget(self.panels_search)
+
         self.panels_table = QTableWidget(0, 3)
         self.panels_table.setObjectName("catalogPanelsTable")
         self.panels_table.horizontalHeader().setStretchLastSection(False)
@@ -921,6 +1002,7 @@ class CatalogPage(DataAwarePage):
             self.import_panels_button.setText(tr("Import Panels"))
             self.download_panel_template_button.setText(tr("Panel Template"))
             self.export_panels_button.setText(tr("Export Panels"))
+            self.panels_search.setPlaceholderText(tr("Search panels"))
             self.panels_table.setHorizontalHeaderLabels([tr("Code"), tr("Name"), tr("Included Tests")])
         self._update_catalog_helper_text()
         self.refresh_catalog()
@@ -1302,9 +1384,17 @@ class CatalogPage(DataAwarePage):
             if item_order is None:
                 errors.append(f"{self._sheet_row_label(row, row_number)}: item_order is required.")
                 continue
-            panel_entry = grouped.setdefault(panel_code, {"name": panel_name, "rows": [], "row_numbers": []})
+            specimen_type = row.get("specimen_type", "").strip()
+            methodology = row.get("metodologia", row.get("methodology", row.get("method", ""))).strip()
+            panel_entry = grouped.setdefault(panel_code, {"name": panel_name, "specimen_type": specimen_type, "method": methodology, "rows": [], "row_numbers": []})
             if panel_entry["name"] != panel_name:
                 errors.append(f"{self._sheet_row_label(row, row_number)}: panel_name does not match other rows for panel_code {panel_code}.")
+                continue
+            if specimen_type and panel_entry["specimen_type"] != specimen_type:
+                errors.append(f"{self._sheet_row_label(row, row_number)}: specimen_type does not match other rows for panel_code {panel_code}.")
+                continue
+            if methodology and panel_entry["method"] != methodology:
+                errors.append(f"{self._sheet_row_label(row, row_number)}: metodologia does not match other rows for panel_code {panel_code}.")
                 continue
             if item_type == "test":
                 test_code = row.get("test_code", "").strip()
@@ -1334,6 +1424,8 @@ class CatalogPage(DataAwarePage):
             prepared.append({
                 "panel_code": panel_code,
                 "panel_name": panel_entry["name"],
+                "specimen_type": panel_entry["specimen_type"],
+                "method": panel_entry["method"],
                 "panel_items": [item for _sort_order, item in sorted(panel_entry["rows"], key=lambda pair: pair[0])],
                 "existing_id": existing_id,
                 "action": action,
@@ -1354,10 +1446,10 @@ class CatalogPage(DataAwarePage):
         for entry in plan["prepared"]:
             try:
                 if entry["existing_id"] is None:
-                    self.database.create_panel(entry["panel_code"], entry["panel_name"], entry["panel_items"])
+                    self.database.create_panel(entry["panel_code"], entry["panel_name"], entry["panel_items"], specimen_type=entry["specimen_type"], method=entry["method"])
                     created_count += 1
                 else:
-                    self.database.update_panel(entry["existing_id"], entry["panel_code"], entry["panel_name"], entry["panel_items"])
+                    self.database.update_panel(entry["existing_id"], entry["panel_code"], entry["panel_name"], entry["panel_items"], specimen_type=entry["specimen_type"], method=entry["method"])
                     updated_count += 1
             except sqlite3.IntegrityError as exc:
                 QMessageBox.critical(self, tr("Import Failed"), str(exc))
@@ -1411,7 +1503,7 @@ class CatalogPage(DataAwarePage):
 
     @staticmethod
     def _optional_float(value: str) -> str | None:
-        normalized = value.strip()
+        normalized = value.strip().replace(",", "")
         if not normalized:
             return None
         try:
@@ -1462,14 +1554,31 @@ class CatalogPage(DataAwarePage):
                 matches.append(record)
         return matches
 
+    def _filtered_panel_records(self) -> list[PanelRecord]:
+        query = self.panels_search.text().strip().lower() if hasattr(self, "panels_search") else ""
+        if not query:
+            return list(self.panel_records)
+        terms = [term for term in query.split() if term]
+        matches: list[PanelRecord] = []
+        for record in self.panel_records:
+            haystack = " ".join([
+                record.code,
+                record.name,
+                record.test_names or "",
+            ]).lower()
+            if all(term in haystack for term in terms):
+                matches.append(record)
+        return matches
+
     def _refresh_panels_table(self) -> None:
+        self.filtered_panel_records = self._filtered_panel_records()
         rows = [
             (
                 f"{record.code}{' (' + tr('Archived') + ')' if not record.is_active else ''}",
                 record.name,
                 record.test_names or "",
             )
-            for record in self.panel_records
+            for record in self.filtered_panel_records
         ]
         self.set_table_rows(self.panels_table, rows)
         self._update_panel_action_buttons()
@@ -1482,9 +1591,9 @@ class CatalogPage(DataAwarePage):
 
     def _selected_panel_id(self) -> int | None:
         row = self.panels_table.currentRow()
-        if row < 0 or row >= len(self.panel_records):
+        if row < 0 or row >= len(self.filtered_panel_records):
             return None
-        return self.panel_records[row].id
+        return self.filtered_panel_records[row].id
 
     def _selected_test_record(self) -> TestRecord | None:
         row = self.tests_table.currentRow()
@@ -1494,9 +1603,9 @@ class CatalogPage(DataAwarePage):
 
     def _selected_panel_record(self) -> PanelRecord | None:
         row = self.panels_table.currentRow()
-        if row < 0 or row >= len(self.panel_records):
+        if row < 0 or row >= len(self.filtered_panel_records):
             return None
-        return self.panel_records[row]
+        return self.filtered_panel_records[row]
 
     def _update_test_action_buttons(self) -> None:
         record = self._selected_test_record()

@@ -32,6 +32,7 @@ from spdxlims.pages.administrative_page import AdministrativePage
 from spdxlims.pages.clients_page import ClientsPage
 from spdxlims.pages.doctors_page import DoctorsPage
 from spdxlims.pages.instrument_connectivity_page import InstrumentConnectivityPage
+from spdxlims.pages.instrument_mapping_page import InstrumentMappingPage
 from spdxlims.pages.orders_browser_page import OrdersBrowserPage
 from spdxlims.pages.orders_page import OrdersPage
 from spdxlims.pages.panels_page import PanelsPage
@@ -146,6 +147,7 @@ class MainWindow(QMainWindow):
             ("tests", lambda: TestsPage(database, deployment_service)),
             ("panels", lambda: PanelsPage(database, deployment_service)),
             ("instrument_connectivity", lambda: InstrumentConnectivityPage()),
+            ("instrument_mappings", lambda: InstrumentMappingPage(database)),
             ("orders", lambda: OrdersPage(database, deployment_service)),
             ("orders_browser", lambda: OrdersBrowserPage(database, deployment_service)),
             ("instrument_results", lambda: InstrumentResultsPage(database, deployment_service)),
@@ -174,6 +176,7 @@ class MainWindow(QMainWindow):
             ("clients", "clients", "Clients", ("data",)),
             ("patients_data", "patients", "Patients", ("data",)),
             ("instrument_connectivity", "instrument_connectivity", "Instrument Connectivity", ("equipment",)),
+            ("instrument_mappings", "instrument_mappings", "Instrument Mappings", ("data",)),
         ]
         self.reload_addons(initial_load=True)
 
@@ -218,6 +221,7 @@ class MainWindow(QMainWindow):
         if invoices_button is not None:
             invoices_button.setText(self._workspace_button_text("invoices"))
         self._update_workspace_button_states()
+        self._update_account_block()
         self._refresh_navigation_labels()
         for page in self.pages.values():
             retranslate = getattr(page, "retranslate_ui", None)
@@ -371,6 +375,7 @@ class MainWindow(QMainWindow):
             return
         self.current_workspace = workspace_key
         self.workspace_label.setText(self._workspace_label_text())
+        self._update_account_block()
         self._update_workspace_button_states()
         self._rebuild_navigation(preferred_page_key=preferred_page_key)
 
@@ -380,6 +385,7 @@ class MainWindow(QMainWindow):
             return
         self.current_top_button = button_key
         self.workspace_label.setText(self._workspace_label_text())
+        self._update_account_block()
         mapping = {
             "operations": ("operations", None),
             "data": ("data", None),
@@ -518,6 +524,27 @@ class MainWindow(QMainWindow):
         }
         return labels[workspace_key]
 
+    def _update_account_block(self) -> None:
+        short = {
+            "operations": "OPS",
+            "data": "DATA",
+            "administrative": "ADMIN",
+            "equipment": "EQP",
+            "invoices": "FACT",
+            "pdf_tables": "PDF",
+        }
+        full = {
+            "operations": "Operaciones",
+            "data": "Datos",
+            "administrative": "Administrativo",
+            "equipment": "Equipo",
+            "invoices": "Facturas",
+            "pdf_tables": "PDF",
+        }
+        key = self.current_top_button
+        self.account_role_label.setText(short.get(key, key.upper()))
+        self.account_name_label.setText(full.get(key, key.title()))
+
     def _find_nav_page_key(self, label_key: str, workspace_key: str) -> str | None:
         for _entry_id, target_page_key, nav_label, workspaces in self.nav_entries:
             if workspace_key in workspaces and nav_label == label_key:
@@ -562,6 +589,7 @@ class MainWindow(QMainWindow):
     def navigate_to_pdf_target(self, order_id: int, panel_label: str) -> None:
         self.current_top_button = "pdf_tables"
         self.workspace_label.setText(self._workspace_label_text())
+        self._update_account_block()
         target_page_key = self.workspace_targets.get("pdf_tables")
         if target_page_key is None:
             self._update_workspace_button_states()

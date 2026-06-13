@@ -23,9 +23,18 @@
           <button id="saveToken">Save Token</button>
         </div>
         <div class="scan-controls">
+          <label>Scan Mode
+            <select id="scanMode">
+              <option value="quick">Quick scan</option>
+              <option value="full">Full subnet scan</option>
+              <option value="custom">Custom host limit</option>
+            </select>
+          </label>
           <label>Network CIDRs <input id="scanCIDRs" placeholder="optional, comma-separated e.g. 192.168.1.0/24" /></label>
-          <label>Probe Ports <input id="scanPortsInput" placeholder="optional, comma-separated e.g. 5000,8080" /></label>
+          <label>Probe Ports <input id="scanPortsInput" placeholder="optional, comma-separated e.g. 5100,5000,8080" /></label>
+          <label>Host Limit <input id="scanHostLimit" type="number" min="1" max="254" placeholder="quick 64, full 254" /></label>
         </div>
+        <div id="scanDiagnostics" class="summary-card">Run a scan to see subnets, ports, host count, and suggested next steps.</div>
         <div class="actions">
           <button id="scanPorts">Scan Ports</button>
           <button id="loadProfiles">Load Profiles</button>
@@ -93,6 +102,26 @@
           <div id="profileHintValidation" class="summary-card">Choose a profile to review supported discovery hints.</div>
           <div id="profileHintHelp" class="device-sublist">
             <span class="muted">Hint port expansions will appear here.</span>
+          </div>
+          <div class="setup-wizard">
+            <h3>Guided Equipment Setup</h3>
+            <div class="network-filters">
+              <label>Connection
+                <select id="wizardConnection">
+                  <option value="network_inbound">Analyzer sends to this PC</option>
+                  <option value="network_outbound">This PC connects to analyzer</option>
+                  <option value="serial">Serial/USB adapter</option>
+                  <option value="file_drop">File folder</option>
+                </select>
+              </label>
+              <label>Analyzer IP <input id="wizardIP" placeholder="10.0.0.2" /></label>
+              <label>LIS Port <input id="wizardPort" type="number" placeholder="5100" /></label>
+              <label>COM Port <input id="wizardSerial" placeholder="COM6" /></label>
+            </div>
+            <div class="actions">
+              <button id="applyWizard">Apply Setup Hints</button>
+            </div>
+            <div id="wizardSummary" class="summary-card">Choose how the analyzer connects, then apply hints to the profile editor.</div>
           </div>
           <div class="actions">
             <button id="saveProfile">Save Profile</button>
