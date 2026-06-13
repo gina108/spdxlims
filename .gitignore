@@ -63,7 +63,6 @@ sample_addons/dist/
 
 # Compiled binaries
 *.exe
-!niimbot-helper/helper.exe
 
 # Generated XML output files
 INV-*.xml
