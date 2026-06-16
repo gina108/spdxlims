@@ -11,6 +11,7 @@ from spdxlims.addons import AddonManager
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentConfig, DeploymentService
 from spdxlims.i18n import set_language, tr
+from spdxlims.log import get_logger, setup_logging
 from spdxlims.main_window import MainWindow
 
 
@@ -357,6 +358,8 @@ def main() -> int:
 
     data_dir = Path.cwd() / "data"
     data_dir.mkdir(exist_ok=True)
+    setup_logging(data_dir, debug="--debug" in sys.argv)
+    _log = get_logger(__name__)
 
     database = Database(data_dir / "spdxlims.db")
     database.initialize()
@@ -367,6 +370,8 @@ def main() -> int:
 
     if deployment_config.mode == "server":
         health = deployment_service.ping(deployment_config.server_url, deployment_config.api_timeout_seconds)
+        if health.ok:
+            deployment_service.try_auto_login()
         if not health.ok:
             message_box = QMessageBox()
             message_box.setIcon(QMessageBox.Warning)

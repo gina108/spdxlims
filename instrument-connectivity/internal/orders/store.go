@@ -1,6 +1,7 @@
 package orders
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -84,6 +85,28 @@ func (s *Store) List() []PendingOrder {
 		}
 	}
 	return out
+}
+
+// FindByPatientID searches for a non-expired pending order by PatientID (MRN).
+// Used for Mindray patient monitor QRY^A19 ADT lookups where the monitor queries
+// by medical record number rather than by the lab sample/accession ID.
+func (s *Store) FindByPatientID(patientID string) (PendingOrder, bool) {
+	if patientID == "" {
+		return PendingOrder{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	pid := strings.ToLower(strings.TrimSpace(patientID))
+	for _, o := range s.orders {
+		if !o.ExpiresAt.IsZero() && now.After(o.ExpiresAt) {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(o.PatientID)) == pid {
+			return o, true
+		}
+	}
+	return PendingOrder{}, false
 }
 
 // Evict removes all expired orders.

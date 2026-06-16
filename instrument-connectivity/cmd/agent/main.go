@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -33,6 +34,18 @@ func main() {
 	var noAutoResume = flag.Bool("no-auto-resume", false, "disable automatic session resume on startup")
 	var versionFlag = flag.Bool("version", false, "print build version information")
 	flag.Parse()
+
+	var listenExplicit bool
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "listen" {
+			listenExplicit = true
+		}
+	})
+	if !listenExplicit {
+		if addr := readListenAddrFromConfig(*dataDir); addr != "" {
+			*listen = addr
+		}
+	}
 
 	if *versionFlag {
 		fmt.Fprintln(os.Stdout, buildinfo.Current().String())
@@ -101,6 +114,20 @@ func main() {
 	if err := runConsole(cfg); err != nil {
 		log.Fatalf("runtime stopped: %v", err)
 	}
+}
+
+func readListenAddrFromConfig(dataDir string) string {
+	data, err := os.ReadFile(filepath.Join(dataDir, "engine.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		ListenAddr string `json:"listen_addr"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return cfg.ListenAddr
 }
 
 func runConsole(cfg config.Config) error {

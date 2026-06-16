@@ -4,18 +4,15 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import parse
 
-from spdxlims.database import Database, PatientRecord
-from spdxlims.deployment import DeploymentService
+from spdxlims.database import PatientRecord
+from spdxlims.service_base import ServiceBase
 
 
 @dataclass(slots=True)
-class PatientService:
-    database: Database
-    deployment_service: DeploymentService
+class PatientService(ServiceBase):
 
     def list_patients(self, *, status_filter: str = "active") -> list[PatientRecord]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.list_patients(status_filter=status_filter)
         payload = self.deployment_service.request_json("GET", f"/api/patients?status_filter={parse.quote(status_filter)}")
         if not isinstance(payload, list):
@@ -27,15 +24,13 @@ class PatientService:
         return [(record.id, self._format_label(record)) for record in records]
 
     def get_patient(self, patient_id: int | str) -> dict[str, Any] | None:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.get_patient(int(patient_id))
         payload = self.deployment_service.request_json("GET", f"/api/patients/{patient_id}")
         return self._to_local_dict(payload) if isinstance(payload, dict) else None
 
     def create_patient(self, payload: dict[str, Any]) -> int | str:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.create_patient(payload)
         response = self.deployment_service.request_json("POST", "/api/patients", self._to_remote_payload(payload))
         if not isinstance(response, dict) or "id" not in response:
@@ -43,22 +38,19 @@ class PatientService:
         return str(response["id"])
 
     def update_patient(self, patient_id: int | str, payload: dict[str, Any]) -> None:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             self.database.update_patient(int(patient_id), payload)
             return
         self.deployment_service.request_json("PUT", f"/api/patients/{patient_id}", self._to_remote_payload(payload))
 
     def archive_patient(self, patient_id: int | str) -> None:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             self.database.archive_patient(int(patient_id))
             return
         self.deployment_service.request_json("POST", f"/api/patients/{patient_id}/archive")
 
     def unarchive_patient(self, patient_id: int | str) -> None:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             self.database.unarchive_patient(int(patient_id))
             return
         self.deployment_service.request_json("POST", f"/api/patients/{patient_id}/unarchive")

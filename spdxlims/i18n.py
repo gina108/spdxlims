@@ -990,6 +990,13 @@ _TRANSLATIONS["es"].update(
         "Unmatched codes: {codes}": "Códigos sin coincidencia: {codes}",
         "Word File (*.docx)": "Archivo Word (*.docx)",
         "XML File (*.xml)": "Archivo XML (*.xml)",
+        "Scan barcode or search by order number / patient name": "Escanear código o buscar por número de orden / nombre del paciente",
+        "From": "De",
+        "To": "A",
+        "Search panels": "Buscar paneles",
+        "e.g. 2": "ej. 2",
+        "e.g. 5": "ej. 5",
+        "e.g. 1000": "ej. 1000",
     }
 )
 

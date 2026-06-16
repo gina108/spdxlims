@@ -2,21 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from spdxlims.database import Database, ResultEntryRecord
-from spdxlims.deployment import DeploymentService
+from spdxlims.database import ResultEntryRecord
+from spdxlims.service_base import ServiceBase
 
 
 @dataclass(slots=True)
-class ResultService:
-    database: Database
-    deployment_service: DeploymentService
-
-    def uses_server_backend(self) -> bool:
-        return self.deployment_service.load().mode == 'server'
+class ResultService(ServiceBase):
 
     def get_order_entries(self, order_id: int | str) -> list[ResultEntryRecord]:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.get_order_result_entries(int(order_id))
         payload = self.deployment_service.request_json('GET', f'/api/results/orders/{order_id}/entries')
         if not isinstance(payload, list):
@@ -64,8 +58,7 @@ class ResultService:
         comments: str,
         result_kind: str,
     ) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.save_result_entry(
                 order_test_id=int(order_test_id),
                 result_value=result_value,

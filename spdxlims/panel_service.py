@@ -4,21 +4,15 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import parse
 
-from spdxlims.database import Database, PanelRecord
-from spdxlims.deployment import DeploymentService
+from spdxlims.database import PanelRecord
+from spdxlims.service_base import ServiceBase
 
 
 @dataclass(slots=True)
-class PanelService:
-    database: Database
-    deployment_service: DeploymentService
-
-    def uses_server_backend(self) -> bool:
-        return self.deployment_service.load().mode == 'server'
+class PanelService(ServiceBase):
 
     def list_panels(self, *, status_filter: str = 'active') -> list[PanelRecord]:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.list_panels(status_filter=status_filter)
         query = parse.urlencode({'status_filter': status_filter})
         payload = self.deployment_service.request_json('GET', f'/api/panels?{query}')
@@ -38,44 +32,38 @@ class PanelService:
         ]
 
     def get_panel_detail(self, panel_id: int | str, *, include_inactive: bool = False) -> dict[str, Any] | None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.get_panel_detail(int(panel_id), include_inactive=include_inactive)
         query = parse.urlencode({'include_inactive': 'true' if include_inactive else 'false'})
         payload = self.deployment_service.request_json('GET', f'/api/panels/{panel_id}?{query}', allow_404=True)
         return payload if isinstance(payload, dict) else None
 
     def create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.create_panel(code, name, panel_items, specimen_type=specimen_type, method=method)
             return
         self.deployment_service.request_json('POST', '/api/panels', self._panel_payload(code, name, panel_items, specimen_type, method))
 
     def update_panel(self, panel_id: int | str, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.update_panel(int(panel_id), code, name, panel_items, specimen_type=specimen_type, method=method)
             return
         self.deployment_service.request_json('PUT', f'/api/panels/{panel_id}', self._panel_payload(code, name, panel_items, specimen_type, method))
 
     def archive_panel(self, panel_id: int | str) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.archive_panel(int(panel_id))
             return
         self.deployment_service.request_json('POST', f'/api/panels/{panel_id}/archive', {})
 
     def unarchive_panel(self, panel_id: int | str) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.unarchive_panel(int(panel_id))
             return
         self.deployment_service.request_json('POST', f'/api/panels/{panel_id}/unarchive', {})
 
     def list_test_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.list_test_choices()
         payload = self.deployment_service.request_json('GET', '/api/orders/test-choices')
         if not isinstance(payload, list):
@@ -102,4 +90,3 @@ class PanelService:
                 for index, item in enumerate(panel_items)
             ],
         }
-

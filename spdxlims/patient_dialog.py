@@ -31,7 +31,7 @@ class PatientDialog(QDialog):
         self.date_of_birth = QLineEdit()
         self.date_of_birth.setPlaceholderText("YYYY-MM-DD")
         self.age_value = QLineEdit()
-        self.age_value.setPlaceholderText("e.g. 35")
+        self.age_value.setPlaceholderText("ej. 35")
         self.age_unit = QComboBox()
         self.age_unit.addItem(tr("Years"), "years")
         self.age_unit.addItem(tr("Months"), "months")

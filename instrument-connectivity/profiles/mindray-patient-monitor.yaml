@@ -1,0 +1,20 @@
+id: mindray-patient-monitor
+name: Mindray Patient Monitor (PDS)
+protocol_hint: hl7_v2
+device_metadata:
+  vendor: Mindray
+  model: patient_monitor
+transport:
+  # ADT Net Query Interface (PDS Protocol §4): the bedside monitor connects to us as
+  # TCP client and sends QRY^A19 with patient MRN; we respond with ADR^A19 demographics.
+  type: tcp_server
+  listen_address: 0.0.0.0:2575
+  session_mode: hl7
+  discovery_hints:
+    - hl7_listener
+  discovery_ports:
+    - 2575
+parsing:
+  strategy: hl7_oru
+learning_mode:
+  enabled: true

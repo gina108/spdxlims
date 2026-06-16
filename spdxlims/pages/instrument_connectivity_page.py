@@ -5,11 +5,12 @@ import json
 import os
 import shutil
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, QUrl
+from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QGroupBox,
@@ -22,15 +23,20 @@ from PySide6.QtWidgets import (
 )
 
 from spdxlims.i18n import tr
+from spdxlims.instrument_broadcast import get_engine_url
 from spdxlims.pages.base_page import DataAwarePage
 
 
 class InstrumentConnectivityPage(DataAwarePage):
     AUTO_START_PROFILE_IDS = ("cor50-lis", "mindray-bc30s", "urinalysis-com6", "cm250")
+    _health_result = Signal(object)
+    _auto_start_done = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
-        self.engine_url = "http://127.0.0.1:9088"
+        self._health_result.connect(self._apply_health_result)
+        self._auto_start_done.connect(self._finish_auto_start)
+        self.engine_url = get_engine_url()
         self.health_url = self.engine_url + "/api/v1/health"
         self.engine_process: QProcess | None = None
         self.web_view = None
@@ -101,11 +107,18 @@ class InstrumentConnectivityPage(DataAwarePage):
             return
         self._auto_start_requested = True
         self._sync_runtime_profiles()
-        if self._fetch_health() is None:
+        threading.Thread(target=self._bg_auto_start, daemon=True).start()
+
+    def _bg_auto_start(self) -> None:
+        health = self._fetch_health()
+        self._auto_start_done.emit(health)
+
+    def _finish_auto_start(self, health: dict | None) -> None:
+        if health is None:
             self.start_engine(silent=True, start_default_profiles=True)
             QTimer.singleShot(1500, self._ensure_default_profile_sessions)
-            return
-        self._ensure_default_profile_sessions()
+        else:
+            self._ensure_default_profile_sessions()
 
     def retranslate_ui(self) -> None:
         self.summary_group.setTitle(tr("Instrument Connectivity"))
@@ -133,7 +146,13 @@ class InstrumentConnectivityPage(DataAwarePage):
 
     def refresh_status(self) -> None:
         self._sync_runtime_profiles()
-        status_payload = self._fetch_health()
+        threading.Thread(target=self._bg_check_health, daemon=True).start()
+
+    def _bg_check_health(self) -> None:
+        payload = self._fetch_health()
+        self._health_result.emit(payload)
+
+    def _apply_health_result(self, status_payload: dict | None) -> None:
         if status_payload is None:
             self._update_status_label(False, tr("Engine is offline. Start the local engine or install the Windows service."))
             if self.web_view is not None:
@@ -285,18 +304,31 @@ class InstrumentConnectivityPage(DataAwarePage):
                 self.log_output.append(f"{tr('Started instrument profile')}: {profile_id} ({result['session_id']})")
         self.refresh_status()
 
+    def _engine_listen_addr(self) -> str | None:
+        cfg_path = self._runtime_dir() / "engine.json"
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            addr = (data.get("listen_addr") or "").strip()
+            return addr or None
+        except (OSError, json.JSONDecodeError):
+            return None
+
     def _resolve_engine_command(self) -> tuple[str, list[str], Path] | None:
         root = self._app_root()
         runtime_dir = self._runtime_dir()
         source_root = root / "instrument-connectivity"
         go_executable = self._go_executable()
-        if (source_root / "cmd" / "agent").exists() and go_executable:
-            return go_executable, ["run", ".\\cmd\\agent", "-data-dir", str(runtime_dir)], source_root
-        candidates = self._engine_binary_candidates(root)
-        for candidate in candidates:
+        listen_addr = self._engine_listen_addr()
+        listen_args = ["-listen", listen_addr] if listen_addr else []
+        # Prefer pre-built binary over go run (binary starts instantly; go run takes 15-30s to compile)
+        binary_in_runtime = runtime_dir / "instrument-agent.exe"
+        all_candidates = ([binary_in_runtime] if binary_in_runtime.exists() else []) + self._engine_binary_candidates(root)
+        for candidate in all_candidates:
             if candidate.exists():
                 workdir = self._resolve_engine_workdir(candidate, source_root)
-                return str(candidate), ["-data-dir", str(runtime_dir)], workdir
+                return str(candidate), ["-data-dir", str(runtime_dir)] + listen_args, workdir
+        if (source_root / "cmd" / "agent").exists() and go_executable:
+            return go_executable, ["run", ".\\cmd\\agent", "-data-dir", str(runtime_dir)] + listen_args, source_root
         return None
 
     def _go_executable(self) -> str | None:

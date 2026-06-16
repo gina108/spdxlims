@@ -255,6 +255,7 @@ class AddonManager:
             )
         script.append("if ($match) { 'installed' }")
         command = "; ".join(script)
+        creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
             result = subprocess.run(
                 [
@@ -269,6 +270,7 @@ class AddonManager:
                 text=True,
                 timeout=10,
                 check=False,
+                creationflags=creation_flags,
             )
         except (OSError, subprocess.SubprocessError):
             return False

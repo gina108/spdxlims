@@ -40,10 +40,13 @@ type PayloadHandler func(raw []byte, deviceID string, transportType models.Trans
 type ErrorHandler func(error, map[string]any)
 type StateHandler func(state string, meta map[string]any)
 
-// QueryHandler is called when an ASTM host query (Q record session) is received.
-// sampleID is extracted from the Q record. rw is the open bidirectional connection
-// and can be used to send the ASTM response.
-type QueryHandler func(sampleID string, rw io.ReadWriter)
+// QueryHandler is called when a host query is received on a bidirectional connection.
+// queryType is "astm" for ASTM Q-record sessions or the HL7 MSH-9 message type
+// (e.g. "QRY^A19", "ORM^O01") for HL7/MLLP sessions. sampleID is the key identifier
+// extracted from the query (Q-record field 3, QRD-8, or ORC-3 depending on the type).
+// controlID is MSH-10 from the original HL7 message (empty for ASTM); it must be
+// echoed in the MSA segment of the response so the analyzer can correlate the reply.
+type QueryHandler func(queryType string, sampleID string, controlID string, rw io.ReadWriter)
 
 type Worker interface {
 	Stop() error
@@ -133,7 +136,7 @@ func (sp *sessionProcessor) consume(chunk []byte, rw io.ReadWriter, meta map[str
 				return err
 			}
 			if wasQuery && sp.queryHandler != nil && rw != nil {
-				sp.queryHandler(querySampleID, rw)
+				sp.queryHandler("astm", querySampleID, "", rw)
 			}
 			sp.resetFrame()
 			if onState != nil {
@@ -257,10 +260,12 @@ func (sp *sessionProcessor) consumeHL7(chunk []byte, rw io.ReadWriter, meta map[
 				sp.hl7InBlock = false
 				fmt.Fprintf(os.Stderr, "[HL7-RECV] %d bytes: %q\n", len(msg), msg)
 				if isHL7Query(msg) {
+					msgType := extractHL7MsgType(msg)
 					sampleID := extractSampleIDFromHL7QRY(msg)
-					fmt.Fprintf(os.Stderr, "[HL7-QUERY] sample_id=%q\n", sampleID)
+					controlID := extractHL7ControlID(msg)
+					fmt.Fprintf(os.Stderr, "[HL7-QUERY] type=%q sample_id=%q control_id=%q\n", msgType, sampleID, controlID)
 					if sp.queryHandler != nil && rw != nil {
-						sp.queryHandler(sampleID, rw)
+						sp.queryHandler(msgType, sampleID, controlID, rw)
 					}
 					if onState != nil {
 						onState("query_handled", mergeMeta(meta, map[string]any{"sample_id": sampleID}))
@@ -296,6 +301,34 @@ func (sp *sessionProcessor) consumeHL7(chunk []byte, rw io.ReadWriter, meta map[
 		// bytes outside an MLLP block are silently ignored
 	}
 	return nil
+}
+
+// extractHL7ControlID returns MSH-10 (message control ID) from an HL7 message.
+// It is echoed in the MSA segment of any response so the sender can correlate replies.
+func extractHL7ControlID(msg string) string {
+	for _, line := range strings.FieldsFunc(msg, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		if strings.HasPrefix(line, "MSH|") {
+			parts := strings.Split(line, "|")
+			if len(parts) > 9 {
+				return strings.TrimSpace(parts[9])
+			}
+		}
+	}
+	return ""
+}
+
+// extractHL7MsgType returns the MSH-9 (message type) field from an HL7 message,
+// e.g. "QRY^A19", "ORM^O01", "ORU^R01". Returns "" if the MSH segment is absent.
+func extractHL7MsgType(msg string) string {
+	for _, line := range strings.FieldsFunc(msg, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		if strings.HasPrefix(line, "MSH|") {
+			parts := strings.Split(line, "|")
+			if len(parts) > 8 {
+				return parts[8]
+			}
+		}
+	}
+	return ""
 }
 
 // isHL7Query returns true when the message is an HL7 host query that the engine
@@ -356,9 +389,13 @@ func extractSampleIDFromHL7QRY(msg string) string {
 }
 
 // SendHL7Response wraps hl7Message in MLLP framing (VT + message + FS + CR) and
-// writes it to rw. Used by the runtime to answer HL7 host queries.
+// writes it to rw. A non-standard STX (0x02) byte is prepended before the VT
+// because the Mindray BC-30s includes STX in its own frames and expects it in
+// responses — without it the BC-30s silently ignores the response and times out.
+// Standard MLLP parsers ignore bytes outside MLLP blocks, so this is safe.
 func SendHL7Response(rw io.Writer, hl7Message string) error {
-	out := make([]byte, 0, len(hl7Message)+3)
+	out := make([]byte, 0, len(hl7Message)+4)
+	out = append(out, 0x02) // STX — Mindray non-standard prefix
 	out = append(out, mllpStart)
 	out = append(out, []byte(hl7Message)...)
 	out = append(out, mllpEnd, mllpCR)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QSize, QTimer, Qt
@@ -55,6 +59,7 @@ class MainWindow(QMainWindow):
         self.database = database
         self.deployment_service = deployment_service
         self.addon_manager = addon_manager
+        self._backend_fallback_process: subprocess.Popen | None = None
         self.current_workspace = "operations"
         self.visible_entries: list[tuple[str, str, str]] = []
         self.page_indices: dict[str, int] = {}
@@ -201,6 +206,8 @@ class MainWindow(QMainWindow):
         self._load_drawer_logo()
         self.retranslate_ui()
         self.refresh_deployment_status()
+        QTimer.singleShot(200, self._try_auto_start_backend)
+        QTimer.singleShot(300, self._try_auto_login)
         QTimer.singleShot(750, self._autostart_instrument_connectivity)
 
     def retranslate_ui(self) -> None:
@@ -258,6 +265,7 @@ class MainWindow(QMainWindow):
             refresh = getattr(page, "refresh_on_show", None)
             if callable(refresh):
                 refresh()
+            self.stale_pages.discard(target_page_key)
             self._update_workspace_button_states()
         finally:
             if loading_message is not None:
@@ -265,12 +273,15 @@ class MainWindow(QMainWindow):
                 self.refresh_deployment_status()
 
     def refresh_all_pages(self, *, exclude: QWidget | None = None) -> None:
-        for page in self.pages.values():
+        for page_key, page in self.pages.items():
             if page is exclude:
                 continue
-            refresh = getattr(page, "refresh_on_show", None)
-            if callable(refresh):
-                refresh()
+            if page_key == self.current_page_key:
+                refresh = getattr(page, "refresh_on_show", None)
+                if callable(refresh):
+                    refresh()
+            else:
+                self.stale_pages.add(page_key)
 
     def reload_addons(self, *, initial_load: bool = False) -> None:
         for page_key in list(self.addon_page_keys):
@@ -578,6 +589,91 @@ class MainWindow(QMainWindow):
         if builder is None:
             return
         self._register_page(page_key, builder())
+
+    def _try_auto_login(self) -> None:
+        threading.Thread(target=self._bg_auto_login, daemon=True).start()
+
+    def _bg_auto_login(self) -> None:
+        ok = self.deployment_service.try_auto_login()
+        if ok:
+            QTimer.singleShot(0, self.refresh_deployment_status)
+
+    def _is_backend_local(self) -> bool:
+        config = self.deployment_service.load()
+        if config.mode != "server":
+            return False
+        url = config.server_url.lower()
+        return "127.0.0.1" in url or "localhost" in url
+
+    def _try_auto_start_backend(self) -> None:
+        if not self._is_backend_local():
+            return
+        threading.Thread(target=self._bg_auto_start_backend, daemon=True).start()
+
+    def _bg_auto_start_backend(self) -> None:
+        config = self.deployment_service.load()
+        health = self.deployment_service.ping(config.server_url, timeout_seconds=1.5)
+        if health.ok:
+            return
+        started_service = self._start_backend_windows_service()
+        if not started_service:
+            QTimer.singleShot(0, self._start_backend_fallback_process)
+        for _ in range(12):
+            time.sleep(1)
+            health = self.deployment_service.ping(config.server_url, timeout_seconds=1.0)
+            if health.ok:
+                self._bg_auto_login()
+                QTimer.singleShot(0, self.refresh_deployment_status)
+                return
+
+    def _start_backend_windows_service(self) -> bool:
+        try:
+            probe = subprocess.run(
+                ["sc", "query", "SPDXLIMSBackend"],
+                capture_output=True, timeout=5,
+            )
+            if probe.returncode != 0:
+                return False
+            subprocess.run(["sc", "start", "SPDXLIMSBackend"], capture_output=True, timeout=10)
+            return True
+        except Exception:
+            return False
+
+    def _start_backend_fallback_process(self) -> None:
+        if self._backend_fallback_process is not None and self._backend_fallback_process.poll() is None:
+            return
+        backend_dir = self._find_backend_dir()
+        if backend_dir is None:
+            return
+        import os
+        env = os.environ.copy()
+        env_file = backend_dir / ".env"
+        if env_file.exists():
+            for raw in env_file.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                env[key.strip()] = val.strip()
+        self._backend_fallback_process = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "app.main:app",
+             "--host", "0.0.0.0", "--port", "8001"],
+            cwd=str(backend_dir),
+            env=env,
+        )
+
+    def _find_backend_dir(self) -> Path | None:
+        if getattr(sys, "frozen", False):
+            root = Path(sys.executable).resolve().parent
+        else:
+            root = Path(__file__).resolve().parents[2]
+        candidate = root / "backend"
+        return candidate if (candidate / "app" / "main.py").exists() else None
+
+    def closeEvent(self, event) -> None:
+        if self._backend_fallback_process is not None and self._backend_fallback_process.poll() is None:
+            self._backend_fallback_process.terminate()
+        super().closeEvent(event)
 
     def _autostart_instrument_connectivity(self) -> None:
         self._ensure_page("instrument_connectivity")

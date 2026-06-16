@@ -19,10 +19,12 @@ class DataAwarePage(QWidget):
         table.setAlternatingRowColors(False)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(42)
+        table.setUpdatesEnabled(False)
         table.setRowCount(len(rows))
         for row_index, row_values in enumerate(rows):
             for column_index, value in enumerate(row_values):
                 table.setItem(row_index, column_index, QTableWidgetItem(value))
+        table.setUpdatesEnabled(True)
 
     @staticmethod
     def build_order_status_indicator(status: str | None, *, all_results_entered: bool = False) -> QWidget:

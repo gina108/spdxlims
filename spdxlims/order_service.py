@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import parse
 
-from spdxlims.database import Database, OrderBrowserRecord, OrderSummaryRecord
-from spdxlims.deployment import DeploymentService
+from spdxlims.database import OrderBrowserRecord, OrderSummaryRecord
+from spdxlims.service_base import ServiceBase
 
 
 @dataclass(slots=True)
@@ -21,17 +21,13 @@ class ServerOrderDetail:
     notes: str | None
     is_preallocated: int
     items: list[dict[str, str | None]]
-@dataclass(slots=True)
-class OrderService:
-    database: Database
-    deployment_service: DeploymentService
 
-    def uses_server_backend(self) -> bool:
-        return self.deployment_service.load().mode == "server"
+
+@dataclass(slots=True)
+class OrderService(ServiceBase):
 
     def list_recent_orders(self) -> list[OrderSummaryRecord]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.list_recent_orders()
         payload = self.deployment_service.request_json("GET", "/api/orders/recent")
         if not isinstance(payload, list):
@@ -50,20 +46,18 @@ class OrderService:
         ]
 
     def next_order_number(self) -> str:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.next_order_number()
         payload = self.deployment_service.request_json("GET", "/api/orders/next-number")
         if not isinstance(payload, dict):
-            raise RuntimeError("Server did not return the next order number.")
+            return ""
         value = str(payload.get("order_number") or "").strip()
         if not value:
             raise RuntimeError("Server returned an empty order number.")
         return value
 
     def search_orders(self, search_text: str = "") -> list[OrderBrowserRecord]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.search_orders(search_text)
         payload = self.deployment_service.request_json("GET", f"/api/orders/search?search={parse.quote(search_text)}")
         if not isinstance(payload, list):
@@ -83,20 +77,17 @@ class OrderService:
         ]
 
     def list_doctor_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.list_doctor_choices(active_only=True)
         return self._list_provider_choices("doctor")
 
     def list_client_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.list_client_choices(active_only=True)
         return self._list_provider_choices("clinic")
 
     def list_test_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.list_test_choices()
         payload = self.deployment_service.request_json("GET", "/api/orders/test-choices")
         if not isinstance(payload, list):
@@ -107,8 +98,7 @@ class OrderService:
         ]
 
     def list_panel_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return self.database.list_panel_choices()
         payload = self.deployment_service.request_json("GET", "/api/orders/panel-choices")
         if not isinstance(payload, list):
@@ -119,8 +109,7 @@ class OrderService:
         ]
 
     def get_panel_order_items(self, panel_id: int | str) -> list[dict[str, str | int | None]]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             return [
                 {
                     "item_type": item.item_type,
@@ -150,15 +139,13 @@ class OrderService:
         return items
 
     def get_order_detail(self, order_id: int | str) -> ServerOrderDetail:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             raise RuntimeError("Order detail API path is only used in server mode.")
         payload = self.deployment_service.request_json("GET", f"/api/orders/{order_id}")
         return self._parse_order_detail(payload)
 
     def get_order_detail_by_number(self, order_number: str) -> ServerOrderDetail:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             raise RuntimeError("Order detail API path is only used in server mode.")
         normalized = order_number.strip()
         if not normalized:
@@ -180,8 +167,7 @@ class OrderService:
         doctor_id: int | str | None = None,
         client_id: int | str | None = None,
     ) -> ServerOrderDetail:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             raise RuntimeError("Order update API path is only used in server mode.")
         payload = self.deployment_service.request_json(
             "PUT",
@@ -216,8 +202,7 @@ class OrderService:
         doctor_id: int | str | None = None,
         client_id: int | str | None = None,
     ) -> dict[str, str]:
-        config = self.deployment_service.load()
-        if config.mode != "server":
+        if self._is_local():
             raise RuntimeError("Simple order API path is only used in server mode.")
         payload = self.deployment_service.request_json(
             "POST",
@@ -279,4 +264,3 @@ class OrderService:
             (str(item.get("id") or ""), str(item.get("label") or ""))
             for item in payload if isinstance(item, dict) and item.get("id") and item.get("label")
         ]
-

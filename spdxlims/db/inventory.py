@@ -1,0 +1,89 @@
+from __future__ import annotations
+import sqlite3
+from typing import Any
+
+from spdxlims.db.records import InventoryItemRecord, SupplierRecord, InventoryMovementRecord
+
+
+class InventoryMixin:
+    def list_inventory_items(self) -> list[InventoryItemRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, sku, name, unit, on_hand, reorder_level, unit_cost FROM inventory_items ORDER BY name, sku"
+            ).fetchall()
+        return [InventoryItemRecord(**dict(row)) for row in rows]
+
+    def list_inventory_item_choices(self) -> list[tuple[int, str]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT id, sku, name FROM inventory_items ORDER BY name, sku").fetchall()
+        return [(row["id"], f'{row["name"]} ({row["sku"]})') for row in rows]
+
+    def create_inventory_item(self, payload: dict[str, Any]) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO inventory_items (sku, name, unit, on_hand, reorder_level, unit_cost) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    payload["sku"].strip(),
+                    payload["name"].strip(),
+                    payload.get("unit") or None,
+                    payload.get("on_hand") or 0,
+                    payload.get("reorder_level") or 0,
+                    payload.get("unit_cost") or 0,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_suppliers(self) -> list[SupplierRecord]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT id, name, phone, email, tax_id FROM suppliers ORDER BY name, id").fetchall()
+        return [SupplierRecord(**dict(row)) for row in rows]
+
+    def list_supplier_choices(self) -> list[tuple[int, str]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT id, name, tax_id FROM suppliers ORDER BY name, id").fetchall()
+        return [(row["id"], row["name"] if not row["tax_id"] else f'{row["name"]} ({row["tax_id"]})') for row in rows]
+
+    def create_supplier(self, payload: dict[str, Any]) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO suppliers (name, phone, email, tax_id) VALUES (?, ?, ?, ?)",
+                (payload["name"].strip(), payload.get("phone") or None, payload.get("email") or None, payload.get("tax_id") or None),
+            )
+            return int(cursor.lastrowid)
+
+    def list_inventory_movements(self) -> list[InventoryMovementRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.id, m.inventory_item_id, ii.name AS inventory_name, s.name AS supplier_name,
+                       m.movement_type, m.quantity, m.unit_cost, m.movement_date, m.notes
+                FROM inventory_movements m
+                INNER JOIN inventory_items ii ON ii.id = m.inventory_item_id
+                LEFT JOIN suppliers s ON s.id = m.supplier_id
+                ORDER BY m.movement_date DESC, m.id DESC
+                """
+            ).fetchall()
+        return [InventoryMovementRecord(**dict(row)) for row in rows]
+
+    def create_inventory_movement(self, payload: dict[str, Any]) -> int:
+        with self.connect() as connection:
+            quantity = float(payload.get("quantity") or 0)
+            movement_type = payload.get("movement_type") or "purchase"
+            signed_quantity = quantity if movement_type in {"purchase", "adjustment_in"} else -abs(quantity)
+            cursor = connection.execute(
+                "INSERT INTO inventory_movements (inventory_item_id, supplier_id, movement_type, quantity, unit_cost, movement_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    payload["inventory_item_id"],
+                    payload.get("supplier_id"),
+                    movement_type,
+                    signed_quantity,
+                    payload.get("unit_cost") or 0,
+                    payload["movement_date"].strip(),
+                    payload.get("notes") or None,
+                ),
+            )
+            connection.execute(
+                "UPDATE inventory_items SET on_hand = on_hand + ?, unit_cost = CASE WHEN ? > 0 THEN ? ELSE unit_cost END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (signed_quantity, payload.get("unit_cost") or 0, payload.get("unit_cost") or 0, payload["inventory_item_id"]),
+            )
+            return int(cursor.lastrowid)

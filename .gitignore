@@ -32,6 +32,8 @@ backend/app/static/uploads/
 # Runtime databases and generated local state
 backups/
 data/
+!data/instrument-engine/instrument-agent.exe
+!data/instrument-engine/engine.json
 Files/
 data/*.db
 data/*.db-*
@@ -63,6 +65,7 @@ sample_addons/dist/
 
 # Compiled binaries
 *.exe
+!data/instrument-engine/instrument-agent.exe
 
 # Generated XML output files
 INV-*.xml

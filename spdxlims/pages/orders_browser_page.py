@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -43,7 +43,11 @@ class OrdersBrowserPage(DataAwarePage):
         search_layout.setSpacing(10)
         self.search_label = QLabel()
         self.search_input = QLineEdit()
-        self.search_input.textChanged.connect(self.refresh_on_show)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.refresh_on_show)
+        self.search_input.textChanged.connect(lambda _: self._search_timer.start())
         search_layout.addWidget(self.search_label)
         search_layout.addWidget(self.search_input, 1)
         layout.addWidget(search_row)

@@ -4,21 +4,18 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import parse
 
-from spdxlims.database import Database, TestRecord
-from spdxlims.deployment import DeploymentService
+from spdxlims.database import TestRecord
+from spdxlims.service_base import ServiceBase
 
 
 @dataclass(slots=True)
-class TestService:
-    database: Database
-    deployment_service: DeploymentService
+class TestService(ServiceBase):
 
     def uses_server_backend(self) -> bool:
-        return self.deployment_service.load().mode == 'server'
+        return not self._is_local()
 
     def list_tests(self, *, status_filter: str = 'active') -> list[TestRecord]:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.list_tests(status_filter=status_filter)
         query = parse.urlencode({'status_filter': status_filter})
         payload = self.deployment_service.request_json('GET', f'/api/tests?{query}')
@@ -43,22 +40,19 @@ class TestService:
         ]
 
     def get_test_detail(self, test_id: int | str) -> dict[str, Any] | None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.get_test_detail(int(test_id))
         payload = self.deployment_service.request_json('GET', f'/api/tests/{test_id}', allow_404=True)
         return payload if isinstance(payload, dict) else None
 
     def create_test(self, payload: dict[str, Any], reference_ranges: list[dict[str, Any]]) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.create_test(payload, reference_ranges)
             return
         self.deployment_service.request_json('POST', '/api/tests', self._build_payload(payload, reference_ranges))
 
     def update_test(self, test_id: int | str, payload: dict[str, Any], reference_ranges: list[dict[str, Any]]) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.update_test(int(test_id), payload, reference_ranges)
             return
         existing = self.get_test_detail(test_id) or {}
@@ -67,22 +61,19 @@ class TestService:
         self.deployment_service.request_json('PUT', f'/api/tests/{test_id}', body)
 
     def archive_test(self, test_id: int | str) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.archive_test(int(test_id))
             return
         self.deployment_service.request_json('POST', f'/api/tests/{test_id}/archive', {})
 
     def unarchive_test(self, test_id: int | str) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.unarchive_test(int(test_id))
             return
         self.deployment_service.request_json('POST', f'/api/tests/{test_id}/unarchive', {})
 
     def list_test_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.list_test_choices()
         payload = self.deployment_service.request_json('GET', '/api/orders/test-choices')
         if not isinstance(payload, list):
@@ -119,4 +110,3 @@ class TestService:
                 for reference in reference_ranges
             ],
         }
-

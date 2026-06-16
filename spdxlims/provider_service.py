@@ -4,20 +4,15 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import parse
 
-from spdxlims.database import ClientRecord, Database, DoctorRecord
-from spdxlims.deployment import DeploymentService
+from spdxlims.database import ClientRecord, DoctorRecord
+from spdxlims.service_base import ServiceBase
 
 
 @dataclass(slots=True)
-class ProviderService:
-    database: Database
-    deployment_service: DeploymentService
-
-    def uses_server_backend(self) -> bool:
-        return self.deployment_service.load().mode == "server"
+class ProviderService(ServiceBase):
 
     def list_doctors(self, *, status_filter: str = "all") -> list[DoctorRecord]:
-        if not self.uses_server_backend():
+        if self._is_local():
             return self.database.list_doctors(status_filter=status_filter)
         return [
             DoctorRecord(
@@ -32,7 +27,7 @@ class ProviderService:
         ]
 
     def list_clients(self, *, status_filter: str = "all") -> list[ClientRecord]:
-        if not self.uses_server_backend():
+        if self._is_local():
             return self.database.list_clients(status_filter=status_filter)
         return [
             ClientRecord(
@@ -50,7 +45,7 @@ class ProviderService:
         ]
 
     def get_doctor(self, doctor_id: int | str) -> dict[str, Any] | None:
-        if not self.uses_server_backend():
+        if self._is_local():
             doctor = self.database.get_doctor(int(doctor_id))
             if doctor is None:
                 return None
@@ -75,7 +70,7 @@ class ProviderService:
         }
 
     def get_client(self, client_id: int | str) -> dict[str, Any] | None:
-        if not self.uses_server_backend():
+        if self._is_local():
             client = self.database.get_client(int(client_id))
             if client is None:
                 return None
@@ -106,7 +101,7 @@ class ProviderService:
         }
 
     def save_doctor(self, payload: dict[str, Any], doctor_id: int | str | None = None) -> int | str:
-        if not self.uses_server_backend():
+        if self._is_local():
             if doctor_id is None:
                 return self.database.create_doctor(payload)
             self.database.update_doctor(int(doctor_id), payload)
@@ -131,7 +126,7 @@ class ProviderService:
         return str(response.get("id") if isinstance(response, dict) else doctor_id)
 
     def save_client(self, payload: dict[str, Any], client_id: int | str | None = None) -> int | str:
-        if not self.uses_server_backend():
+        if self._is_local():
             if client_id is None:
                 return self.database.create_client(payload)
             self.database.update_client(int(client_id), payload)
@@ -156,12 +151,12 @@ class ProviderService:
         return str(response.get("id") if isinstance(response, dict) else client_id)
 
     def archive_provider(self, provider_id: int | str) -> None:
-        if not self.uses_server_backend():
+        if self._is_local():
             raise RuntimeError("Use the local database archive method for local providers.")
         self.deployment_service.request_json("POST", f"/api/providers/{provider_id}/archive", {})
 
     def unarchive_provider(self, provider_id: int | str) -> None:
-        if not self.uses_server_backend():
+        if self._is_local():
             raise RuntimeError("Use the local database unarchive method for local providers.")
         self.deployment_service.request_json("POST", f"/api/providers/{provider_id}/unarchive", {})
 

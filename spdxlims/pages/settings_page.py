@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
@@ -478,6 +483,7 @@ class SettingsPage(DataAwarePage):
 
         self.lab_section.content_layout.addWidget(self.lab_group)
         self.reports_section.content_layout.addWidget(self.reports_group)
+        self.reports_section.content_layout.addWidget(self.pdf_export_group)
 
         _print_columns = QWidget()
         _print_columns_layout = QHBoxLayout(_print_columns)
@@ -485,7 +491,6 @@ class SettingsPage(DataAwarePage):
         _print_columns_layout.setSpacing(16)
         _print_columns_layout.addWidget(self.printing_group, 1)
         _print_columns_layout.addWidget(self.receipt_group, 1)
-        _print_columns_layout.addWidget(self.pdf_export_group, 1)
         self.printing_section.content_layout.addWidget(_print_columns)
         self.printing_section.content_layout.addWidget(self.printing_panel_extra_group)
 
@@ -522,6 +527,30 @@ class SettingsPage(DataAwarePage):
         self.connection_form.addRow(self.test_connection_button, self.connection_status)
         self.connection_form.addRow(self.login_button, self.logout_button)
         self.connection_form.addRow(QLabel(""), self.session_status)
+
+        self.service_status_label = QLabel()
+        self.service_status_label.setWordWrap(True)
+        self.install_service_button = QPushButton()
+        self.install_service_button.clicked.connect(self._install_backend_service)
+        self.uninstall_service_button = QPushButton()
+        self.uninstall_service_button.clicked.connect(self._uninstall_backend_service)
+        self.start_service_button = QPushButton()
+        self.start_service_button.clicked.connect(self._start_backend_service)
+        self.stop_service_button = QPushButton()
+        self.stop_service_button.clicked.connect(self._stop_backend_service)
+        self.refresh_service_button = QPushButton()
+        self.refresh_service_button.clicked.connect(lambda: threading.Thread(target=self._bg_refresh_service_status, daemon=True).start())
+
+        service_btn_row = QHBoxLayout()
+        service_btn_row.addWidget(self.install_service_button)
+        service_btn_row.addWidget(self.uninstall_service_button)
+        service_btn_row.addWidget(self.start_service_button)
+        service_btn_row.addWidget(self.stop_service_button)
+        service_btn_row.addWidget(self.refresh_service_button)
+        service_btn_row.addStretch(1)
+
+        self._add_connection_row("service_status", self.service_status_label)
+        self.connection_form.addRow(QLabel(""), service_btn_row)
 
         self.save_button = QPushButton()
         self.save_button.clicked.connect(self.save_settings)
@@ -675,7 +704,7 @@ class SettingsPage(DataAwarePage):
         self.connection_section.set_title(tr("Server Connection"))
         self.lab_group.setTitle("")
         self.reports_group.setTitle("")
-        self.pdf_export_group.setTitle(tr("Reports"))
+        self.pdf_export_group.setTitle(tr("PDF Export"))
         self.printing_group.setTitle(tr("Labels"))
         self.receipt_group.setTitle(tr("Receipts"))
         self.printing_panel_extra_group.setTitle(tr("Extra Copies by Panel"))
@@ -805,6 +834,12 @@ class SettingsPage(DataAwarePage):
         self.connection_labels["server_url"].setText(tr("Server URL"))
         self.connection_labels["login_email"].setText(tr("Email"))
         self.connection_labels["login_password"].setText(tr("Password"))
+        self.connection_labels["service_status"].setText(tr("Backend Service"))
+        self.install_service_button.setText(tr("Install Service"))
+        self.uninstall_service_button.setText(tr("Uninstall Service"))
+        self.start_service_button.setText(tr("Start"))
+        self.stop_service_button.setText(tr("Stop"))
+        self.refresh_service_button.setText(tr("Refresh"))
         self.logo_browse.setText(tr("Browse"))
         self.header_browse.setText(tr("Browse"))
         self.footer_browse.setText(tr("Browse"))
@@ -1122,6 +1157,11 @@ class SettingsPage(DataAwarePage):
         index = self.mode_combo.findData(config.mode)
         self.mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.server_url.setText(config.server_url)
+        if config.email:
+            self.login_email.setText(config.email)
+        if config.password:
+            self.login_password.setText(config.password)
+        threading.Thread(target=self._bg_refresh_service_status, daemon=True).start()
         if config.mode == "server":
             self.connection_status.setText(tr("Desktop is configured to target server {server_url}.", server_url=config.server_url))
             self._refresh_session_status()
@@ -1227,11 +1267,16 @@ class SettingsPage(DataAwarePage):
         )
         self.database.save_whatsapp_country_code(str(self.whatsapp_country_code.currentText() or self.whatsapp_country_code.currentData() or ""))
         self._server_profile_dirty = True
+        existing_cfg = self.deployment_service.load()
+        ui_email = self.login_email.text().strip()
+        ui_password = self.login_password.text()
         saved_config = self.deployment_service.save(
             DeploymentConfig(
                 mode=mode,
                 server_url=server_url or "http://127.0.0.1:8001",
-                api_timeout_seconds=self.deployment_service.load().api_timeout_seconds,
+                api_timeout_seconds=existing_cfg.api_timeout_seconds,
+                email=ui_email or existing_cfg.email,
+                password=ui_password or existing_cfg.password,
             )
         )
         server_profile_message = None
@@ -1289,11 +1334,12 @@ class SettingsPage(DataAwarePage):
             QMessageBox.warning(self, tr("Missing Data"), tr("Email and password are required."))
             return
 
+        existing = self.deployment_service.load()
         self.deployment_service.save(
             DeploymentConfig(
                 mode=mode,
                 server_url=server_url,
-                api_timeout_seconds=self.deployment_service.load().api_timeout_seconds,
+                api_timeout_seconds=existing.api_timeout_seconds,
             )
         )
         try:
@@ -1302,7 +1348,15 @@ class SettingsPage(DataAwarePage):
             self._refresh_session_status()
             QMessageBox.warning(self, tr("Login Failed"), str(exc))
             return
-        self.login_password.clear()
+        self.deployment_service.save(
+            DeploymentConfig(
+                mode=mode,
+                server_url=server_url,
+                api_timeout_seconds=existing.api_timeout_seconds,
+                email=email,
+                password=password,
+            )
+        )
         self._refresh_session_status()
         self.load_backup_config(silent=True)
         self.refresh_backup_status(silent=True)
@@ -1319,6 +1373,66 @@ class SettingsPage(DataAwarePage):
         refresh_status = getattr(self.window(), "refresh_deployment_status", None)
         if callable(refresh_status):
             refresh_status()
+
+    def _backend_dir(self) -> Path | None:
+        root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[3]
+        candidate = root / "backend"
+        return candidate if (candidate / "app" / "main.py").exists() else None
+
+    def _bg_refresh_service_status(self) -> None:
+        result = subprocess.run(
+            ["sc", "query", "SPDXLIMSBackend"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            text = tr("Not installed")
+        else:
+            state = ""
+            for line in result.stdout.splitlines():
+                if "STATE" in line and ":" in line:
+                    parts = line.split(":")
+                    if len(parts) > 1:
+                        state = parts[1].strip().split()[1] if len(parts[1].strip().split()) > 1 else parts[1].strip()
+            text = state or tr("Unknown")
+        QTimer.singleShot(0, lambda: self.service_status_label.setText(text))
+
+    def _install_backend_service(self) -> None:
+        backend_dir = self._backend_dir()
+        if backend_dir is None:
+            QMessageBox.warning(self, tr("Backend Service"), tr("Backend directory not found."))
+            return
+        result = subprocess.run(
+            [sys.executable, str(backend_dir / "service.py"), "install"],
+            capture_output=True, text=True, cwd=str(backend_dir),
+        )
+        msg = result.stdout.strip() or result.stderr.strip() or tr("Done.")
+        QMessageBox.information(self, tr("Backend Service"), msg)
+        threading.Thread(target=self._bg_refresh_service_status, daemon=True).start()
+
+    def _uninstall_backend_service(self) -> None:
+        backend_dir = self._backend_dir()
+        if backend_dir is None:
+            QMessageBox.warning(self, tr("Backend Service"), tr("Backend directory not found."))
+            return
+        result = subprocess.run(
+            [sys.executable, str(backend_dir / "service.py"), "remove"],
+            capture_output=True, text=True, cwd=str(backend_dir),
+        )
+        msg = result.stdout.strip() or result.stderr.strip() or tr("Done.")
+        QMessageBox.information(self, tr("Backend Service"), msg)
+        threading.Thread(target=self._bg_refresh_service_status, daemon=True).start()
+
+    def _start_backend_service(self) -> None:
+        result = subprocess.run(["sc", "start", "SPDXLIMSBackend"], capture_output=True, text=True, timeout=15)
+        msg = result.stdout.strip() or result.stderr.strip() or tr("Start command sent.")
+        QMessageBox.information(self, tr("Backend Service"), msg)
+        threading.Thread(target=self._bg_refresh_service_status, daemon=True).start()
+
+    def _stop_backend_service(self) -> None:
+        result = subprocess.run(["sc", "stop", "SPDXLIMSBackend"], capture_output=True, text=True, timeout=15)
+        msg = result.stdout.strip() or result.stderr.strip() or tr("Stop command sent.")
+        QMessageBox.information(self, tr("Backend Service"), msg)
+        threading.Thread(target=self._bg_refresh_service_status, daemon=True).start()
 
     def _refresh_session_status(self) -> None:
         label = self.deployment_service.session_label()

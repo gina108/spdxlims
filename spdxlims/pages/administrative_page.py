@@ -304,9 +304,9 @@ class AdministrativePage(DataAwarePage):
         self.invoice_date_range_row = QWidget()
         invoice_date_range_layout = QHBoxLayout(self.invoice_date_range_row)
         invoice_date_range_layout.setContentsMargins(0, 0, 0, 0)
-        invoice_date_range_layout.addWidget(QLabel("From"))
+        invoice_date_range_layout.addWidget(QLabel(tr("From")))
         invoice_date_range_layout.addWidget(self.invoice_filter_date_from, 1)
-        invoice_date_range_layout.addWidget(QLabel("To"))
+        invoice_date_range_layout.addWidget(QLabel(tr("To")))
         invoice_date_range_layout.addWidget(self.invoice_filter_date_to, 1)
         for key, field in [('invoice_filter_client', self.invoice_filter_client), ('invoice_filter_date_range', self.invoice_date_range_row)]:
             label = QLabel()

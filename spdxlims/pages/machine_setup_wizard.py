@@ -30,8 +30,9 @@ from PySide6.QtWidgets import (
 )
 
 from spdxlims.database import Database
+from spdxlims.instrument_broadcast import get_engine_url
 
-_ENGINE_URL = "http://127.0.0.1:9088"
+_ENGINE_URL = get_engine_url()
 
 _PROTOCOL_LABELS: dict[str, str] = {
     "hl7_v2": "HL7 v2 (común en equipos modernos de red)",

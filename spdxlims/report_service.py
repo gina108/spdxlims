@@ -3,24 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from spdxlims.database import Database
-from spdxlims.deployment import DeploymentService
+from spdxlims.service_base import ServiceBase
 
 
 @dataclass(slots=True)
-class ReportService:
-    database: Database
-    deployment_service: DeploymentService
-
-    def uses_server_backend(self) -> bool:
-        return self.deployment_service.load().mode == 'server'
+class ReportService(ServiceBase):
 
     def find_report_order_id_by_barcode(self, barcode: str) -> int | str | None:
         normalized = barcode.strip()
         if not normalized:
             return None
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             lookup = self.database.find_order_by_number(normalized)
             return lookup.id if lookup is not None else None
         payload = self.deployment_service.request_json('GET', f'/api/orders/by-number/{normalized}', allow_404=True)
@@ -30,8 +23,7 @@ class ReportService:
         return str(order_id) if order_id else None
 
     def list_report_order_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.list_report_order_choices()
         payload = self.deployment_service.request_json('GET', '/api/reports/order-choices')
         if not isinstance(payload, list):
@@ -50,8 +42,7 @@ class ReportService:
         date_from: str = "",
         date_to: str = "",
     ) -> list[tuple[str, str]] | list[tuple[int, str]]:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.list_filtered_report_order_choices(
                 client_id=client_id,
                 test_id=test_id,
@@ -61,22 +52,16 @@ class ReportService:
         raise RuntimeError('Filtered report generation is currently available only in local mode.')
 
     def get_live_report_preview(self, order_id: int | str) -> dict[str, Any] | None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.get_live_report_preview(int(order_id))
         preview = self.deployment_service.request_json('GET', f'/api/reports/orders/{order_id}/live-preview', allow_404=True)
-        if not isinstance(preview, dict):
-            return None
-        return preview
+        return preview if isinstance(preview, dict) else None
 
     def get_saved_report_preview(self, order_id: int | str) -> dict[str, Any] | None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             return self.database.get_saved_report_preview(int(order_id))
         preview = self.deployment_service.request_json('GET', f'/api/reports/orders/{order_id}/saved-preview', allow_404=True)
-        if not isinstance(preview, dict):
-            return None
-        return preview
+        return preview if isinstance(preview, dict) else None
 
     def finalize_report(
         self,
@@ -86,8 +71,7 @@ class ReportService:
         footer_signature_image_path: str | None = None,
         preview_override: dict[str, Any] | None = None,
     ) -> None:
-        config = self.deployment_service.load()
-        if config.mode != 'server':
+        if self._is_local():
             self.database.finalize_report(
                 int(order_id),
                 header_image_path=header_image_path,
@@ -95,7 +79,7 @@ class ReportService:
                 preview_override=preview_override,
             )
             return
-        body = {
+        body: dict[str, Any] = {
             'header_image_path': header_image_path,
             'footer_signature_image_path': footer_signature_image_path,
         }

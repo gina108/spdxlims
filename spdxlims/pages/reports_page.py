@@ -110,9 +110,9 @@ class ReportsPage(DataAwarePage):
         report_date_row = QWidget()
         report_date_layout = QHBoxLayout(report_date_row)
         report_date_layout.setContentsMargins(0, 0, 0, 0)
-        report_date_layout.addWidget(QLabel("From"))
+        report_date_layout.addWidget(QLabel(tr("From")))
         report_date_layout.addWidget(self.report_date_from, 1)
-        report_date_layout.addWidget(QLabel("To"))
+        report_date_layout.addWidget(QLabel(tr("To")))
         report_date_layout.addWidget(self.report_date_to, 1)
 
         order_row = QWidget()

@@ -740,7 +740,7 @@ func (a *App) DeletePendingOrder(sampleID string) {
 func (a *App) makeQueryHandler(prof profile.Profile) transport.QueryHandler {
 	switch transport.SelectSessionMode(prof) {
 	case "astm":
-		return func(sampleID string, rw io.ReadWriter) {
+		return func(queryType string, sampleID string, controlID string, rw io.ReadWriter) {
 			order, found := a.pendingOrders.Get(sampleID)
 			records := buildASTMOrderResponseRecords(sampleID, found, order)
 			if err := transport.SendASTMResponse(rw, records); err != nil {
@@ -751,58 +751,110 @@ func (a *App) makeQueryHandler(prof profile.Profile) transport.QueryHandler {
 			}
 		}
 	case "hl7":
-		return func(sampleID string, rw io.ReadWriter) {
+		return func(queryType string, sampleID string, controlID string, rw io.ReadWriter) {
+			if strings.HasPrefix(queryType, "QRY") || strings.HasPrefix(queryType, "QBP") {
+				// ADT Net Query (QRY^A19) — Mindray patient monitor requesting patient demographics.
+				// Look up by PatientID (MRN) since the monitor queries by medical record number.
+				order, found := a.pendingOrders.FindByPatientID(sampleID)
+				fmt.Fprintf(os.Stderr, "[HL7-RESP] ADR^A19 for mrn=%q found=%v\n", sampleID, found)
+				adr := buildHL7ADRMessage(sampleID, found, order)
+				fmt.Fprintf(os.Stderr, "[HL7-SEND-ADR] %d bytes: %q\n", len(adr), adr)
+				if err := transport.SendHL7Response(rw, adr); err != nil {
+					fmt.Fprintf(os.Stderr, "[HL7-ERR] ADR write failed: %v\n", err)
+					a.recordError(prof.ID, "hl7_adr", models.TransportType(prof.Transport.Type), err,
+						map[string]any{"stage": "hl7_adr", "mrn": sampleID}, prof.Transport)
+				}
+				return
+			}
+			// ORM^O01 with ORC|RF — Mindray BC-30s hematology analyzer worklist request.
+			// Per BC-30s Communication Protocol V1.0 §4.4.4: respond with a single ORR^O02
+			// that combines the MSA acknowledgment (echoing original MSH-10) with patient and
+			// order data. If no order is found, MSH+MSA only so the analyzer can continue.
 			order, found := a.pendingOrders.Get(sampleID)
-			fmt.Fprintf(os.Stderr, "[HL7-RESP] query for sample_id=%q found=%v\n", sampleID, found)
-			// Send ACK first (required by Mindray before it will accept the ORM).
-			ack := buildHL7ACKMessage(found)
-			fmt.Fprintf(os.Stderr, "[HL7-SEND-ACK] %d bytes: %q\n", len(ack), ack)
-			if err := transport.SendHL7Response(rw, ack); err != nil {
-				fmt.Fprintf(os.Stderr, "[HL7-ERR] ACK write failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[HL7-RESP] query for sample_id=%q found=%v control_id=%q\n", sampleID, found, controlID)
+			orr := buildHL7ORRMessage(sampleID, controlID, found, order)
+			fmt.Fprintf(os.Stderr, "[HL7-SEND-ORR] %d bytes: %q\n", len(orr), orr)
+			if err := transport.SendHL7Response(rw, orr); err != nil {
+				fmt.Fprintf(os.Stderr, "[HL7-ERR] ORR write failed: %v\n", err)
 				a.recordError(prof.ID, "hl7_query", models.TransportType(prof.Transport.Type), err,
-					map[string]any{"stage": "hl7_ack", "sample_id": sampleID}, prof.Transport)
+					map[string]any{"stage": "hl7_orr", "sample_id": sampleID}, prof.Transport)
 				return
 			}
-			if !found {
-				return
+			if found {
+				a.pendingOrders.Delete(sampleID)
 			}
-			// Send the order as a second MLLP message.
-			orm := buildHL7OrderResponseMessage(sampleID, order)
-			fmt.Fprintf(os.Stderr, "[HL7-SEND-ORM] %d bytes: %q\n", len(orm), orm)
-			if err := transport.SendHL7Response(rw, orm); err != nil {
-				fmt.Fprintf(os.Stderr, "[HL7-ERR] ORM write failed: %v\n", err)
-				a.recordError(prof.ID, "hl7_query", models.TransportType(prof.Transport.Type), err,
-					map[string]any{"stage": "hl7_orm", "sample_id": sampleID}, prof.Transport)
-				return
-			}
-			a.pendingOrders.Delete(sampleID)
 		}
 	}
 	return nil
 }
 
-// buildHL7ACKMessage returns an ACK^O01 acknowledging a Mindray ORM^O01 worklist request.
-// found=true → MSA|AA (orders available); found=false → MSA|AE (no orders for this sample).
-func buildHL7ACKMessage(found bool) string {
+// buildHL7ORRMessage builds an ORR^O02 response to the BC-30s's ORM^O01 RF worklist
+// query. Per BC-30s Communication Protocol V1.0 §4.4.4:
+//   - Single message combining MSA (echoing original MSH-10) with patient/order data.
+//   - ORC-1=AF (affirm re-fill), ORC-2=sampleID (placer order number in ORR).
+//   - OBR-2=sampleID — must match ORC-2 or the analyzer rejects the message.
+//   - If not found, MSH+MSA only so the analyzer can flag for manual entry.
+func buildHL7ORRMessage(sampleID string, controlID string, found bool, order orders.PendingOrder) string {
 	now := time.Now().Format("20060102150405")
-	msgID := fmt.Sprintf("ACK%s", now)
-	ackCode := "AA"
-	if !found {
-		ackCode = "AE"
+	msgID := fmt.Sprintf("ORR%s", now)
+	if controlID == "" {
+		controlID = "1"
 	}
-	return fmt.Sprintf("MSH|^~\\&|SPDXLIMS||BC30||%s||ACK^O01|%s|P|2.3\rMSA|%s|1|\r",
-		now, msgID, ackCode)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("MSH|^~\\&|||||||%s||ORR^O02|%s|P|2.3.1||||||UNICODE\r", now, msgID))
+	sb.WriteString(fmt.Sprintf("MSA|AA|%s\r", controlID))
+	if !found {
+		return sb.String()
+	}
+	nameParts := strings.Fields(strings.TrimSpace(order.PatientName))
+	lastName, firstName := "", ""
+	if len(nameParts) >= 2 {
+		lastName = nameParts[len(nameParts)-1]
+		firstName = strings.Join(nameParts[:len(nameParts)-1], " ")
+	} else if len(nameParts) == 1 {
+		lastName = nameParts[0]
+	}
+	dob := strings.ReplaceAll(order.DOB, "-", "")
+	sex := strings.ToUpper(strings.TrimSpace(order.Sex))
+	if len(sex) > 1 {
+		sex = sex[:1]
+	}
+	patientID := strings.TrimSpace(order.PatientID)
+	if patientID == "" {
+		patientID = sampleID
+	}
+	sb.WriteString(fmt.Sprintf("PID|1||%s^^^^MR||%s^%s||%s|%s\r",
+		patientID, lastName, firstName, dob, sex))
+	sb.WriteString("PV1|1|O\r")
+	sb.WriteString(fmt.Sprintf("ORC|AF|%s\r", sampleID))
+	testCode := "00001"
+	testName := "Automated Count"
+	if len(order.Tests) > 0 {
+		testCode = order.Tests[0].TestCode
+		testName = order.Tests[0].TestName
+	}
+	sb.WriteString(fmt.Sprintf("OBR|1|%s||%s^%s^99MRC||%s||||||||%s||||||||||HM\r",
+		sampleID, testCode, testName, now, now))
+	sb.WriteString("OBX|1|IS|08002^Blood Mode^99MRC||W||||||F\r")
+	sb.WriteString("OBX|2|IS|08003^Test Mode^99MRC||CBC||||||F\r")
+	return sb.String()
 }
 
-// buildHL7OrderResponseMessage builds a clean ORM^O01 message (no MSA segment) with
-// PID + PV1 + ORC/OBR per test. Sent as the second MLLP message after the ACK.
-func buildHL7OrderResponseMessage(sampleID string, order orders.PendingOrder) string {
+// buildHL7ADRMessage returns an ADR^A19 response to a Mindray patient monitor QRY^A19 query
+// (PDS Protocol section 4.3). found=true includes PID+PV1+OBR demographics; found=false
+// returns an MSA with "The Patient is not found!" text so the monitor knows to abort.
+func buildHL7ADRMessage(mrn string, found bool, order orders.PendingOrder) string {
 	now := time.Now().Format("20060102150405")
-	msgID := fmt.Sprintf("ORM%s", now)
+	msgID := fmt.Sprintf("ADR%s", now)
 	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("MSH|^~\\&|SPDXLIMS||BC30||%s||ORM^O01|%s|P|2.3\r", now, msgID))
-
+	sb.WriteString(fmt.Sprintf("MSH|^~\\&|SPDXLIMS||Mindray||%s||ADR^A19|%s|P|2.3.1\r", now, msgID))
+	if !found {
+		sb.WriteString("MSA|AA|1|The Patient is not found!\r")
+		sb.WriteString(fmt.Sprintf("QRD|%s000|D|D|1|||1^RD|%s|^DEM|^MindrayGateway\r", now, mrn))
+		return sb.String()
+	}
+	sb.WriteString("MSA|AA|1|The Patient is Found\r")
+	sb.WriteString(fmt.Sprintf("QRD|%s000|D|D|1|||1^RD|%s|^DEM|^MindrayGateway\r", now, mrn))
 	nameParts := strings.Fields(strings.TrimSpace(order.PatientName))
 	lastName, firstName := "", ""
 	if len(nameParts) >= 2 {
@@ -819,14 +871,7 @@ func buildHL7OrderResponseMessage(sampleID string, order orders.PendingOrder) st
 	sb.WriteString(fmt.Sprintf("PID|1||%s|||%s^%s||%s|%s\r",
 		order.PatientID, lastName, firstName, dob, sex))
 	sb.WriteString("PV1|1|O\r")
-
-	for i, t := range order.Tests {
-		ordID := fmt.Sprintf("ORD%s%03d", sampleID, i+1)
-		sb.WriteString(fmt.Sprintf("ORC|NW|%s|%s||CM\r", ordID, ordID))
-		sb.WriteString(fmt.Sprintf("OBR|%d|%s|%s|%s^%s^L\r",
-			i+1, ordID, ordID, t.TestCode, t.TestName))
-	}
-
+	sb.WriteString(fmt.Sprintf("OBR|||||||%s\r", now))
 	return sb.String()
 }
 

@@ -39,12 +39,13 @@ from PySide6.QtWidgets import (
 
 from spdxlims.database import Database, EquipmentRecord, InstrumentOrderMatchRecord
 from spdxlims.i18n import tr
+from spdxlims.instrument_broadcast import get_engine_url
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pages.machine_setup_wizard import MachineSetupWizard
 
 
 class EquipmentPage(DataAwarePage):
-    ENGINE_URL = "http://127.0.0.1:9088"
+    ENGINE_URL: str = get_engine_url()
     ANALYZER_CODE_CHOICES = {
         "urinalysis-com6": [
             ("LEU", "Leukocytes", "EGO-LEU", ""),
@@ -261,7 +262,7 @@ class EquipmentPage(DataAwarePage):
         self.mapping_slice_end = QLineEdit()
         self.mapping_slice_end.setPlaceholderText(tr("e.g. 5"))
         self.mapping_multiplier = QLineEdit()
-        self.mapping_multiplier.setPlaceholderText("e.g. *1000  /10  +5  -2  x*10+5")
+        self.mapping_multiplier.setPlaceholderText("ej. *1000  /10  +5  -2  x*10+5")
         self.mapping_decimal_places = QLineEdit()
         self.mapping_decimal_places.setPlaceholderText(tr("e.g. 2"))
         slice_row = QHBoxLayout()

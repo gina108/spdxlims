@@ -12,6 +12,8 @@ class DeploymentConfig:
     mode: str = "local"
     server_url: str = "http://127.0.0.1:8001"
     api_timeout_seconds: float = 5.0
+    email: str = ""
+    password: str = ""
 
     @classmethod
     def from_dict(cls, raw: dict[str, object] | None) -> "DeploymentConfig":
@@ -25,7 +27,9 @@ class DeploymentConfig:
             timeout = float(timeout_raw)
         except (TypeError, ValueError):
             timeout = 5.0
-        return cls(mode=mode, server_url=server_url.rstrip("/"), api_timeout_seconds=max(timeout, 1.0))
+        email = str(raw.get("email") or "").strip()
+        password = str(raw.get("password") or "")
+        return cls(mode=mode, server_url=server_url.rstrip("/"), api_timeout_seconds=max(timeout, 1.0), email=email, password=password)
 
 
 class DeploymentService:
@@ -76,6 +80,18 @@ class DeploymentService:
     def is_authenticated(self) -> bool:
         return bool(self._access_token)
 
+    def try_auto_login(self) -> bool:
+        if self.is_authenticated():
+            return True
+        config = self.load()
+        if config.mode != "server" or not config.email or not config.password:
+            return False
+        try:
+            self.login(config.email, config.password)
+            return True
+        except RuntimeError:
+            return False
+
     def session_label(self) -> str:
         if not self._session_email:
             return ""
@@ -91,7 +107,7 @@ class DeploymentService:
     def request_json(self, method: str, path: str, body: dict[str, object] | None = None, *, allow_404: bool = False):
         config = self.load()
         if config.mode == "server" and not self._access_token:
-            raise RuntimeError("Log in to the server from Settings before using server mode.")
+            return None
         return self._client.request_json(
             config.server_url,
             method,

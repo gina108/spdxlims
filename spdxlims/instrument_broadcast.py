@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import socket
+import sys
 import urllib.request
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 try:
     import yaml as _yaml
@@ -32,7 +37,7 @@ def _find_profile_yaml(profile_id: str) -> Path | None:
             if stem in key or key in stem:
                 return f
     except Exception:
-        pass
+        _log.debug("Error scanning profiles dir for %r", profile_id, exc_info=True)
     return None
 
 
@@ -49,6 +54,7 @@ def _get_transport_address(profile_id: str) -> tuple[str, int] | None:
         host, port_str = addr.rsplit(":", 1)
         return host.strip(), int(port_str.strip())
     except Exception:
+        _log.debug("Error reading transport address from %s", yaml_path, exc_info=True)
         return None
 
 
@@ -147,7 +153,33 @@ def broadcast_order(
         raise RuntimeError(f"Could not connect to {host}:{port} — {exc}") from exc
 
 
-_ENGINE_URL = "http://127.0.0.1:9088"
+def _read_engine_config() -> dict:
+    env = os.environ.get("INSTRUMENT_ENGINE_DATA_DIR", "").strip()
+    if env:
+        candidates = [Path(env) / "engine.json"]
+    else:
+        root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
+        candidates = [root / "data" / "instrument-engine" / "engine.json"]
+    for path in candidates:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
+
+
+def get_engine_url() -> str:
+    """Return the engine API base URL from engine.json in the data dir, or the default."""
+    addr = (_read_engine_config().get("listen_addr") or "").strip()
+    if not addr:
+        return "http://127.0.0.1:9088"
+    host, _, port = addr.rpartition(":")
+    if host in ("", "0.0.0.0"):
+        host = "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
+_ENGINE_URL = get_engine_url()
 
 
 def push_pending_order_to_engine(
