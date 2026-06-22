@@ -13,6 +13,7 @@ transport:
 orders:
   directory: Z:\Pedidos
   file_extension: .ANA
+  write_on_push: true
   archive_on_result: true
   archive_dir: Z:\Pedidos\archive
 parsing:

@@ -731,7 +731,85 @@ func (a *App) PushPendingOrder(req models.PendingOrderRequest) error {
 		Tests:       tests,
 		ProfileID:   req.ProfileID,
 	})
+	a.writeOrderFile(req)
 	return nil
+}
+
+// writeOrderFile emits an instrument order/worklist file for analyzers that
+// import orders as drop files (e.g. the CM250 `.ANA` files in Z:\Pedidos). It is
+// best-effort: it does nothing unless the target profile has write_on_push set,
+// and logs (without failing the push) on a write error. Tests whose LIS code has
+// no instrument-code mapping are skipped and logged rather than emitted as an
+// empty field — an empty test field is silently read by the CM250 as ALB.
+func (a *App) writeOrderFile(req models.PendingOrderRequest) {
+	if strings.TrimSpace(req.ProfileID) == "" {
+		return
+	}
+	prof, err := a.profiles.Get(req.ProfileID)
+	if err != nil || !prof.Orders.WriteOnPush || strings.TrimSpace(prof.Orders.Directory) == "" {
+		return
+	}
+	codes, skipped := instrumentCodesForOrder(prof, req.Tests)
+	if len(skipped) > 0 {
+		a.recordError(prof.ID, "", models.TransportFileDrop,
+			fmt.Errorf("order %s: no instrument-code mapping for tests %v (skipped)", req.SampleID, skipped),
+			map[string]any{"stage": "write_order_file_mapping", "sample_id": req.SampleID}, prof.Transport)
+	}
+	if len(codes) == 0 {
+		return
+	}
+	path, err := orderfile.WriteOrder(orderfile.Config{
+		Directory:     prof.Orders.Directory,
+		FileExtension: prof.Orders.FileExtension,
+		WriteOnPush:   prof.Orders.WriteOnPush,
+	}, orderfile.OrderRecord{
+		OrderNumber: strings.TrimSpace(req.SampleID),
+		PatientName: req.PatientName,
+		TestCodes:   codes,
+	})
+	if err != nil {
+		a.recordError(prof.ID, "", models.TransportFileDrop, err,
+			map[string]any{"stage": "write_order_file", "sample_id": req.SampleID}, prof.Transport)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[ORDER] wrote order file for sample %s -> %s\n", req.SampleID, path)
+}
+
+// instrumentCodesForOrder maps each pending test's LIS code to the instrument
+// code the analyzer expects, using the profile's test_mappings. Unmapped tests
+// are returned in skipped so the caller can log them.
+func instrumentCodesForOrder(prof profile.Profile, tests []models.PendingTestRequest) (codes, skipped []string) {
+	for _, t := range tests {
+		lis := strings.TrimSpace(t.TestCode)
+		if lis == "" {
+			continue
+		}
+		if code := lookupInstrumentCode(prof, lis); code != "" {
+			codes = append(codes, code)
+		} else {
+			skipped = append(skipped, lis)
+		}
+	}
+	return codes, skipped
+}
+
+// lookupInstrumentCode resolves a LIS test code to the instrument code (the
+// mapping's Pattern). It matches on lis_test_id first, then falls back to the
+// instrument pattern or canonical assay in case the LIMS sends those directly.
+func lookupInstrumentCode(prof profile.Profile, lisCode string) string {
+	want := strings.ToLower(strings.TrimSpace(lisCode))
+	for _, m := range prof.Mapping.TestMappings {
+		if strings.ToLower(strings.TrimSpace(m.LISTestID)) == want {
+			return strings.TrimSpace(m.Pattern)
+		}
+	}
+	for _, m := range prof.Mapping.TestMappings {
+		if strings.ToLower(strings.TrimSpace(m.Pattern)) == want ||
+			strings.ToLower(strings.TrimSpace(m.CanonicalAssay)) == want {
+			return strings.TrimSpace(m.Pattern)
+		}
+	}
+	return ""
 }
 
 // ListPendingOrders returns all non-expired pending orders as PendingOrderRequests.

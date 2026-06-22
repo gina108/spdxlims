@@ -29,6 +29,7 @@ type Profile struct {
 type OrdersSettings struct {
     Directory       string `json:"directory,omitempty" yaml:"directory,omitempty"`
     FileExtension   string `json:"file_extension,omitempty" yaml:"file_extension,omitempty"`
+    WriteOnPush     bool   `json:"write_on_push,omitempty" yaml:"write_on_push,omitempty"`
     ArchiveOnResult bool   `json:"archive_on_result,omitempty" yaml:"archive_on_result,omitempty"`
     ArchiveDir      string `json:"archive_dir,omitempty" yaml:"archive_dir,omitempty"`
 }
