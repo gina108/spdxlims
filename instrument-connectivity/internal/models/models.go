@@ -13,6 +13,10 @@ const (
 	TransportReplay    TransportType = "replay"
 
 	ProtocolHL7        ProtocolType = "hl7_v2"
+	// ProtocolHL7ORU is a profile-level strategy alias for HL7 (used by the
+	// Mindray BC-30 and other ORU^R01 instruments). It routes to the same
+	// parser as ProtocolHL7.
+	ProtocolHL7ORU     ProtocolType = "hl7_oru"
 	ProtocolASTM       ProtocolType = "astm"
 	ProtocolCSV        ProtocolType = "csv"
 	ProtocolLineText   ProtocolType = "line_text"

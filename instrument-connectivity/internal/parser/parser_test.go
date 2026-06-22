@@ -34,6 +34,27 @@ func TestParseHL7(t *testing.T) {
 	}
 }
 
+func TestParseHL7MindrayBC30FallbackRunID(t *testing.T) {
+	// The Mindray BC-30 profile selects the "hl7_oru" strategy, which must route
+	// to the HL7 parser. It also leaves OBR-2 (placer order) empty and only
+	// populates OBR-3 (filler order), so AnalyzerRunID must fall back to OBR-3 or
+	// the result is dropped downstream by UpsertResult.
+	payload := models.NormalizedPayload{NormalizedText: "MSH|^~\\&|||||20260622131930||ORU^R01|110|P|2.3.1||||||UNICODE\nPID|1||^^^^MR||^VANESSA CAMPOS|||Mujer\nOBR|1||2206174|00001^Automated Count^99MRC|||20260622131837\nOBX|4|NM|6690-2^WBC^LN||5.9|10*9/L|4.0-10.0|N|||F"}
+	msg, err := NewRegistry().Parse(models.ProtocolHL7ORU, "mindray-bc30s", "10.0.0.2:5100", "raw", models.TransportTCPClient, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.SampleID != "2206174" {
+		t.Fatalf("expected SampleID 2206174, got %q", msg.SampleID)
+	}
+	if msg.AnalyzerRunID != "2206174" {
+		t.Fatalf("expected AnalyzerRunID to fall back to 2206174, got %q", msg.AnalyzerRunID)
+	}
+	if len(msg.Observations) != 1 || msg.Observations[0].InstrumentTestCode != "6690-2" {
+		t.Fatalf("unexpected observations: %#v", msg.Observations)
+	}
+}
+
 func TestParseCM250(t *testing.T) {
 	payload := models.NormalizedPayload{NormalizedText: "2006169   ;N;Jose Ortega         ;            ;   ; ;06/20/26;00:00:00;OK; 6;COL L ;      125;mg/dL;CRE L ;    5.324;mg/dL;GLU L ;    93.38;mg/dL;TG L  ;    184.1;mg/dL;URE L ;    99.12;mg/dL;URI L ;    5.851;mg/dL"}
 	msg, err := NewRegistry().Parse(models.ProtocolCM250, "cm250", "dev1", "raw", models.TransportFileDrop, payload)

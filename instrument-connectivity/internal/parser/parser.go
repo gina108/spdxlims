@@ -17,7 +17,7 @@ func NewRegistry() *Registry { return &Registry{} }
 
 func (r *Registry) Parse(protocol models.ProtocolType, profileID, deviceID, rawRef string, transport models.TransportType, payload models.NormalizedPayload) (models.InstrumentMessage, error) {
 	switch protocol {
-	case models.ProtocolHL7:
+	case models.ProtocolHL7, models.ProtocolHL7ORU:
 		return parseHL7(profileID, deviceID, rawRef, transport, payload)
 	case models.ProtocolASTM:
 		return parseASTM(profileID, deviceID, rawRef, transport, payload)
@@ -67,6 +67,13 @@ func parseHL7(profileID, deviceID, rawRef string, transport models.TransportType
 			}
 			if len(fields) > 2 {
 				msg.AnalyzerRunID = firstComponent(fields[2])
+			}
+			// The Mindray BC-30 leaves OBR-2 (placer order number) empty and
+			// only populates OBR-3 (filler order number). Without a run ID the
+			// result is silently dropped downstream, so fall back to the sample
+			// ID from OBR-3 when OBR-2 is blank.
+			if msg.AnalyzerRunID == "" {
+				msg.AnalyzerRunID = msg.SampleID
 			}
 		case "OBX":
 			obs := models.Observation{ObservationID: fmt.Sprintf("obx_%d", setID)}
