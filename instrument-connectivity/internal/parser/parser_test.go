@@ -34,6 +34,37 @@ func TestParseHL7(t *testing.T) {
 	}
 }
 
+func TestParseCM250(t *testing.T) {
+	payload := models.NormalizedPayload{NormalizedText: "2006169   ;N;Jose Ortega         ;            ;   ; ;06/20/26;00:00:00;OK; 6;COL L ;      125;mg/dL;CRE L ;    5.324;mg/dL;GLU L ;    93.38;mg/dL;TG L  ;    184.1;mg/dL;URE L ;    99.12;mg/dL;URI L ;    5.851;mg/dL"}
+	msg, err := NewRegistry().Parse(models.ProtocolCM250, "cm250", "dev1", "raw", models.TransportFileDrop, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.SampleID != "2006169" {
+		t.Fatalf("expected SampleID 2006169, got %q", msg.SampleID)
+	}
+	if msg.Metadata["patient_name"] != "Jose Ortega" {
+		t.Fatalf("expected patient_name Jose Ortega, got %v", msg.Metadata["patient_name"])
+	}
+	if len(msg.Observations) != 6 {
+		t.Fatalf("expected 6 observations, got %d", len(msg.Observations))
+	}
+	colObs := msg.Observations[0]
+	if colObs.InstrumentTestCode != "COL L" {
+		t.Fatalf("expected first code COL L, got %q", colObs.InstrumentTestCode)
+	}
+	if colObs.ValueNumeric == nil || *colObs.ValueNumeric != 125 {
+		t.Fatalf("expected COL L numeric 125, got %v", colObs.ValueNumeric)
+	}
+	if colObs.UnitsRaw != "mg/dL" {
+		t.Fatalf("expected units mg/dL, got %q", colObs.UnitsRaw)
+	}
+	creObs := msg.Observations[1]
+	if creObs.InstrumentTestCode != "CRE L" || creObs.ValueNumeric == nil || *creObs.ValueNumeric != 5.324 {
+		t.Fatalf("unexpected CRE L observation: %#v", creObs)
+	}
+}
+
 func TestParseFramedUrinalysisLines(t *testing.T) {
 	payload := models.NormalizedPayload{NormalizedText: "\x02 Date:2026-05-02 15:58\r\n Operator: 100\r\n No.000004\r\n LEU       -              neg\r\n URO       -       0.2  mg/dL\r\n PRO      +-       15   mg/dL\r\n pH           6.0\r\n SG         1.015\r\n\x03"}
 	msg, err := NewRegistry().Parse(models.ProtocolLineText, "urinalysis-com6", "COM6", "raw", models.TransportSerial, payload)

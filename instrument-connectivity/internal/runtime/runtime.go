@@ -25,6 +25,7 @@ import (
 	"instrument-connectivity/internal/discovery"
 	"instrument-connectivity/internal/learning"
 	"instrument-connectivity/internal/models"
+	"instrument-connectivity/internal/orderfile"
 	"instrument-connectivity/internal/orders"
 	"instrument-connectivity/internal/pipeline"
 	"instrument-connectivity/internal/profile"
@@ -342,7 +343,32 @@ func (a *App) ProcessPayload(raw []byte, transportType models.TransportType, pro
 	if err := a.captures.UpsertResult(result.Message, rec.ID, rec.ReceivedAt); err != nil {
 		a.recordError(prof.ID, deviceID, transportType, err, map[string]any{"stage": "upsert_result", "capture_id": rec.ID}, prof.Transport)
 	}
+	a.reconcileOrderFile(prof, result.Message.SampleID, deviceID, transportType)
 	return result, rec, nil
+}
+
+// reconcileOrderFile archives the order/worklist file for a just-resulted sample
+// (e.g. the CM250 `.ANA` file in Z:\Pedidos). It is best-effort: a missing file
+// is a no-op, and a file still locked by the analyzer is logged but never fails
+// result processing — the next result for that sample, or a later run, retries.
+func (a *App) reconcileOrderFile(prof profile.Profile, sampleID, deviceID string, transportType models.TransportType) {
+	sid := strings.TrimSpace(sampleID)
+	if sid == "" || !prof.Orders.ArchiveOnResult {
+		return
+	}
+	dst, err := orderfile.ArchiveResult(orderfile.Config{
+		Directory:       prof.Orders.Directory,
+		FileExtension:   prof.Orders.FileExtension,
+		ArchiveOnResult: prof.Orders.ArchiveOnResult,
+		ArchiveDir:      prof.Orders.ArchiveDir,
+	}, sid)
+	if err != nil {
+		a.recordError(prof.ID, deviceID, transportType, err, map[string]any{"stage": "archive_order_file", "sample_id": sid}, prof.Transport)
+		return
+	}
+	if dst != "" {
+		fmt.Fprintf(os.Stderr, "[ORDER] archived order file for sample %s -> %s\n", sid, dst)
+	}
 }
 
 func (a *App) ListCaptures(filter capture.CaptureFilter) ([]capture.CaptureRecord, error) {
@@ -669,6 +695,7 @@ func (a *App) seedProfiles() error {
 		{ID: "generic-hl7", Name: "Generic HL7 Instrument", ProtocolHint: "hl7_v2", Transport: profile.TransportSettings{Type: "tcp_client", RemoteAddress: "127.0.0.1:5000", DiscoveryPorts: []int{5000, 2575}, DiscoveryHints: []string{"hl7_listener"}}, Parsing: profile.ParsingSettings{Strategy: "hl7_oru"}, Mapping: profile.MappingSettings{UnitNormalization: map[string]string{"10^3/uL": "10^3/uL", "g/dL": "g/dL"}}, LearningSettings: profile.LearningSettings{Enabled: true}},
 		{ID: "generic-astm", Name: "Generic ASTM Instrument", ProtocolHint: "astm", Transport: profile.TransportSettings{Type: "serial", SessionMode: "astm", BaudRate: 9600, DataBits: 8, Parity: "N", StopBits: 1, DiscoveryHints: []string{"astm_serial"}}, Parsing: profile.ParsingSettings{Strategy: "astm"}, Mapping: profile.MappingSettings{UnitNormalization: map[string]string{"mg/dl": "mg/dL", "mmol/l": "mmol/L"}}, LearningSettings: profile.LearningSettings{Enabled: true}},
 		{ID: "generic-csv-filedrop", Name: "Generic CSV File Drop", ProtocolHint: "csv", Transport: profile.TransportSettings{Type: "file_drop", WatchDirectories: []string{"incoming"}, DiscoveryHints: []string{"file_drop"}}, Parsing: profile.ParsingSettings{Strategy: "csv", Delimiter: ","}, Mapping: profile.MappingSettings{UnitNormalization: map[string]string{"mg/dl": "mg/dL"}}, LearningSettings: profile.LearningSettings{Enabled: true}},
+		{ID: "cm250", Name: "Wiener CM250", ProtocolHint: "cm250", Transport: profile.TransportSettings{Type: "file_drop", WatchDirectories: []string{"incoming"}, DiscoveryHints: []string{"file_drop"}}, Parsing: profile.ParsingSettings{Strategy: "cm250"}, Mapping: profile.MappingSettings{UnitNormalization: map[string]string{"mg/dl": "mg/dL"}}, LearningSettings: profile.LearningSettings{Enabled: true}},
 	}
 	for _, seed := range seeds {
 		if err := a.profiles.Save(seed); err != nil {
@@ -735,9 +762,13 @@ func (a *App) DeletePendingOrder(sampleID string) {
 	a.pendingOrders.Delete(strings.TrimSpace(sampleID))
 }
 
-// makeQueryHandler returns a QueryHandler for profiles that support bidirectional
-// communication. Returns nil for profiles that use neither ASTM nor HL7 framing.
+// makeQueryHandler returns a QueryHandler for profiles that have bidirectional
+// communication enabled. Returns nil when prof.Bidirectional is false so that
+// incoming queries are silently ignored and the connection is kept open.
 func (a *App) makeQueryHandler(prof profile.Profile) transport.QueryHandler {
+	if !prof.Bidirectional {
+		return nil
+	}
 	switch transport.SelectSessionMode(prof) {
 	case "astm":
 		return func(queryType string, sampleID string, controlID string, rw io.ReadWriter) {
@@ -801,7 +832,7 @@ func buildHL7ORRMessage(sampleID string, controlID string, found bool, order ord
 		controlID = "1"
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("MSH|^~\\&|||||||%s||ORR^O02|%s|P|2.3.1||||||UNICODE\r", now, msgID))
+	sb.WriteString(fmt.Sprintf("MSH|^~\\&|||||%s||ORR^O02|%s|P|2.3.1||||||UNICODE\r", now, msgID))
 	sb.WriteString(fmt.Sprintf("MSA|AA|%s\r", controlID))
 	if !found {
 		return sb.String()

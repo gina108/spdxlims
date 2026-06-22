@@ -18,6 +18,8 @@ const (
 	ProtocolLineText   ProtocolType = "line_text"
 	ProtocolFramedText ProtocolType = "framed_text"
 	ProtocolBinary     ProtocolType = "binary"
+	ProtocolWienerRES  ProtocolType = "wiener_res"
+	ProtocolCM250      ProtocolType = "cm250"
 	ProtocolUnknown    ProtocolType = "unknown"
 )
 

@@ -25,6 +25,10 @@ func (r *Registry) Parse(protocol models.ProtocolType, profileID, deviceID, rawR
 		return parseCSV(profileID, deviceID, rawRef, transport, payload)
 	case models.ProtocolLineText, models.ProtocolFramedText:
 		return parseLines(protocol, profileID, deviceID, rawRef, transport, payload), nil
+	case models.ProtocolWienerRES:
+		return parseWienerRES(profileID, deviceID, rawRef, transport, payload), nil
+	case models.ProtocolCM250:
+		return parseCM250(profileID, deviceID, rawRef, transport, payload), nil
 	default:
 		return parseRaw(profileID, deviceID, rawRef, transport, payload), nil
 	}
@@ -230,7 +234,7 @@ func parseAnalyzerLine(index int, line string) (models.Observation, bool) {
 	}
 	obs := models.Observation{
 		ObservationID:      fmt.Sprintf("line_%d", index),
-		InstrumentTestCode: parts[0],
+		InstrumentTestCode: strings.TrimLeft(parts[0], "*"),
 		ValueRaw:           strings.TrimSpace(strings.Join(parts[1:], " ")),
 	}
 	if obs.ValueRaw == "" {
@@ -308,6 +312,139 @@ func detectUnitToken(tokens []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// parseWienerRES handles the Wiener Lab .RES semicolon-delimited export format.
+// Each result line has fixed header fields followed by N repeating (code;value;unit) triplets:
+//
+//	SampleID;Flag;PatientName;Unknown;Age;Sex;Date;Time;Status;N;code1;val1;unit1;...
+//
+// Lines where N > 0 but no triplets follow (e.g. "06"-prefixed summary lines) are skipped.
+// All patients in the file are merged into one message; SampleID is set to the first patient.
+func parseWienerRES(profileID, deviceID, rawRef string, transport models.TransportType, payload models.NormalizedPayload) models.InstrumentMessage {
+	msg := baseMessage(models.ProtocolWienerRES, profileID, deviceID, rawRef, transport)
+	obsIndex := 1
+	var sampleIDs []string
+	seenIDs := map[string]bool{}
+
+	for _, line := range splitRecords(payload.NormalizedText) {
+		parts := strings.Split(line, ";")
+		if len(parts) < 10 {
+			continue
+		}
+		nTests, err := strconv.Atoi(strings.TrimSpace(parts[9]))
+		if err != nil || nTests <= 0 {
+			continue
+		}
+		// Skip summary lines that list a count but carry no triplets.
+		if len(parts) < 10+nTests*3 {
+			continue
+		}
+		if strings.TrimSpace(parts[8]) != "OK" {
+			continue
+		}
+
+		sampleID := strings.TrimSpace(parts[0])
+		patientName := strings.TrimSpace(parts[2])
+
+		if msg.SampleID == "" {
+			msg.SampleID = sampleID
+		}
+		if !seenIDs[sampleID] {
+			seenIDs[sampleID] = true
+			sampleIDs = append(sampleIDs, sampleID)
+		}
+
+		for i := range nTests {
+			base := 10 + i*3
+			testCode := strings.TrimSpace(parts[base])
+			valueStr := strings.TrimSpace(parts[base+1])
+			unit := strings.TrimSpace(parts[base+2])
+			if testCode == "" || valueStr == "" {
+				continue
+			}
+			obs := models.Observation{
+				// Encode sampleID in the observation ID so callers can group by patient.
+				ObservationID:      fmt.Sprintf("wres_%s_%d", sampleID, obsIndex),
+				InstrumentTestCode: testCode,
+				UnitsRaw:           unit,
+				ValueRaw:           valueStr,
+			}
+			obsIndex++
+			if v, err := strconv.ParseFloat(valueStr, 64); err == nil {
+				obs.ValueNumeric = &v
+			} else {
+				obs.ValueText = valueStr
+			}
+			msg.Observations = append(msg.Observations, obs)
+			_ = patientName // available if the caller needs per-obs patient context
+		}
+	}
+
+	if len(sampleIDs) > 1 {
+		msg.Metadata["sample_ids"] = sampleIDs
+	}
+	return msg
+}
+
+// parseCM250 handles the Wiener CM250 semicolon-delimited export format.
+// Each line: OrderNumber;Flag;PatientName;...;Date;Time;OK;N;code1;val1;unit1;...
+// Field 0 is the order number used for LIMS order matching via SampleID.
+func parseCM250(profileID, deviceID, rawRef string, transport models.TransportType, payload models.NormalizedPayload) models.InstrumentMessage {
+	msg := baseMessage(models.ProtocolCM250, profileID, deviceID, rawRef, transport)
+	obsIndex := 1
+
+	for _, line := range splitRecords(payload.NormalizedText) {
+		parts := strings.Split(line, ";")
+		if len(parts) < 10 {
+			continue
+		}
+		nTests, err := strconv.Atoi(strings.TrimSpace(parts[9]))
+		if err != nil || nTests <= 0 {
+			continue
+		}
+		if len(parts) < 10+nTests*3 {
+			continue
+		}
+		if strings.TrimSpace(parts[8]) != "OK" {
+			continue
+		}
+
+		orderNumber := strings.TrimSpace(parts[0])
+		patientName := strings.TrimSpace(parts[2])
+
+		if msg.SampleID == "" {
+			msg.SampleID = orderNumber
+		}
+		if patientName != "" && msg.Metadata["patient_name"] == nil {
+			msg.Metadata["patient_name"] = patientName
+		}
+
+		for i := range nTests {
+			base := 10 + i*3
+			testCode := strings.TrimSpace(parts[base])
+			valueStr := strings.TrimSpace(parts[base+1])
+			unit := strings.TrimSpace(parts[base+2])
+			if testCode == "" || valueStr == "" {
+				continue
+			}
+			obs := models.Observation{
+				ObservationID:      fmt.Sprintf("cm250_%s_%d", orderNumber, obsIndex),
+				InstrumentTestCode: testCode,
+				UnitsRaw:           unit,
+				ValueRaw:           valueStr,
+			}
+			obsIndex++
+			if v, err := strconv.ParseFloat(valueStr, 64); err == nil {
+				obs.ValueNumeric = &v
+			} else {
+				obs.ValueText = valueStr
+			}
+			msg.Observations = append(msg.Observations, obs)
+		}
+	}
+
+	return msg
 }
 
 func parseRaw(profileID, deviceID, rawRef string, transport models.TransportType, payload models.NormalizedPayload) models.InstrumentMessage {

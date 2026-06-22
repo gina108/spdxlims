@@ -13,11 +13,24 @@ type Profile struct {
     ID string `json:"id" yaml:"id"`
     Name string `json:"name" yaml:"name"`
     ProtocolHint string `json:"protocol_hint,omitempty" yaml:"protocol_hint,omitempty"`
+    Bidirectional bool `json:"bidirectional,omitempty" yaml:"bidirectional,omitempty"`
     DeviceMetadata map[string]string `json:"device_metadata,omitempty" yaml:"device_metadata,omitempty"`
     Transport TransportSettings `json:"transport" yaml:"transport"`
     Parsing ParsingSettings `json:"parsing" yaml:"parsing"`
     Mapping MappingSettings `json:"mapping" yaml:"mapping"`
     LearningSettings LearningSettings `json:"learning_mode" yaml:"learning_mode"`
+    Orders OrdersSettings `json:"orders,omitempty" yaml:"orders,omitempty"`
+}
+
+// OrdersSettings configures order-file (worklist) handling for instruments that
+// import orders as drop files — e.g. the CM250, which reads one `.ANA` per order
+// from Z:\Pedidos. When ArchiveOnResult is set, the engine retires the matching
+// order file once a result for that order/sample number is stored.
+type OrdersSettings struct {
+    Directory       string `json:"directory,omitempty" yaml:"directory,omitempty"`
+    FileExtension   string `json:"file_extension,omitempty" yaml:"file_extension,omitempty"`
+    ArchiveOnResult bool   `json:"archive_on_result,omitempty" yaml:"archive_on_result,omitempty"`
+    ArchiveDir      string `json:"archive_dir,omitempty" yaml:"archive_dir,omitempty"`
 }
 
 type TransportSettings struct {
@@ -44,19 +57,26 @@ type ParsingSettings struct {
 }
 
 type MappingSettings struct {
-    TestCodeAliases map[string][]string `json:"test_code_aliases,omitempty" yaml:"test_code_aliases,omitempty"`
-    TestMappings []TestMapping `json:"test_mappings,omitempty" yaml:"test_mappings,omitempty"`
-    UnitNormalization map[string]string `json:"unit_normalization,omitempty" yaml:"unit_normalization,omitempty"`
-    QCFilterPatterns []string `json:"qc_filter_patterns,omitempty" yaml:"qc_filter_patterns,omitempty"`
+    TestCodeAliases    map[string][]string `json:"test_code_aliases,omitempty" yaml:"test_code_aliases,omitempty"`
+    TestMappings       []TestMapping       `json:"test_mappings,omitempty" yaml:"test_mappings,omitempty"`
+    UnitNormalization  map[string]string   `json:"unit_normalization,omitempty" yaml:"unit_normalization,omitempty"`
+    ValueNormalization map[string]string   `json:"value_normalization,omitempty" yaml:"value_normalization,omitempty"`
+    QCFilterPatterns   []string            `json:"qc_filter_patterns,omitempty" yaml:"qc_filter_patterns,omitempty"`
 }
 
 type TestMapping struct {
-    MatchType       string `json:"match_type" yaml:"match_type"`
-    Pattern         string `json:"pattern" yaml:"pattern"`
-    CanonicalAssay  string `json:"canonical_assay" yaml:"canonical_assay"`
-    LISTestID       string `json:"lis_test_id" yaml:"lis_test_id"`
-    NormalizedUnits string `json:"normalized_units,omitempty" yaml:"normalized_units,omitempty"`
-    ComponentIndex  *int   `json:"component_index,omitempty" yaml:"component_index,omitempty"`
+    MatchType       string                    `json:"match_type" yaml:"match_type"`
+    Pattern         string                    `json:"pattern" yaml:"pattern"`
+    CanonicalAssay  string                    `json:"canonical_assay" yaml:"canonical_assay"`
+    LISTestID       string                    `json:"lis_test_id" yaml:"lis_test_id"`
+    NormalizedUnits string                    `json:"normalized_units,omitempty" yaml:"normalized_units,omitempty"`
+    ComponentIndex  *int                      `json:"component_index,omitempty" yaml:"component_index,omitempty"`
+    SemiquantMap    map[string]SemiquantEntry `json:"semiquant_map,omitempty" yaml:"semiquant_map,omitempty"`
+}
+
+type SemiquantEntry struct {
+    Display string   `json:"display,omitempty" yaml:"display,omitempty"`
+    Value   *float64 `json:"value,omitempty" yaml:"value,omitempty"`
 }
 
 type LearningSettings struct {

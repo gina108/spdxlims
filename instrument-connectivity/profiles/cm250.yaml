@@ -1,92 +1,133 @@
 id: cm250
 name: CM 250 Chemistry Analyzer
-protocol_hint: astm
+protocol_hint: wiener_res
 device_metadata:
   department: chemistry
   manufacturer: Wiener Lab
 transport:
-  type: serial
-  session_mode: astm
-  serial_port: COM9
-  baud_rate: 9600
-  data_bits: 8
-  parity: N
-  stop_bits: 1
+  type: file_drop
+  watch_directories:
+    - \\DESKTOP-NV2MGRS\results
   discovery_hints:
-    - astm_serial
+    - file_drop
+orders:
+  directory: Z:\Pedidos
+  file_extension: .ANA
+  archive_on_result: true
+  archive_dir: Z:\Pedidos\archive
 parsing:
-  strategy: astm
+  strategy: cm250
 mapping:
   test_mappings:
     - match_type: exact
-      pattern: "GLU L"
+      pattern: GLU L
       canonical_assay: Glucose
       lis_test_id: CM250-GLU
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "URE Lb"
+      pattern: URE L
       canonical_assay: Urea
       lis_test_id: CM250-URE
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "CRE L"
+      pattern: CRE L
       canonical_assay: Creatinine
       lis_test_id: CM250-CRE
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "A-COL"
+      pattern: COL L
       canonical_assay: Total Cholesterol
       lis_test_id: CM250-COL
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "A-TG"
+      pattern: TG L
       canonical_assay: Triglycerides
       lis_test_id: CM250-TG
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "A-HDL"
+      pattern: HDL
       canonical_assay: HDL Cholesterol
       lis_test_id: CM250-HDL
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "BT AA"
+      pattern: HDLplu
+      canonical_assay: HDL Cholesterol Plus
+      lis_test_id: CM250-HDLp
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: LDLAA
+      canonical_assay: LDL Cholesterol
+      lis_test_id: CM250-LDL
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: BTL
       canonical_assay: Total Bilirubin
       lis_test_id: CM250-BT
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "BD AA"
+      pattern: BDL
       canonical_assay: Direct Bilirubin
       lis_test_id: CM250-BD
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "ALP Lb"
+      pattern: ALPL
       canonical_assay: Alkaline Phosphatase
       lis_test_id: CM250-ALP
       normalized_units: U/L
     - match_type: exact
-      pattern: "AUR Lb"
+      pattern: URI L
       canonical_assay: Uric Acid
       lis_test_id: CM250-AUR
       normalized_units: mg/dL
     - match_type: exact
-      pattern: "GOT Lb"
+      pattern: GOTL
       canonical_assay: AST
       lis_test_id: CM250-GOT
       normalized_units: U/L
     - match_type: exact
-      pattern: "GPT Lb"
+      pattern: GPTL
       canonical_assay: ALT
       lis_test_id: CM250-GPT
       normalized_units: U/L
     - match_type: exact
-      pattern: PT
-      canonical_assay: Prothrombin Time
-      lis_test_id: CM250-PT
-      normalized_units: s
-    - match_type: exact
       pattern: ALB
       canonical_assay: Albumin
       lis_test_id: CM250-ALB
+      normalized_units: g/dL
+    - match_type: exact
+      pattern: PT
+      canonical_assay: Total Protein
+      lis_test_id: CM250-PT
+      normalized_units: g/dL
+    - match_type: exact
+      pattern: CAAs
+      canonical_assay: Calcium
+      lis_test_id: CM250-CA
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: FOS
+      canonical_assay: Phosphorus
+      lis_test_id: CM250-FOS
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: MG
+      canonical_assay: Magnesium
+      lis_test_id: CM250-MG
+      normalized_units: mg/dL
+    - match_type: exact
+      pattern: HbA1c
+      canonical_assay: HbA1c
+      lis_test_id: CM250-HBA1C
+      normalized_units: g/dL
+    - match_type: exact
+      pattern: "%HbA1c"
+      canonical_assay: HbA1c (%)
+      lis_test_id: CM250-HBA1CP
+      normalized_units: "%"
+    - match_type: exact
+      pattern: Hb
+      canonical_assay: Hemoglobin
+      lis_test_id: CM250-HB
       normalized_units: g/dL
   unit_normalization:
     mg/dl: mg/dL
