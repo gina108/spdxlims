@@ -11,11 +11,11 @@ transport:
   discovery_hints:
     - file_drop
 orders:
-  directory: Z:\Pedidos
+  directory: \\DESKTOP-NV2MGRS\results\Pedidos
   file_extension: .ANA
   write_on_push: true
   archive_on_result: true
-  archive_dir: Z:\Pedidos\archive
+  archive_dir: \\DESKTOP-NV2MGRS\results\Pedidos\archive
 parsing:
   strategy: cm250
 mapping:
