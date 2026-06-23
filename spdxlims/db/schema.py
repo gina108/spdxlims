@@ -88,6 +88,9 @@ class SchemaMixin:
                     postal_code TEXT,
                     cfdi_use TEXT,
                     is_active INTEGER NOT NULL DEFAULT 1,
+                    auto_invoice_enabled INTEGER NOT NULL DEFAULT 0,
+                    auto_invoice_frequency TEXT,
+                    auto_invoice_last_run TEXT,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -199,7 +202,7 @@ class SchemaMixin:
                     category_id INTEGER,
                     specimen_type TEXT,
                     method TEXT,
-                    result_kind TEXT NOT NULL CHECK (result_kind IN ('numeric', 'text', 'select')),
+                    result_kind TEXT NOT NULL CHECK (result_kind IN ('numeric', 'text', 'select', 'image')),
                     select_options TEXT,
                     default_result_value TEXT,
                     price REAL NOT NULL DEFAULT 0,
@@ -240,8 +243,19 @@ class SchemaMixin:
                     name TEXT NOT NULL,
                     specimen_type TEXT,
                     method TEXT,
+                    price REAL NOT NULL DEFAULT 0,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS client_panel_prices (
+                    client_id INTEGER NOT NULL,
+                    panel_id INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (client_id, panel_id),
+                    FOREIGN KEY (client_id) REFERENCES clients(id),
+                    FOREIGN KEY (panel_id) REFERENCES test_panels(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS test_panel_items (
@@ -265,6 +279,7 @@ class SchemaMixin:
                     client_id INTEGER,
                     status TEXT NOT NULL CHECK (status IN ('draft', 'in_progress', 'finalized', 'cancelled')),
                     is_preallocated INTEGER NOT NULL DEFAULT 0,
+                    is_archived INTEGER NOT NULL DEFAULT 0,
                     ordered_at DATETIME,
                     collected_at DATETIME,
                     reported_at DATETIME,
@@ -381,6 +396,29 @@ class SchemaMixin:
                     FOREIGN KEY (order_test_id) REFERENCES order_tests(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS result_images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_test_id INTEGER NOT NULL,
+                    image_data BLOB NOT NULL,
+                    mime_type TEXT NOT NULL DEFAULT 'image/png',
+                    caption TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (order_test_id) REFERENCES order_tests(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS report_item_images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id INTEGER NOT NULL,
+                    order_test_id INTEGER NOT NULL,
+                    image_data BLOB NOT NULL,
+                    mime_type TEXT NOT NULL DEFAULT 'image/png',
+                    caption TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (report_id) REFERENCES reports(id),
+                    FOREIGN KEY (order_test_id) REFERENCES order_tests(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS outsourced_panel_tables (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id INTEGER NOT NULL,
@@ -392,16 +430,28 @@ class SchemaMixin:
                     FOREIGN KEY (order_id) REFERENCES orders(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS outsourced_panel_extractions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    outsourced_panel_table_id INTEGER NOT NULL,
+                    source_pdf_path TEXT NOT NULL DEFAULT '',
+                    page_label TEXT NOT NULL DEFAULT '',
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    extracted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS outsourced_panel_rows (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     outsourced_panel_table_id INTEGER NOT NULL,
+                    extraction_id INTEGER,
                     row_index INTEGER NOT NULL,
                     col_1 TEXT,
                     col_2 TEXT,
                     col_3 TEXT,
                     col_4 TEXT,
                     col_5 TEXT,
-                    FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id)
+                    FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id),
+                    FOREIGN KEY (extraction_id) REFERENCES outsourced_panel_extractions(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS report_outsourced_rows (
@@ -475,7 +525,11 @@ class SchemaMixin:
             self._migrate_orders_table(connection)
             self._migrate_lab_settings_table(connection)
             self._migrate_tests_table(connection)
+            self._migrate_tests_result_kind_image(connection)
+            self._repair_tests_legacy_references(connection)
+            self._migrate_result_images_tables(connection)
             self._migrate_client_test_prices_table(connection)
+            self._migrate_client_panel_prices_table(connection)
             self._migrate_precision_text_columns(connection)
             self._migrate_test_panels_table(connection)
             self._migrate_test_panel_items_table(connection)
@@ -574,6 +628,8 @@ class SchemaMixin:
             connection.execute("ALTER TABLE orders ADD COLUMN sample_id TEXT")
         if "is_preallocated" not in columns:
             connection.execute("ALTER TABLE orders ADD COLUMN is_preallocated INTEGER NOT NULL DEFAULT 0")
+        if "is_archived" not in columns:
+            connection.execute("ALTER TABLE orders ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0")
         order_test_columns = {row["name"] for row in connection.execute("PRAGMA table_info(order_tests)").fetchall()}
         if "is_outsourced" not in order_test_columns:
             connection.execute("ALTER TABLE order_tests ADD COLUMN is_outsourced INTEGER NOT NULL DEFAULT 0")
@@ -602,19 +658,38 @@ class SchemaMixin:
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS outsourced_panel_extractions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                outsourced_panel_table_id INTEGER NOT NULL,
+                source_pdf_path TEXT NOT NULL DEFAULT '',
+                page_label TEXT NOT NULL DEFAULT '',
+                row_count INTEGER NOT NULL DEFAULT 0,
+                extracted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id)
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS outsourced_panel_rows (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 outsourced_panel_table_id INTEGER NOT NULL,
+                extraction_id INTEGER,
                 row_index INTEGER NOT NULL,
                 col_1 TEXT,
                 col_2 TEXT,
                 col_3 TEXT,
                 col_4 TEXT,
                 col_5 TEXT,
-                FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id)
+                FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id),
+                FOREIGN KEY (extraction_id) REFERENCES outsourced_panel_extractions(id)
             )
             """
         )
+        try:
+            connection.execute("ALTER TABLE outsourced_panel_rows ADD COLUMN extraction_id INTEGER")
+        except Exception:  # noqa: BLE001
+            pass
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS report_outsourced_rows (
@@ -698,6 +773,12 @@ class SchemaMixin:
             connection.execute("ALTER TABLE clients ADD COLUMN cfdi_use TEXT")
         if "is_active" not in columns:
             connection.execute("ALTER TABLE clients ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "auto_invoice_enabled" not in columns:
+            connection.execute("ALTER TABLE clients ADD COLUMN auto_invoice_enabled INTEGER NOT NULL DEFAULT 0")
+        if "auto_invoice_frequency" not in columns:
+            connection.execute("ALTER TABLE clients ADD COLUMN auto_invoice_frequency TEXT")
+        if "auto_invoice_last_run" not in columns:
+            connection.execute("ALTER TABLE clients ADD COLUMN auto_invoice_last_run TEXT")
 
     def _migrate_doctors_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(doctors)").fetchall()}
@@ -839,6 +920,123 @@ class SchemaMixin:
             connection.execute("ALTER TABLE tests ADD COLUMN price REAL NOT NULL DEFAULT 0")
         if "result_multiplier" not in columns:
             connection.execute("ALTER TABLE tests ADD COLUMN result_multiplier REAL")
+        if "formula" not in columns:
+            connection.execute("ALTER TABLE tests ADD COLUMN formula TEXT")
+
+    def _migrate_tests_result_kind_image(self, connection: sqlite3.Connection) -> None:
+        # SQLite cannot ALTER a CHECK constraint, so rebuild the tests table when
+        # the existing constraint predates the 'image' result kind.
+        table_sql_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tests'"
+        ).fetchone()
+        table_sql = (table_sql_row["sql"] or "") if table_sql_row is not None else ""
+        if not table_sql or "result_kind" not in table_sql:
+            return
+        if "'image'" in table_sql:
+            return
+        legacy_columns = [row["name"] for row in connection.execute("PRAGMA table_info(tests)").fetchall()]
+        new_columns = [
+            "id", "code", "name", "category_id", "specimen_type", "method",
+            "result_kind", "select_options", "default_result_value", "price",
+            "result_multiplier", "is_active", "sort_order", "formula",
+        ]
+        shared_columns = [column for column in new_columns if column in legacy_columns]
+        column_list = ", ".join(shared_columns)
+        # Rebuild via a temp table that is renamed INTO place, per the official
+        # SQLite procedure. Renaming the live `tests` table out of the way would
+        # make SQLite rewrite every child table's FK to point at the temp name;
+        # dropping the temp table then leaves those children with dangling
+        # references. Creating the replacement first and renaming it last keeps
+        # the children's `REFERENCES tests(id)` valid throughout.
+        #
+        # `PRAGMA foreign_keys` is ignored while a transaction is open, and
+        # earlier migrations have already opened one, so commit before toggling.
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE IF EXISTS tests_new")
+        connection.execute(
+            """
+            CREATE TABLE tests_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                category_id INTEGER,
+                specimen_type TEXT,
+                method TEXT,
+                result_kind TEXT NOT NULL CHECK (result_kind IN ('numeric', 'text', 'select', 'image')),
+                select_options TEXT,
+                default_result_value TEXT,
+                price REAL NOT NULL DEFAULT 0,
+                result_multiplier REAL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                formula TEXT,
+                FOREIGN KEY (category_id) REFERENCES test_categories(id)
+            )
+            """
+        )
+        connection.execute(
+            f"INSERT INTO tests_new ({column_list}) SELECT {column_list} FROM tests"
+        )
+        connection.execute("DROP TABLE tests")
+        connection.execute("ALTER TABLE tests_new RENAME TO tests")
+        # Commit the rebuild while enforcement is still off, then restore it for
+        # the remaining migrations (pragma changes are ignored mid-transaction).
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    def _repair_tests_legacy_references(self, connection: sqlite3.Connection) -> None:
+        # Earlier builds rebuilt the `tests` table by renaming it to
+        # `tests_legacy` and dropping it, which left child tables' foreign keys
+        # pointing at the now-missing `tests_legacy`. Any INSERT into those
+        # children (e.g. saving an order) then fails. Rewrite the stored DDL so
+        # those references point back at `tests`.
+        broken = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND sql LIKE '%tests_legacy%'"
+        ).fetchall()
+        if not broken:
+            return
+        connection.commit()
+        connection.execute("PRAGMA writable_schema = ON")
+        connection.execute(
+            "UPDATE sqlite_master "
+            "SET sql = replace(sql, 'tests_legacy', 'tests') "
+            "WHERE type = 'table' AND sql LIKE '%tests_legacy%'"
+        )
+        connection.execute("PRAGMA writable_schema = RESET")
+        connection.commit()
+
+    def _migrate_result_images_tables(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS result_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_test_id INTEGER NOT NULL,
+                image_data BLOB NOT NULL,
+                mime_type TEXT NOT NULL DEFAULT 'image/png',
+                caption TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (order_test_id) REFERENCES order_tests(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_item_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id INTEGER NOT NULL,
+                order_test_id INTEGER NOT NULL,
+                image_data BLOB NOT NULL,
+                mime_type TEXT NOT NULL DEFAULT 'image/png',
+                caption TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (report_id) REFERENCES reports(id),
+                FOREIGN KEY (order_test_id) REFERENCES order_tests(id)
+            )
+            """
+        )
 
     def _migrate_client_test_prices_table(self, connection: sqlite3.Connection) -> None:
         connection.execute(
@@ -851,6 +1049,21 @@ class SchemaMixin:
                 PRIMARY KEY (client_id, test_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id),
                 FOREIGN KEY (test_id) REFERENCES tests(id)
+            )
+            """
+        )
+
+    def _migrate_client_panel_prices_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS client_panel_prices (
+                client_id INTEGER NOT NULL,
+                panel_id INTEGER NOT NULL,
+                price REAL NOT NULL,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (client_id, panel_id),
+                FOREIGN KEY (client_id) REFERENCES clients(id),
+                FOREIGN KEY (panel_id) REFERENCES test_panels(id)
             )
             """
         )
@@ -887,6 +1100,8 @@ class SchemaMixin:
         columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(test_panels)").fetchall()}
         if "is_active" not in columns:
             connection.execute("ALTER TABLE test_panels ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "price" not in columns:
+            connection.execute("ALTER TABLE test_panels ADD COLUMN price REAL NOT NULL DEFAULT 0")
         index_rows = connection.execute("PRAGMA index_list(test_panels)").fetchall()
         name_is_unique = False
         for index_row in index_rows:
@@ -909,6 +1124,7 @@ class SchemaMixin:
                 name TEXT NOT NULL,
                 specimen_type TEXT,
                 method TEXT,
+                price REAL NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -916,8 +1132,8 @@ class SchemaMixin:
         )
         connection.execute(
             """
-            INSERT INTO test_panels (id, code, name, specimen_type, method, is_active, created_at)
-            SELECT id, code, name, specimen_type, method, COALESCE(is_active, 1), created_at
+            INSERT INTO test_panels (id, code, name, specimen_type, method, price, is_active, created_at)
+            SELECT id, code, name, specimen_type, method, COALESCE(price, 0), COALESCE(is_active, 1), created_at
             FROM test_panels_legacy
             """
         )

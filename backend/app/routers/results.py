@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ast as _ast
+import base64
+import operator as _operator
+import re as _re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
@@ -7,12 +11,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
 from app.db.session import get_db
-from app.models.models import LabOrder, OrderItem, Patient, Provider, Result, TestCatalog, TestReferenceRange
+from app.models.models import LabOrder, OrderItem, Patient, Provider, Result, ResultImage, TestCatalog, TestReferenceRange
 from app.routers.common import actor_from_header
 
 router = APIRouter()
@@ -32,6 +36,7 @@ class ResultEntryOut(BaseModel):
     result_kind: str = "text"
     select_options: str | None = None
     default_result_value: str | None = None
+    formula: str | None = None
     result_value: str | None = None
     unit: str | None = None
     lower_value: str | None = None
@@ -50,6 +55,21 @@ class ResultEntryIn(BaseModel):
     reference_text: str = ""
     comments: str = ""
     result_kind: str = "text"
+
+
+class ResultImageIn(BaseModel):
+    image_data_b64: str
+    mime_type: str = "image/png"
+    caption: str = ""
+
+
+class ResultImageOut(BaseModel):
+    id: str
+    order_item_id: str
+    mime_type: str
+    caption: str | None = None
+    sort_order: int
+    image_data_b64: str
 
 
 class InstrumentObservationIn(BaseModel):
@@ -122,6 +142,7 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
             TestCatalog.result_kind,
             TestCatalog.select_options,
             TestCatalog.default_result_value,
+            TestCatalog.formula.label('test_formula'),
             OrderItem.group_label,
             Result.value_text,
             Result.unit,
@@ -194,6 +215,7 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
                 result_kind=result_kind,
                 select_options=row.select_options,
                 default_result_value=default_result_value,
+                formula=row.test_formula,
                 result_value=result_value,
                 unit=unit,
                 lower_value=lower_value,
@@ -275,8 +297,101 @@ def save_order_item_result(order_item_id: str, payload: ResultEntryIn, db: Sessi
         before_json=before,
         after_json=_result_audit_payload(result),
     )
+    _recalculate_formula_order_items(db, order_item.order_id, actor)
     db.commit()
     return {'id': str(result.id), 'flag': flag, 'status': result.status}
+
+
+@router.get('/order-items/{order_item_id}/images', response_model=list[ResultImageOut])
+def list_order_item_images(order_item_id: str, db: Session = Depends(get_db), _actor: UUID | None = Depends(actor_from_header)):
+    parsed_order_item_id = _parse_uuid(order_item_id, field_name='order_item_id')
+    images = db.scalars(
+        select(ResultImage)
+        .where(ResultImage.order_item_id == parsed_order_item_id)
+        .order_by(ResultImage.sort_order.asc(), ResultImage.created_at.asc())
+    ).all()
+    return [
+        ResultImageOut(
+            id=str(image.id),
+            order_item_id=str(image.order_item_id),
+            mime_type=image.mime_type,
+            caption=image.caption,
+            sort_order=image.sort_order,
+            image_data_b64=base64.b64encode(image.image_data).decode('ascii'),
+        )
+        for image in images
+    ]
+
+
+@router.post('/order-items/{order_item_id}/images')
+def add_order_item_image(order_item_id: str, payload: ResultImageIn, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
+    parsed_order_item_id = _parse_uuid(order_item_id, field_name='order_item_id')
+    order_item = db.get(OrderItem, parsed_order_item_id)
+    if order_item is None:
+        raise HTTPException(status_code=404, detail='order item not found')
+    # Images are expected to be downscaled by the caller before upload (the desktop
+    # app caps the long edge at ~2000px); the backend has no image library and
+    # stores the received bytes as-is.
+    try:
+        image_bytes = base64.b64decode(payload.image_data_b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail='image_data_b64 must be valid base64') from exc
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail='image data is empty')
+    next_sort = db.scalar(
+        select(func.coalesce(func.max(ResultImage.sort_order), -1) + 1).where(ResultImage.order_item_id == parsed_order_item_id)
+    ) or 0
+    image = ResultImage(
+        order_item_id=parsed_order_item_id,
+        image_data=image_bytes,
+        mime_type=payload.mime_type or 'image/png',
+        caption=(payload.caption or '').strip() or None,
+        sort_order=int(next_sort),
+    )
+    db.add(image)
+    db.flush()
+    _refresh_image_result_summary(db, order_item, actor)
+    order = db.get(LabOrder, order_item.order_id)
+    if order is not None and order.status == 'registered':
+        order.status = 'in_lab'
+    db.commit()
+    return {'id': str(image.id), 'sort_order': image.sort_order}
+
+
+@router.delete('/images/{image_id}')
+def delete_order_item_image(image_id: str, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
+    parsed_image_id = _parse_uuid(image_id, field_name='image_id')
+    image = db.get(ResultImage, parsed_image_id)
+    if image is None:
+        raise HTTPException(status_code=404, detail='image not found')
+    order_item = db.get(OrderItem, image.order_item_id)
+    db.delete(image)
+    db.flush()
+    if order_item is not None:
+        _refresh_image_result_summary(db, order_item, actor)
+    db.commit()
+    return {'deleted': True}
+
+
+def _refresh_image_result_summary(db: Session, order_item: OrderItem, actor: UUID | None) -> None:
+    count = db.scalar(
+        select(func.count()).select_from(ResultImage).where(ResultImage.order_item_id == order_item.id)
+    ) or 0
+    summary = f'{count} image(s)' if count else None
+    result = db.scalars(select(Result).where(Result.order_item_id == order_item.id)).first()
+    if result is None:
+        result = Result(
+            order_item_id=order_item.id,
+            value_text=summary,
+            flag='none',
+            entered_by=actor,
+            status='draft',
+        )
+        db.add(result)
+    else:
+        result.value_text = summary
+        result.flag = 'none'
+        result.status = 'draft'
 
 
 @router.post('/import-instrument', response_model=InstrumentImportOut)
@@ -531,6 +646,93 @@ def _instrument_result_comment(obs: InstrumentObservationIn, payload: Instrument
     if not detail:
         return None
     return json.dumps(detail, ensure_ascii=True)
+
+
+_FORMULA_OPS: dict = {
+    _ast.Add: _operator.add,
+    _ast.Sub: _operator.sub,
+    _ast.Mult: _operator.mul,
+    _ast.Div: _operator.truediv,
+    _ast.USub: _operator.neg,
+}
+
+
+def _safe_eval_formula_node(node: _ast.AST) -> float:
+    if isinstance(node, _ast.BinOp) and type(node.op) in _FORMULA_OPS:
+        return _FORMULA_OPS[type(node.op)](_safe_eval_formula_node(node.left), _safe_eval_formula_node(node.right))
+    if isinstance(node, _ast.UnaryOp) and type(node.op) in _FORMULA_OPS:
+        return _FORMULA_OPS[type(node.op)](_safe_eval_formula_node(node.operand))
+    if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    raise ValueError(f"Unsupported node: {type(node).__name__}")
+
+
+def _evaluate_formula(formula: str, values_by_code: dict[str, float]) -> float | None:
+    expr = formula.upper()
+    for code, value in values_by_code.items():
+        expr = _re.sub(r'\[' + _re.escape(code) + r'\]', str(value), expr)
+    if _re.search(r'\[', expr):
+        return None
+    try:
+        tree = _ast.parse(expr, mode='eval')
+        return _safe_eval_formula_node(tree.body)
+    except (ValueError, ZeroDivisionError, SyntaxError, TypeError):
+        return None
+
+
+def _format_formula_result(value: float) -> str:
+    if value == int(value) and abs(value) < 1e10:
+        return str(int(value))
+    return f"{value:.6g}"
+
+
+def _recalculate_formula_order_items(db: Session, order_id: UUID, actor: UUID | None) -> None:
+    formula_items = db.execute(
+        select(OrderItem.id, TestCatalog.formula, TestCatalog.unit)
+        .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .where(OrderItem.order_id == order_id)
+        .where(TestCatalog.formula.is_not(None))
+        .where(TestCatalog.formula != '')
+    ).all()
+    if not formula_items:
+        return
+
+    result_rows = db.execute(
+        select(TestCatalog.code, Result.value_text)
+        .join(OrderItem, OrderItem.test_id == TestCatalog.id)
+        .outerjoin(Result, Result.order_item_id == OrderItem.id)
+        .where(OrderItem.order_id == order_id)
+    ).all()
+    values_by_code: dict[str, float] = {}
+    for row in result_rows:
+        code = (row.code or '').strip().upper()
+        raw = (row.value_text or '').strip()
+        if code and raw:
+            try:
+                values_by_code[code] = float(Decimal(raw))
+            except (InvalidOperation, ValueError):
+                pass
+
+    for item_id, formula, test_unit in formula_items:
+        computed = _evaluate_formula(formula, values_by_code)
+        if computed is None:
+            continue
+        result_str = _format_formula_result(computed)
+        existing = db.scalars(select(Result).where(Result.order_item_id == item_id)).first()
+        if existing is None:
+            existing = Result(
+                order_item_id=item_id,
+                entered_by=actor,
+                status='draft',
+            )
+            db.add(existing)
+        existing.value_text = result_str
+        existing.value_num = computed
+        existing.unit = existing.unit or test_unit
+        existing.flag = 'none'
+        existing.entered_by = actor
+        existing.status = 'draft'
+    db.flush()
 
 
 def _result_audit_payload(result: Result | None) -> dict[str, object] | None:

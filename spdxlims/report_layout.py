@@ -119,7 +119,7 @@ def build_report_html(preview: dict[str, object]) -> str:
         unit = escape(str(item.get("unit") or ""))
         lower_value = escape(_format_numeric_display(str(item.get("lower_value") or "")))
         upper_value = escape(_format_numeric_display(str(item.get("upper_value") or "")))
-        reference_text = escape(str(item.get("reference_text") or ""))
+        reference_text = escape(str(item.get("reference_text") or "")).replace("\n", "<br>")
         raw_flag = str(item.get("flag") or "")
         flag = escape(_format_flag(raw_flag, flag_display_mode))
         row_class = ' class="abnormal-result"' if _is_abnormal_flag(raw_flag) else ""
@@ -145,6 +145,40 @@ def build_report_html(preview: dict[str, object]) -> str:
             row_html = f'<tr><td colspan="5" class="panel-meta">{meta_value}</td></tr>'
             rows.append((row_html, 0.8 + _estimated_line_units(meta_value, chars_per_line=110), "panel_meta", panel_group))
             continue
+        if str(item.get("result_kind") or "") == "image":
+            images = list(item.get("images") or [])
+            rows.append((
+                f'<tr><td colspan="5" class="image-test-name"><strong>{test_name}</strong></td></tr>',
+                1.0 + _estimated_line_units(raw_test_name),
+                "test",
+                panel_group,
+            ))
+            if not images:
+                rows.append((
+                    f'<tr><td colspan="5" class="subcomment">{escape(tr("No images"))}</td></tr>',
+                    0.8,
+                    "subcomment",
+                    panel_group,
+                ))
+            for image in images:
+                data = str(image.get("data") or "")
+                if not data:
+                    continue
+                mime = escape(str(image.get("mime_type") or "image/png"), quote=True)
+                caption = escape(str(image.get("caption") or ""))
+                caption_html = f'<div class="image-caption">{caption}</div>' if caption else ""
+                rows.append((
+                    f'<tr><td colspan="5" class="result-image-cell">'
+                    f'<img class="result-image" src="data:{mime};base64,{data}" style="width:62%; height:auto;">'
+                    f'{caption_html}'
+                    "</td></tr>",
+                    17.0 + _estimated_line_units(caption),
+                    "test",
+                    panel_group,
+                ))
+            if comments:
+                rows.append((f'<tr><td colspan="5" class="subcomment">{comments}</td></tr>', 0.8 + _estimated_line_units(comments), "subcomment", panel_group))
+            continue
         row_html = (
             f"<tr{row_class}>"
             f"<td>{test_name}</td>"
@@ -169,8 +203,12 @@ def build_report_html(preview: dict[str, object]) -> str:
             section_rows.append(
                 (
                     "<tr>"
-                    + "".join(f"<td>{value}</td>" for value in values)
-                    + "</tr>",
+                    f"<td>{values[0]}</td>"
+                    f"<td>{values[1]}</td>"
+                    f"<td>{values[2]}</td>"
+                    f"<td>{values[3]}</td>"
+                    f"<td>{values[4]}</td>"
+                    "</tr>",
                     " ".join(value.strip() for value in raw_values),
                 )
             )
@@ -270,11 +308,7 @@ def build_report_html(preview: dict[str, object]) -> str:
         footer_gap_mm=footer_gap_mm,
         row_font_size=report_font_size,
     )
-    paged_row_groups = _paginate_result_rows(
-        rows,
-        row_page_limit,
-        keep_panels_together=bool(preview.get("keep_panels_together")),
-    )
+    paged_row_groups = _paginate_result_rows(rows, row_page_limit)
     paged_row_groups = _rebalance_paged_row_groups(paged_row_groups, row_page_limit)
     if not paged_row_groups:
         paged_row_groups = [[]]
@@ -341,11 +375,11 @@ def build_report_html(preview: dict[str, object]) -> str:
         .qr-caption {{ font-size: 10px; color: #6b7480; line-height: 1.05; margin-top: 0; }}
         .section-title {{ background: #d9d9d9; color: #20242b; text-align: center; font-size: 15px; font-weight: 700; padding: 7px 10px; margin-top: 10px; }}
         .results-header, .results-body {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
-        .results-header col.test-col, .results-body col.test-col {{ width: 46%; }}
+        .results-header col.test-col, .results-body col.test-col {{ width: 44%; }}
         .results-header col.flag-col, .results-body col.flag-col {{ width: 5%; }}
         .results-header col.result-col, .results-body col.result-col {{ width: 16%; }}
-        .results-header col.unit-col, .results-body col.unit-col {{ width: 12%; }}
-        .results-header col.reference-col, .results-body col.reference-col {{ width: 21%; }}
+        .results-header col.unit-col, .results-body col.unit-col {{ width: 10%; }}
+        .results-header col.reference-col, .results-body col.reference-col {{ width: 25%; }}
         .results-header .results-title th {{ background: #d9d9d9; color: #20242b; text-align: center; font-size: 15px; font-weight: 700; padding: 7px 10px; border-bottom: 0; position: relative; }}
         .results-title-text {{ display: block; text-align: center; }}
         .results-page-number {{ position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 10px; font-weight: 600; color: #4d5662; }}
@@ -366,15 +400,12 @@ def build_report_html(preview: dict[str, object]) -> str:
         .comment {{ background: #f7f9fc; color: #314153; font-size: 13px; line-height: 1.1; }}
         .panel-meta {{ color: #4e5e72; font-size: 9px !important; line-height: 1.05 !important; font-style: italic; padding-top: 3px !important; padding-bottom: 3px !important; }}
         .subcomment {{ color: #4e5e72; font-size: 9px; line-height: 1.05; }}
+        .results-body td.image-test-name {{ background: #eef1f5; font-family: {subheading_font_family} !important; font-weight: {subheading_font_weight} !important; color: #223145; font-size: {subheading_font_size}px !important; line-height: 1.1; }}
+        .results-body td.result-image-cell {{ text-align: center; padding: 8px; }}
+        .result-image {{ display: block; margin: 0 auto; width: 62%; max-width: 62%; height: auto; }}
+        .image-caption {{ margin-top: 4px; font-size: 10px; color: #4e5e72; text-align: center; line-height: 1.2; }}
         .footer {{ margin-top: 18px; font-size: 10px; color: #4d5b6a; }}
         .outsourced-title {{ margin-top: 16px; }}
-        .outsourced-results {{ width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 4px; }}
-        .outsourced-results td {{ padding: 4px 10px; border-bottom: 1px solid #dde3ea; font-size: 13px; line-height: 1.1; vertical-align: top; word-wrap: break-word; }}
-        .outsourced-results td:nth-child(1) {{ width: 38%; }}
-        .outsourced-results td:nth-child(2) {{ width: 14%; }}
-        .outsourced-results td:nth-child(3) {{ width: 14%; }}
-        .outsourced-results td:nth-child(4) {{ width: 14%; }}
-        .outsourced-results td:nth-child(5) {{ width: 20%; }}
         .footer-banner {{ width: 100%; margin-top: 4px; }}
         .footer-image {{ display: block; width: 100%; max-width: none; max-height: none; height: auto; }}
         .director {{ margin-top: 12px; font-size: 10px; }}
@@ -400,8 +431,7 @@ def build_report_html(preview: dict[str, object]) -> str:
             .info-grid,
             .section-title,
             .results-header,
-            .results-body,
-            .outsourced-results {{
+            .results-body {{
                 width: 100% !important;
                 min-width: 100% !important;
                 max-width: 100% !important;
@@ -409,7 +439,6 @@ def build_report_html(preview: dict[str, object]) -> str:
             }}
             .results-header,
             .results-body,
-            .outsourced-results,
             .info-grid {{
                 display: table;
             }}
@@ -692,24 +721,9 @@ def _paginate_result_rows(
     rows: list[ResultRow],
     page_limit: float,
     *,
-    keep_panels_together: bool = False,
+    keep_panels_together: bool = True,
 ) -> list[list[ResultRow]]:
-    if keep_panels_together:
-        return _paginate_result_row_groups(rows, page_limit)
-    pages: list[list[ResultRow]] = []
-    current_page: list[ResultRow] = []
-    current_units = 0.0
-    for row in rows:
-        row_units = _row_units(row)
-        if current_page and current_units + row_units > page_limit:
-            pages.append(current_page)
-            current_page = []
-            current_units = 0.0
-        current_page.append(row)
-        current_units += row_units
-    if current_page:
-        pages.append(current_page)
-    return pages
+    return _paginate_result_row_groups(rows, page_limit)
 
 
 def _paginate_result_row_groups(rows: list[ResultRow], page_limit: float) -> list[list[ResultRow]]:

@@ -27,9 +27,11 @@ from app.models.models import (
     PanelCatalogItem,
     Patient,
     Provider,
+    ReportItemImageSnapshot,
     ReportItemSnapshot,
     ReportSnapshot,
     Result,
+    ResultImage,
     TestCatalog,
     TestReferenceRange,
 )
@@ -91,6 +93,7 @@ def main() -> None:
         counts["panels"] = import_panels(sqlite_db, db, context)
         counts["orders"] = import_orders(sqlite_db, db, context)
         counts["results"] = import_results(sqlite_db, db, context)
+        counts["result_images"] = import_result_images(sqlite_db, db, context)
         counts["reports"] = import_reports(sqlite_db, db, context)
         db.commit()
     except Exception:
@@ -554,6 +557,45 @@ def import_results(sqlite_db: sqlite3.Connection, db: Session, context: ImportCo
     return imported
 
 
+def import_result_images(sqlite_db: sqlite3.Connection, db: Session, context: ImportContext) -> int:
+    has_table = sqlite_db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'result_images'"
+    ).fetchone()
+    if has_table is None:
+        return 0
+    rows = sqlite_db.execute(
+        """
+        SELECT order_test_id, image_data, mime_type, caption, sort_order
+        FROM result_images
+        ORDER BY order_test_id ASC, sort_order ASC, id ASC
+        """
+    ).fetchall()
+    imported = 0
+    cleared_order_items: set[Any] = set()
+    for row in rows:
+        order_item_id = context.order_item_ids.get(_parse_int(row["order_test_id"]) or -1)
+        if order_item_id is None:
+            continue
+        data = row["image_data"]
+        if data is None:
+            continue
+        if order_item_id not in cleared_order_items:
+            db.execute(delete(ResultImage).where(ResultImage.order_item_id == order_item_id))
+            cleared_order_items.add(order_item_id)
+        db.add(
+            ResultImage(
+                order_item_id=order_item_id,
+                image_data=bytes(data),
+                mime_type=_clean_text(row["mime_type"]) or "image/png",
+                caption=_clean_text(row["caption"]),
+                sort_order=_parse_int(row["sort_order"]) or 0,
+            )
+        )
+        imported += 1
+    db.flush()
+    return imported
+
+
 def import_reports(sqlite_db: sqlite3.Connection, db: Session, context: ImportContext) -> int:
     reports = sqlite_db.execute(
         """
@@ -671,11 +713,13 @@ def _ensure_import_user(db: Session) -> AppUser:
 def _delete_existing_order_children(db: Session, order_id: Any) -> None:
     report = db.scalars(select(ReportSnapshot).where(ReportSnapshot.order_id == order_id)).first()
     if report is not None:
+        db.execute(delete(ReportItemImageSnapshot).where(ReportItemImageSnapshot.report_id == report.id))
         db.execute(delete(ReportItemSnapshot).where(ReportItemSnapshot.report_id == report.id))
         db.execute(delete(ReportSnapshot).where(ReportSnapshot.id == report.id))
 
     order_item_ids = db.scalars(select(OrderItem.id).where(OrderItem.order_id == order_id)).all()
     if order_item_ids:
+        db.execute(delete(ResultImage).where(ResultImage.order_item_id.in_(order_item_ids)))
         db.execute(delete(Result).where(Result.order_item_id.in_(order_item_ids)))
     db.execute(delete(OrderItem).where(OrderItem.order_id == order_id))
     db.flush()

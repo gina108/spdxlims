@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
 from app.db.session import get_db
-from app.models.models import LabOrder, LabProfile, OrderItem, Patient, Provider, ReportItemSnapshot, ReportSnapshot, Result, TestCatalog
+from app.models.models import LabOrder, LabProfile, OrderItem, Patient, Provider, ReportItemImageSnapshot, ReportItemSnapshot, ReportSnapshot, Result, ResultImage, TestCatalog
 from app.routers.common import actor_from_header
 
 router = APIRouter()
@@ -191,6 +191,7 @@ def finalize_report(order_id: str, payload: FinalizeReportIn, request: Request, 
         report.footer_signature_snapshot_path = live_preview.footer_signature_image_path.strip() or None
         report.general_comments = (live_preview.general_comments or '').strip() or None
         db.execute(delete(ReportItemSnapshot).where(ReportItemSnapshot.report_id == report.id))
+        db.execute(delete(ReportItemImageSnapshot).where(ReportItemImageSnapshot.report_id == report.id))
         db.flush()
 
     for item in live_preview.items:
@@ -208,6 +209,25 @@ def finalize_report(order_id: str, payload: FinalizeReportIn, request: Request, 
                 comments_snapshot=item.comments,
                 sort_order=item.sort_order,
                 item_type_snapshot=item.item_type,
+            )
+        )
+
+    # Snapshot result images so finalized reports keep an immutable copy.
+    result_images = db.scalars(
+        select(ResultImage)
+        .join(OrderItem, OrderItem.id == ResultImage.order_item_id)
+        .where(OrderItem.order_id == parsed_order_id)
+        .order_by(ResultImage.order_item_id.asc(), ResultImage.sort_order.asc())
+    ).all()
+    for image in result_images:
+        db.add(
+            ReportItemImageSnapshot(
+                report_id=report.id,
+                order_item_id=image.order_item_id,
+                image_data=image.image_data,
+                mime_type=image.mime_type,
+                caption=image.caption,
+                sort_order=image.sort_order,
             )
         )
 

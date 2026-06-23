@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
-from PySide6.QtCore import QEvent, QTimer, Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QBuffer, QEvent, QSize, QTimer, Qt
+from PySide6.QtGui import QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -80,28 +85,28 @@ class OrderResultsDialog(QDialog):
         self.results_table.setStyleSheet(
             """
             QTableWidget {
-                background-color: #0D141D;
+                background-color: #20252B;
             }
             QTableWidget QLineEdit {
-                background-color: #0D141D;
-                color: #F4F7FB;
-                border: 1px solid #243244;
+                background-color: #20252B;
+                color: #F0F4FF;
+                border: 1px solid #2E3640;
                 border-radius: 0px;
                 padding: 0px 6px;
                 min-height: 26px;
                 font-size: 12pt;
                 font-weight: 500;
-                selection-background-color: #9B6CF3;
+                selection-background-color: #BD93F9;
                 selection-color: #FFFFFF;
             }
             QTableWidget QLineEdit:focus {
-                border: 1px solid #9B6CF3;
-                background-color: #0D141D;
+                border: 1px solid #BD93F9;
+                background-color: #20252B;
             }
             QTableWidget QComboBox {
-                background-color: #0D141D;
-                color: #F4F7FB;
-                border: 1px solid #243244;
+                background-color: #20252B;
+                color: #F0F4FF;
+                border: 1px solid #2E3640;
                 border-radius: 0px;
                 padding: 0px 18px 0px 6px;
                 min-height: 26px;
@@ -109,25 +114,25 @@ class OrderResultsDialog(QDialog):
                 font-weight: 500;
             }
             QTableWidget QComboBox:focus {
-                border: 1px solid #9B6CF3;
-                background-color: #0D141D;
+                border: 1px solid #BD93F9;
+                background-color: #20252B;
             }
             QTableWidget QComboBox QAbstractItemView {
-                background-color: #0D141D;
-                color: #F4F7FB;
-                border: 1px solid #243244;
+                background-color: #20252B;
+                color: #F0F4FF;
+                border: 1px solid #2E3640;
                 outline: 0;
-                selection-background-color: #5B2AA8;
+                selection-background-color: #7756BE;
                 selection-color: #FFFFFF;
             }
             QTableWidget QComboBox QAbstractItemView::item {
-                background-color: #0D141D;
-                color: #F4F7FB;
+                background-color: #20252B;
+                color: #F0F4FF;
                 padding: 2px 8px;
                 min-height: 16px;
             }
             QTableWidget QComboBox QAbstractItemView::item:selected {
-                background-color: #5B2AA8;
+                background-color: #7756BE;
                 color: #FFFFFF;
             }
             QTableWidget QComboBox::drop-down {
@@ -163,11 +168,15 @@ class OrderResultsDialog(QDialog):
         self.result_value_comment.setPlaceholderText(tr("Enter result"))
         self.result_value_comment.setFixedHeight(36)
         self.result_value_comment.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.result_value_image_button = QPushButton(tr("Manage Images"))
+        self.result_value_image_button.setObjectName("resultPrimaryInput")
+        self.result_value_image_button.clicked.connect(self._manage_current_entry_images)
         self.result_value_stack = QStackedWidget()
         self.result_value_stack.setFixedHeight(36)
         self.result_value_stack.addWidget(self.result_value_text)
         self.result_value_stack.addWidget(self.result_value_select)
         self.result_value_stack.addWidget(self.result_value_comment)
+        self.result_value_stack.addWidget(self.result_value_image_button)
         self.unit = QLineEdit()
         self.lower_value = QLineEdit()
         self.upper_value = QLineEdit()
@@ -212,11 +221,11 @@ class OrderResultsDialog(QDialog):
             QLineEdit#resultPrimaryInput,
             QTextEdit#resultPrimaryInput,
             QComboBox#resultPrimaryInput {
-                background-color: #0D141D;
-                border: 1px solid #243244;
+                background-color: #20252B;
+                border: 1px solid #2E3640;
                 border-radius: 8px;
                 padding: 3px 6px;
-                color: #F4F7FB;
+                color: #F0F4FF;
                 font-size: 12pt;
                 font-weight: 500;
             }
@@ -226,14 +235,14 @@ class OrderResultsDialog(QDialog):
             QLineEdit#resultPrimaryInput:focus,
             QTextEdit#resultPrimaryInput:focus,
             QComboBox#resultPrimaryInput:focus {
-                border: 1px solid #9B6CF3;
-                background-color: #0D141D;
+                border: 1px solid #BD93F9;
+                background-color: #20252B;
             }
             QLineEdit#resultPrimaryInput:disabled,
             QTextEdit#resultPrimaryInput:disabled,
             QComboBox#resultPrimaryInput:disabled {
-                background-color: #1C2735;
-                border-color: #243244;
+                background-color: #252C34;
+                border-color: #2E3640;
                 color: #697789;
             }
             QComboBox#resultPrimaryInput::drop-down {
@@ -247,6 +256,11 @@ class OrderResultsDialog(QDialog):
         if entry is not None and entry.item_type == "comment":
             self.result_value_comment.setPlainText(value)
             self.result_value_stack.setCurrentWidget(self.result_value_comment)
+            return
+        if entry is not None and entry.item_type != "heading" and entry.result_kind == "image":
+            count = len(self.database.list_result_images(entry.order_test_id))
+            self.result_value_image_button.setText(tr("Manage Images") + f" ({count})")
+            self.result_value_stack.setCurrentWidget(self.result_value_image_button)
             return
         if entry is None or entry.item_type == "heading" or entry.result_kind != "select":
             self.result_value_text.setText(value)
@@ -416,7 +430,18 @@ class OrderResultsDialog(QDialog):
             container_layout.setContentsMargins(0, 0, 0, 6)
             container_layout.setSpacing(0)
 
-            if entry.result_kind == "select":
+            is_formula_test = bool(getattr(entry, 'formula', None))
+            if entry.result_kind == "image":
+                count = len(self.database.list_result_images(entry.order_test_id))
+                editor = QPushButton(tr("Manage Images") + f" ({count})")
+                editor.setProperty("result_row", row_index)
+                editor.clicked.connect(
+                    lambda _checked=False, oid=entry.order_test_id, name=entry.test_name, row=row_index: (
+                        self._select_result_row(row),
+                        self._open_image_manager(oid, name),
+                    )
+                )
+            elif entry.result_kind == "select" and not is_formula_test:
                 editor = QComboBox()
                 editor.setEditable(False)
                 editor.setInsertPolicy(QComboBox.NoInsert)
@@ -442,15 +467,20 @@ class OrderResultsDialog(QDialog):
                 )
             else:
                 editor = QLineEdit(entry.result_value or entry.default_result_value or "")
-                editor.setPlaceholderText(tr("Enter result"))
-                editor.setClearButtonEnabled(False)
                 editor.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
                 editor.setProperty("result_row", row_index)
-                editor.installEventFilter(self)
-                editor.editingFinished.connect(
-                    lambda row=row_index, field=editor: self._save_inline_result_value(row, field.text())
-                )
-                editor.textEdited.connect(lambda _text, row=row_index: self._select_result_row(row))
+                if is_formula_test:
+                    editor.setReadOnly(True)
+                    editor.setEnabled(False)
+                    editor.setPlaceholderText(tr("Calculated"))
+                else:
+                    editor.setPlaceholderText(tr("Enter result"))
+                    editor.setClearButtonEnabled(False)
+                    editor.installEventFilter(self)
+                    editor.editingFinished.connect(
+                        lambda row=row_index, field=editor: self._save_inline_result_value(row, field.text())
+                    )
+                    editor.textEdited.connect(lambda _text, row=row_index: self._select_result_row(row))
 
             container_layout.addWidget(editor, 1, Qt.AlignVCenter)
             self.results_table.setCellWidget(row_index, 1, container)
@@ -554,15 +584,17 @@ class OrderResultsDialog(QDialog):
         is_heading = entry.item_type == "heading"
         is_comment = entry.item_type == "comment"
         is_outsourced = bool(getattr(entry, "is_outsourced", 0))
+        is_formula = bool(getattr(entry, "formula", None))
+        is_image = entry.item_type not in {"heading", "comment"} and entry.result_kind == "image"
         result_value = "" if is_heading else entry.result_value or entry.default_result_value or ""
         self._set_result_editor_value(entry, result_value)
-        self.unit.setText("" if is_heading or is_comment or is_outsourced else entry.unit or "")
-        self.lower_value.setText("" if is_heading or is_comment or is_outsourced or entry.lower_value is None else entry.lower_value)
-        self.upper_value.setText("" if is_heading or is_comment or is_outsourced or entry.upper_value is None else entry.upper_value)
-        self.reference_text.setPlainText("" if is_heading or is_comment or is_outsourced else entry.reference_text or "")
+        self.unit.setText("" if is_heading or is_comment or is_outsourced or is_image else entry.unit or "")
+        self.lower_value.setText("" if is_heading or is_comment or is_outsourced or is_image or entry.lower_value is None else entry.lower_value)
+        self.upper_value.setText("" if is_heading or is_comment or is_outsourced or is_image or entry.upper_value is None else entry.upper_value)
+        self.reference_text.setPlainText("" if is_heading or is_comment or is_outsourced or is_image else entry.reference_text or "")
         self.comments.setPlainText("" if is_heading else entry.comments or "")
-        self.flag_preview.setText("" if is_heading or is_comment or is_outsourced else entry.flag or "")
-        self._set_entry_fields_enabled(not is_heading, is_comment=is_comment, is_outsourced=is_outsourced)
+        self.flag_preview.setText("" if is_heading or is_comment or is_outsourced or is_image else entry.flag or "")
+        self._set_entry_fields_enabled(not is_heading, is_comment=is_comment, is_outsourced=is_outsourced, is_formula=is_formula, is_image=is_image)
 
     def save_result(self) -> None:
         if self.current_entry is None:
@@ -571,25 +603,40 @@ class OrderResultsDialog(QDialog):
         if self.current_entry.item_type == "heading":
             QMessageBox.warning(self, tr("Missing Data"), tr("This row is a panel subheading."))
             return
+        is_image = self.current_entry.result_kind == "image"
         try:
-            lower = self._optional_float(self.lower_value.text())
-            upper = self._optional_float(self.upper_value.text())
+            lower = None if is_image else self._optional_float(self.lower_value.text())
+            upper = None if is_image else self._optional_float(self.upper_value.text())
         except ValueError:
             QMessageBox.warning(self, tr("Invalid Data"), tr("Lower and upper values must be numeric."))
             return
 
+        # For image results the value summary is maintained by the image manager;
+        # the entry form only persists comments alongside it.
+        result_value = self.current_entry.result_value or "" if is_image else self._current_result_value()
         self.database.save_result_entry(
             order_test_id=self.current_entry.order_test_id,
-            result_value=self._current_result_value(),
-            unit=self.unit.text(),
+            result_value=result_value,
+            unit="" if is_image else self.unit.text(),
             lower_value=lower,
             upper_value=upper,
-            reference_text=self.reference_text.toPlainText(),
+            reference_text="" if is_image else self.reference_text.toPlainText(),
             comments=self.comments.toPlainText(),
             result_kind=self.current_entry.result_kind,
         )
         self.load_order()
         QMessageBox.information(self, tr("Saved"), tr("Result saved."))
+
+    def _manage_current_entry_images(self) -> None:
+        if self.current_entry is None or self.current_entry.result_kind != "image":
+            return
+        self._open_image_manager(self.current_entry.order_test_id, self.current_entry.test_name)
+
+    def _open_image_manager(self, order_test_id: int, test_name: str) -> None:
+        dialog = ResultImageManagerDialog(self.database, order_test_id, test_name, parent=self)
+        dialog.exec()
+        # Reload so the result summary, inline button and detail panel reflect changes.
+        self.load_order()
 
     def clear_entry_form(self) -> None:
         self.current_entry = None
@@ -611,21 +658,25 @@ class OrderResultsDialog(QDialog):
         enabled: bool,
         is_comment: bool = False,
         is_outsourced: bool = False,
+        is_formula: bool = False,
+        is_image: bool = False,
     ) -> None:
-        self.result_value_text.setEnabled(enabled)
-        self.result_value_select.setEnabled(enabled)
-        self.result_value_comment.setEnabled(enabled)
-        self.unit.setEnabled(enabled and not is_comment and not is_outsourced)
-        self.lower_value.setEnabled(enabled and not is_comment and not is_outsourced)
-        self.upper_value.setEnabled(enabled and not is_comment and not is_outsourced)
-        self.reference_text.setEnabled(enabled and not is_comment and not is_outsourced)
+        result_editable = enabled and not is_formula
+        self.result_value_text.setEnabled(result_editable)
+        self.result_value_select.setEnabled(result_editable)
+        self.result_value_comment.setEnabled(result_editable)
+        self.result_value_image_button.setEnabled(enabled)
+        self.unit.setEnabled(enabled and not is_comment and not is_outsourced and not is_image)
+        self.lower_value.setEnabled(enabled and not is_comment and not is_outsourced and not is_image)
+        self.upper_value.setEnabled(enabled and not is_comment and not is_outsourced and not is_image)
+        self.reference_text.setEnabled(enabled and not is_comment and not is_outsourced and not is_image)
         self.comments.setEnabled(enabled)
-        self.save_button.setEnabled(enabled)
-        self._set_entry_row_visible("unit", not is_outsourced)
-        self._set_entry_row_visible("lower", not is_outsourced)
-        self._set_entry_row_visible("upper", not is_outsourced)
-        self._set_entry_row_visible("reference", not is_outsourced)
-        self._set_entry_row_visible("flag", not is_outsourced)
+        self.save_button.setEnabled(enabled and not is_formula)
+        self._set_entry_row_visible("unit", not is_outsourced and not is_image)
+        self._set_entry_row_visible("lower", not is_outsourced and not is_image)
+        self._set_entry_row_visible("upper", not is_outsourced and not is_image)
+        self._set_entry_row_visible("reference", not is_outsourced and not is_image)
+        self._set_entry_row_visible("flag", not is_outsourced and not is_image)
 
     def _set_entry_row_visible(self, key: str, visible: bool) -> None:
         row = self._entry_row_widgets.get(key)
@@ -691,3 +742,196 @@ class OrderResultsDialog(QDialog):
         if reference_text:
             parts.append(reference_text)
         return " | ".join(part for part in parts if part)
+
+
+_IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+}
+
+# Cap the long edge of stored captures. The report displays images at ~80mm, so
+# 2000px keeps print quality while shrinking raw multi-megapixel microscope files.
+# Originals stay on the capture PC and can be emailed if a doctor needs to zoom.
+_MAX_IMAGE_DIMENSION = 2000
+_JPEG_QUALITY = 85
+
+
+def _prepare_image_for_storage(data: bytes, suffix: str) -> tuple[bytes, str]:
+    """Downscale oversized captures before storing; small images are kept as-is."""
+    image = QImage()
+    if not image.loadFromData(data):
+        # Not decodable here (unusual format) — store the original bytes untouched.
+        return data, _IMAGE_MIME_TYPES.get(suffix, "image/png")
+    if max(image.width(), image.height()) <= _MAX_IMAGE_DIMENSION:
+        # Already small enough; avoid re-encoding so we don't add artifacts.
+        return data, _IMAGE_MIME_TYPES.get(suffix, "image/png")
+    scaled = image.scaled(
+        _MAX_IMAGE_DIMENSION,
+        _MAX_IMAGE_DIMENSION,
+        Qt.KeepAspectRatio,
+        Qt.SmoothTransformation,
+    )
+    buffer = QBuffer()
+    buffer.open(QBuffer.WriteOnly)
+    if scaled.hasAlphaChannel():
+        scaled.save(buffer, "PNG")
+        mime_type = "image/png"
+    else:
+        scaled.save(buffer, "JPEG", _JPEG_QUALITY)
+        mime_type = "image/jpeg"
+    encoded = bytes(buffer.data())
+    buffer.close()
+    # Keep the downscaled copy whenever we have one — its bounded dimensions give
+    # predictable report sizing. Only fall back if encoding produced nothing.
+    if not encoded:
+        return data, _IMAGE_MIME_TYPES.get(suffix, "image/png")
+    return encoded, mime_type
+
+
+class ResultImageManagerDialog(QDialog):
+    """Add, caption, reorder and remove the microscope captures for an image test."""
+
+    def __init__(self, database: Database, order_test_id: int, test_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.database = database
+        self.order_test_id = order_test_id
+        self.setModal(True)
+        self.resize(560, 520)
+        self.setWindowTitle(tr("Manage Images") + (f" — {test_name}" if test_name else ""))
+
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(test_name or tr("Images")))
+
+        self.image_list = QListWidget()
+        self.image_list.setViewMode(QListWidget.IconMode)
+        self.image_list.setIconSize(QSize(140, 140))
+        self.image_list.setResizeMode(QListWidget.Adjust)
+        self.image_list.setMovement(QListWidget.Static)
+        self.image_list.setSpacing(8)
+        self.image_list.setWordWrap(True)
+        self.image_list.itemDoubleClicked.connect(lambda _item: self._edit_caption())
+        root.addWidget(self.image_list, 1)
+
+        buttons = QHBoxLayout()
+        add_button = QPushButton(tr("Add Image"))
+        add_button.clicked.connect(self._add_images)
+        self.caption_button = QPushButton(tr("Edit Caption"))
+        self.caption_button.clicked.connect(self._edit_caption)
+        self.remove_button = QPushButton(tr("Remove Image"))
+        self.remove_button.clicked.connect(self._remove_image)
+        self.up_button = QPushButton(tr("Move Up"))
+        self.up_button.clicked.connect(lambda: self._move_image(-1))
+        self.down_button = QPushButton(tr("Move Down"))
+        self.down_button.clicked.connect(lambda: self._move_image(1))
+        buttons.addWidget(add_button)
+        buttons.addWidget(self.caption_button)
+        buttons.addWidget(self.remove_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.up_button)
+        buttons.addWidget(self.down_button)
+        root.addLayout(buttons)
+
+        close_row = QHBoxLayout()
+        close_button = QPushButton(tr("Close"))
+        close_button.clicked.connect(self.accept)
+        close_row.addStretch(1)
+        close_row.addWidget(close_button)
+        root.addLayout(close_row)
+
+        self._reload_images()
+
+    def _reload_images(self) -> None:
+        self.image_list.clear()
+        for image in self.database.list_result_images(self.order_test_id, include_data=True):
+            pixmap = QPixmap()
+            data = image.get("image_data")
+            if data is not None:
+                pixmap.loadFromData(bytes(data))
+            caption = str(image.get("caption") or "")
+            item = QListWidgetItem(caption or tr("Image"))
+            if not pixmap.isNull():
+                item.setIcon(pixmap.scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            item.setData(Qt.UserRole, int(image["id"]))
+            item.setTextAlignment(Qt.AlignHCenter)
+            self.image_list.addItem(item)
+        has_items = self.image_list.count() > 0
+        self.caption_button.setEnabled(has_items)
+        self.remove_button.setEnabled(has_items)
+        self.up_button.setEnabled(has_items)
+        self.down_button.setEnabled(has_items)
+
+    def _add_images(self) -> None:
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self,
+            tr("Select Image"),
+            "",
+            tr("Image Files") + " (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)",
+        )
+        if not paths:
+            return
+        added = 0
+        for path in paths:
+            file_path = Path(path)
+            try:
+                data = file_path.read_bytes()
+            except OSError as exc:
+                QMessageBox.warning(self, tr("Add Image"), str(exc))
+                continue
+            if not data:
+                continue
+            stored_data, mime_type = _prepare_image_for_storage(data, file_path.suffix.lower())
+            self.database.add_result_image(self.order_test_id, stored_data, mime_type=mime_type, caption=file_path.stem)
+            added += 1
+        if added:
+            self._reload_images()
+
+    def _selected_image_id(self) -> int | None:
+        item = self.image_list.currentItem()
+        if item is None:
+            return None
+        return int(item.data(Qt.UserRole))
+
+    def _edit_caption(self) -> None:
+        item = self.image_list.currentItem()
+        if item is None:
+            return
+        image_id = int(item.data(Qt.UserRole))
+        current = "" if item.text() == tr("Image") else item.text()
+        new_caption, ok = QInputDialog.getText(self, tr("Edit Caption"), tr("Caption"), text=current)
+        if not ok:
+            return
+        self.database.update_result_image_caption(image_id, new_caption)
+        self._reload_images()
+
+    def _remove_image(self) -> None:
+        image_id = self._selected_image_id()
+        if image_id is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            tr("Remove Image"),
+            tr("Remove this image?"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        self.database.delete_result_image(image_id)
+        self._reload_images()
+
+    def _move_image(self, step: int) -> None:
+        row = self.image_list.currentRow()
+        target = row + step
+        if row < 0 or target < 0 or target >= self.image_list.count():
+            return
+        ordered_ids = [int(self.image_list.item(index).data(Qt.UserRole)) for index in range(self.image_list.count())]
+        ordered_ids[row], ordered_ids[target] = ordered_ids[target], ordered_ids[row]
+        self.database.reorder_result_images(self.order_test_id, ordered_ids)
+        self._reload_images()
+        self.image_list.setCurrentRow(target)

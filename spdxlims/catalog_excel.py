@@ -54,6 +54,7 @@ TEST_TEMPLATE_SHEETS: dict[str, list[list[str]]] = {
         ["Different sexes / Diferentes sexos", "Use range_sex = M or F on separate rows. / Use range_sex = M o F en filas separadas."],
         ["Different ages / Diferentes edades", "Use age_min_days and age_max_days on separate rows. / Use age_min_days y age_max_days en filas separadas."],
         ["Selectable tests / Analitos seleccionables", "For result_kind = select, put options in select_options separated by | and keep default_result equal to one option. / Para result_kind = select, escriba las opciones en select_options separadas por | y mantenga default_result igual a una opción."],
+        ["Image tests / Analitos de imagen", "Use result_kind = image to define a test that holds microscope captures. The images themselves are attached in the app on the results screen, not via this workbook. / Use result_kind = image para definir un analito que contiene capturas de microscopio. Las imágenes se adjuntan en la aplicación, en la pantalla de resultados, no en este libro."],
         ["Import behavior / Comportamiento de importación", "All non-empty sheets except Instructions are imported. / Se importan todas las hojas no vacías excepto Instructions."],
     ],
 }

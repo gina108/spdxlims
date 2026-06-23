@@ -1,6 +1,10 @@
 from __future__ import annotations
+import ast as _ast
+import base64
 import json
+import operator as _operator
 import re
+import re as _re
 import sqlite3
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -104,11 +108,14 @@ class ResultsMixin:
         entries = self.get_order_result_entries(order_id)
         settings = self.get_lab_settings()
         outsourced_order_test_ids = self._get_outsourced_order_test_ids(order_id)
+        with self.connect() as connection:
+            images_by_order_test = self._result_images_by_order_test(connection, order_id)
         preview_items = [
             {
                 "order_test_id": entry.order_test_id,
                 "test_id": entry.test_id,
                 "item_type": entry.item_type,
+                "result_kind": entry.result_kind,
                 "test_name": entry.test_name,
                 "result_value": entry.result_value,
                 "unit": entry.unit,
@@ -117,6 +124,7 @@ class ResultsMixin:
                 "upper_value": entry.upper_value,
                 "flag": entry.flag,
                 "comments": entry.comments,
+                "images": images_by_order_test.get(entry.order_test_id, []),
                 "sort_order": index,
                 "source_label": entry.source_label,
             }
@@ -239,6 +247,7 @@ class ResultsMixin:
                 """,
                 (report_row["id"],),
             ).fetchall()
+            snapshot_images_by_order_test = self._report_snapshot_images_by_order_test(connection, int(report_row["id"]))
         current_outsourced_sections = self.get_outsourced_panel_preview_sections(int(report_row["order_id"]))
         outsourced_sections = current_outsourced_sections or self._group_outsourced_rows(outsourced_rows)
         saved_items = [
@@ -262,6 +271,13 @@ class ResultsMixin:
             saved_items,
             list((live_preview or {}).get("items") or []),
         )
+        # Finalized reports render their snapshot images (immutable), overriding any
+        # live images that may have changed since the report was finalized.
+        if snapshot_images_by_order_test:
+            for item in rendered_items:
+                order_test_id = item.get("order_test_id")
+                if order_test_id is not None and int(order_test_id) in snapshot_images_by_order_test:
+                    item["images"] = snapshot_images_by_order_test[int(order_test_id)]
         # Prefer live patient/order data over the snapshot so edits are reflected
         # immediately without having to re-finalize. Snapshots are the fallback.
         live_ctx = live_preview or {}
@@ -299,25 +315,99 @@ class ResultsMixin:
             "items": rendered_items,
         }
 
-    @staticmethod
+    @classmethod
     def _merge_saved_result_values_into_live_items(
+        cls,
         saved_items: list[dict[str, Any]],
         live_items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         if not live_items:
             return saved_items
-        saved_by_order_test_id = {
-            item.get("order_test_id"): item
+        # Build a name→source_label lookup so sub-headings (e.g. "EXAMEN DE LAS
+        # CARACTERISTICAS FISICAS" inside "EXAMEN GENERAL DE ORINA") regain their
+        # panel affiliation and stay with the rest of the panel during pagination.
+        # Only map names that appear exactly once to avoid ambiguous collisions.
+        _seen: set[str] = set()
+        _dupes: set[str] = set()
+        live_source_by_heading: dict[str, str] = {}
+        for item in live_items:
+            if item.get("order_test_id") is not None:
+                continue
+            src = str(item.get("source_label") or "").strip()
+            name = str(item.get("test_name") or "").strip()
+            if not src or not name:
+                continue
+            if name in _seen:
+                _dupes.add(name)
+            else:
+                _seen.add(name)
+                live_source_by_heading[name] = src
+        for dupe in _dupes:
+            live_source_by_heading.pop(dupe, None)
+        saved_by_order_test_id: dict[Any, dict[str, Any]] = {
+            item["order_test_id"]: item
             for item in saved_items
             if item.get("order_test_id") is not None
         }
+        # Build the set of ambiguous heading names (same name, different source_labels
+        # in live) so we can leave those headings' source_label untouched.
+        _ambiguous_heading_names: set[str] = set()
+        _seen_src_by_name: dict[str, str] = {}
+        for item in live_items:
+            if item.get("order_test_id") is not None:
+                continue
+            src = str(item.get("source_label") or "").strip()
+            name = str(item.get("test_name") or "").strip()
+            if not src or not name:
+                continue
+            if name in _seen_src_by_name and _seen_src_by_name[name] != src:
+                _ambiguous_heading_names.add(name)
+            else:
+                _seen_src_by_name[name] = src
+        # Headings/comments carry no order_test_id (they are injected from the
+        # panel structure), so manual subtitle edits captured in the snapshot are
+        # matched back positionally among same-typed rows.
+        saved_by_type: dict[str, list[dict[str, Any]]] = {"heading": [], "comment": []}
+        for saved_item in saved_items:
+            saved_type = str(saved_item.get("item_type") or "")
+            if saved_type in saved_by_type:
+                saved_by_type[saved_type].append(saved_item)
+        type_counters = {"heading": 0, "comment": 0}
+        # Iterate live_items so the current panel structure (injected headings,
+        # panel_meta rows) is always present, even when the saved snapshot was
+        # captured from a stale preview that was missing those rows.
         merged: list[dict[str, Any]] = []
         for live_item in live_items:
             item = dict(live_item)
-            saved_item = saved_by_order_test_id.get(item.get("order_test_id"))
-            if saved_item is not None:
-                for key in ("result_value", "unit", "reference_text", "lower_value", "upper_value", "flag", "comments"):
-                    item[key] = saved_item.get(key)
+            order_test_id = item.get("order_test_id")
+            item_type = str(item.get("item_type") or "")
+            if order_test_id is not None:
+                saved_item = saved_by_order_test_id.get(order_test_id)
+                if saved_item is not None:
+                    for key in ("test_name", "result_value", "unit", "reference_text", "lower_value", "upper_value", "flag", "comments"):
+                        item[key] = saved_item.get(key)
+            elif item_type in {"heading", "comment"}:
+                name = str(item.get("test_name") or "").strip()
+                if name in _ambiguous_heading_names:
+                    item["source_label"] = None
+                elif not str(item.get("source_label") or "").strip():
+                    restored = live_source_by_heading.get(name)
+                    if restored:
+                        item["source_label"] = restored
+                # Re-apply a manual subtitle edit, but let a stale catalog form
+                # (e.g. "Quimica Clinica (CHEM) - 1 tests") refresh to the current
+                # panel name. Both stale and current normalize to the same label.
+                saved_list = saved_by_type.get(item_type, [])
+                position = type_counters[item_type]
+                type_counters[item_type] += 1
+                saved_item = saved_list[position] if position < len(saved_list) else None
+                if saved_item is not None:
+                    saved_name = str(saved_item.get("test_name") or "").strip()
+                    if saved_name and (
+                        cls._normalize_report_panel_label(saved_name).casefold()
+                        != cls._normalize_report_panel_label(name).casefold()
+                    ):
+                        item["test_name"] = saved_item.get("test_name")
             merged.append(item)
         return merged
 
@@ -638,6 +728,7 @@ class ResultsMixin:
                 )
                 connection.execute("DELETE FROM report_items WHERE report_id = ?", (report_id,))
                 connection.execute("DELETE FROM report_outsourced_rows WHERE report_id = ?", (report_id,))
+                connection.execute("DELETE FROM report_item_images WHERE report_id = ?", (report_id,))
             for item in preview["items"]:
                 order_test_id = item.get("order_test_id")
                 if not order_test_id:
@@ -668,6 +759,21 @@ class ResultsMixin:
                         item["sort_order"],
                         item["item_type"],
                     ),
+                )
+            for item in preview["items"]:
+                if str(item.get("result_kind") or "") != "image":
+                    continue
+                order_test_id = item.get("order_test_id")
+                if not order_test_id:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO report_item_images (report_id, order_test_id, image_data, mime_type, caption, sort_order)
+                    SELECT ?, order_test_id, image_data, mime_type, caption, sort_order
+                    FROM result_images
+                    WHERE order_test_id = ?
+                    """,
+                    (report_id, order_test_id),
                 )
             for section in outsourced_sections:
                 for row in list(section.get("rows") or []):
@@ -706,6 +812,19 @@ class ResultsMixin:
             )
         return report_id
 
+    def delete_saved_report(self, order_id: int) -> None:
+        with self.connect() as connection:
+            report_row = connection.execute(
+                "SELECT id FROM reports WHERE order_id = ?", (order_id,)
+            ).fetchone()
+            if report_row is None:
+                return
+            report_id = report_row["id"]
+            connection.execute("DELETE FROM report_outsourced_rows WHERE report_id = ?", (report_id,))
+            connection.execute("DELETE FROM report_item_images WHERE report_id = ?", (report_id,))
+            connection.execute("DELETE FROM report_items WHERE report_id = ?", (report_id,))
+            connection.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+
     def save_result_entry(self, order_test_id: int, result_value: str, unit: str, lower_value: str | None, upper_value: str | None, reference_text: str, comments: str, result_kind: str) -> None:
         normalized_value = result_value.strip()
         if result_kind == "numeric":
@@ -722,6 +841,132 @@ class ResultsMixin:
                 connection.execute("INSERT INTO results (order_test_id, result_value, unit, lower_value, upper_value, lower_value_text, upper_value_text, flag, reference_text, comments, entered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", (order_test_id, normalized_value or None, normalized_unit or None, self._decimal_to_float(lower_value), self._decimal_to_float(upper_value), lower_value, upper_value, flag, normalized_reference or None, normalized_comments or None))
             connection.execute("UPDATE order_tests SET status = 'entered' WHERE id = ?", (order_test_id,))
             connection.execute("UPDATE orders SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT order_id FROM order_tests WHERE id = ?)", (order_test_id,))
+            order_row = connection.execute("SELECT order_id FROM order_tests WHERE id = ?", (order_test_id,)).fetchone()
+            if order_row is not None:
+                _recalculate_formula_tests(connection, int(order_row["order_id"]))
+
+    def list_result_images(self, order_test_id: int, *, include_data: bool = False) -> list[dict[str, Any]]:
+        columns = "id, mime_type, caption, sort_order, created_at"
+        if include_data:
+            columns += ", image_data"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {columns} FROM result_images WHERE order_test_id = ? ORDER BY sort_order, id",
+                (order_test_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_result_image(self, order_test_id: int, image_data: bytes, mime_type: str = "image/png", caption: str = "") -> int:
+        with self.connect() as connection:
+            next_sort_row = connection.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort FROM result_images WHERE order_test_id = ?",
+                (order_test_id,),
+            ).fetchone()
+            next_sort = int(next_sort_row["next_sort"]) if next_sort_row is not None else 0
+            cursor = connection.execute(
+                "INSERT INTO result_images (order_test_id, image_data, mime_type, caption, sort_order) VALUES (?, ?, ?, ?, ?)",
+                (order_test_id, sqlite3.Binary(image_data), mime_type or "image/png", (caption or "").strip() or None, next_sort),
+            )
+            self._refresh_image_result_summary(connection, order_test_id)
+            return int(cursor.lastrowid)
+
+    def update_result_image_caption(self, image_id: int, caption: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE result_images SET caption = ? WHERE id = ?",
+                ((caption or "").strip() or None, image_id),
+            )
+
+    def delete_result_image(self, image_id: int) -> None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT order_test_id FROM result_images WHERE id = ?", (image_id,)
+            ).fetchone()
+            connection.execute("DELETE FROM result_images WHERE id = ?", (image_id,))
+            if row is not None:
+                self._refresh_image_result_summary(connection, int(row["order_test_id"]))
+
+    def reorder_result_images(self, order_test_id: int, ordered_ids: list[int]) -> None:
+        with self.connect() as connection:
+            for sort_order, image_id in enumerate(ordered_ids):
+                connection.execute(
+                    "UPDATE result_images SET sort_order = ? WHERE id = ? AND order_test_id = ?",
+                    (sort_order, image_id, order_test_id),
+                )
+
+    def _refresh_image_result_summary(self, connection: sqlite3.Connection, order_test_id: int) -> None:
+        count_row = connection.execute(
+            "SELECT COUNT(*) AS count FROM result_images WHERE order_test_id = ?",
+            (order_test_id,),
+        ).fetchone()
+        count = int(count_row["count"]) if count_row is not None else 0
+        summary = tr("{count} image(s)").format(count=count) if count else ""
+        existing = connection.execute(
+            "SELECT id FROM results WHERE order_test_id = ?", (order_test_id,)
+        ).fetchone()
+        if existing:
+            connection.execute(
+                "UPDATE results SET result_value = ?, flag = 'none', entered_at = CURRENT_TIMESTAMP WHERE order_test_id = ?",
+                (summary or None, order_test_id),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO results (order_test_id, result_value, flag, entered_at) VALUES (?, ?, 'none', CURRENT_TIMESTAMP)",
+                (order_test_id, summary or None),
+            )
+        new_status = "entered" if count else "pending"
+        connection.execute("UPDATE order_tests SET status = ? WHERE id = ?", (new_status, order_test_id))
+        connection.execute(
+            "UPDATE orders SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT order_id FROM order_tests WHERE id = ?)",
+            (order_test_id,),
+        )
+
+    @staticmethod
+    def _encode_image_rows(rows: list[Any]) -> list[dict[str, Any]]:
+        encoded: list[dict[str, Any]] = []
+        for row in rows:
+            data = row["image_data"]
+            if data is None:
+                continue
+            encoded.append(
+                {
+                    "mime_type": str(row["mime_type"] or "image/png"),
+                    "caption": str(row["caption"] or ""),
+                    "data": base64.b64encode(bytes(data)).decode("ascii"),
+                }
+            )
+        return encoded
+
+    def _result_images_by_order_test(self, connection: sqlite3.Connection, order_id: int) -> dict[int, list[dict[str, Any]]]:
+        rows = connection.execute(
+            """
+            SELECT ri.order_test_id, ri.image_data, ri.mime_type, ri.caption
+            FROM result_images ri
+            INNER JOIN order_tests ot ON ot.id = ri.order_test_id
+            WHERE ot.order_id = ?
+            ORDER BY ri.order_test_id, ri.sort_order, ri.id
+            """,
+            (order_id,),
+        ).fetchall()
+        grouped: dict[int, list[Any]] = {}
+        for row in rows:
+            grouped.setdefault(int(row["order_test_id"]), []).append(row)
+        return {key: self._encode_image_rows(value) for key, value in grouped.items()}
+
+    def _report_snapshot_images_by_order_test(self, connection: sqlite3.Connection, report_id: int) -> dict[int, list[dict[str, Any]]]:
+        rows = connection.execute(
+            """
+            SELECT order_test_id, image_data, mime_type, caption
+            FROM report_item_images
+            WHERE report_id = ?
+            ORDER BY order_test_id, sort_order, id
+            """,
+            (report_id,),
+        ).fetchall()
+        grouped: dict[int, list[Any]] = {}
+        for row in rows:
+            grouped.setdefault(int(row["order_test_id"]), []).append(row)
+        return {key: self._encode_image_rows(value) for key, value in grouped.items()}
 
     def _resolve_reference_range(self, connection: sqlite3.Connection, test_id: int, patient_sex: str | None, patient_age_days: int | None) -> sqlite3.Row | None:
         rows = connection.execute("SELECT sex, age_min_days, age_max_days, COALESCE(lower_value_text, CAST(lower_value AS TEXT)) AS lower_value, COALESCE(upper_value_text, CAST(upper_value AS TEXT)) AS upper_value, unit, reference_text FROM test_reference_ranges WHERE test_id = ? ORDER BY CASE WHEN sex IS NULL OR sex = '' THEN 1 ELSE 0 END, CASE WHEN age_min_days IS NULL THEN 1 ELSE 0 END, age_min_days, CASE WHEN age_max_days IS NULL THEN 1 ELSE 0 END, age_max_days", (test_id,)).fetchall()
@@ -786,3 +1031,84 @@ class ResultsMixin:
         if lower_decimal is not None or upper_decimal is not None:
             return "normal"
         return "none"
+
+
+_FORMULA_OPS: dict = {
+    _ast.Add: _operator.add,
+    _ast.Sub: _operator.sub,
+    _ast.Mult: _operator.mul,
+    _ast.Div: _operator.truediv,
+    _ast.USub: _operator.neg,
+}
+
+
+def _safe_eval_formula_node(node: _ast.AST) -> float:
+    if isinstance(node, _ast.BinOp) and type(node.op) in _FORMULA_OPS:
+        return _FORMULA_OPS[type(node.op)](_safe_eval_formula_node(node.left), _safe_eval_formula_node(node.right))
+    if isinstance(node, _ast.UnaryOp) and type(node.op) in _FORMULA_OPS:
+        return _FORMULA_OPS[type(node.op)](_safe_eval_formula_node(node.operand))
+    if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    raise ValueError(f"Unsupported node: {type(node).__name__}")
+
+
+def _evaluate_formula(formula: str, values_by_code: dict[str, float]) -> float | None:
+    expr = formula.upper()
+    for code, value in values_by_code.items():
+        expr = _re.sub(r'\[' + _re.escape(code) + r'\]', str(value), expr)
+    if _re.search(r'\[', expr):
+        return None
+    try:
+        tree = _ast.parse(expr, mode='eval')
+        return _safe_eval_formula_node(tree.body)
+    except (ValueError, ZeroDivisionError, SyntaxError, TypeError):
+        return None
+
+
+def _format_formula_result(value: float) -> str:
+    if value == int(value) and abs(value) < 1e10:
+        return str(int(value))
+    return f"{value:.6g}"
+
+
+def _recalculate_formula_tests(connection: sqlite3.Connection, order_id: int) -> None:
+    formula_rows = connection.execute(
+        "SELECT ot.id AS order_test_id, t.formula FROM order_tests ot INNER JOIN tests t ON t.id = ot.test_id WHERE ot.order_id = ? AND t.formula IS NOT NULL AND t.formula != ''",
+        (order_id,),
+    ).fetchall()
+    if not formula_rows:
+        return
+    result_rows = connection.execute(
+        "SELECT t.code, r.result_value FROM order_tests ot INNER JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE ot.order_id = ?",
+        (order_id,),
+    ).fetchall()
+    values_by_code: dict[str, float] = {}
+    for row in result_rows:
+        code = str(row["code"] or "").strip().upper()
+        raw = str(row["result_value"] or "").strip()
+        if code and raw:
+            try:
+                values_by_code[code] = float(Decimal(raw.replace(",", "")))
+            except (InvalidOperation, ValueError):
+                pass
+    for formula_row in formula_rows:
+        formula_test_id = int(formula_row["order_test_id"])
+        formula = str(formula_row["formula"] or "").strip()
+        if not formula:
+            continue
+        computed = _evaluate_formula(formula, values_by_code)
+        if computed is None:
+            continue
+        result_str = _format_formula_result(computed)
+        existing = connection.execute("SELECT id FROM results WHERE order_test_id = ?", (formula_test_id,)).fetchone()
+        if existing:
+            connection.execute(
+                "UPDATE results SET result_value = ?, flag = 'none', entered_at = CURRENT_TIMESTAMP WHERE order_test_id = ?",
+                (result_str, formula_test_id),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO results (order_test_id, result_value, flag, entered_at) VALUES (?, ?, 'none', CURRENT_TIMESTAMP)",
+                (formula_test_id, result_str),
+            )
+        connection.execute("UPDATE order_tests SET status = 'entered' WHERE id = ?", (formula_test_id,))

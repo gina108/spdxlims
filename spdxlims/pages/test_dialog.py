@@ -63,6 +63,7 @@ class TestDialog(QDialog):
         self.result_kind.addItem(tr("Numeric"), "numeric")
         self.result_kind.addItem(tr("Text"), "text")
         self.result_kind.addItem(tr("Selectable"), "select")
+        self.result_kind.addItem(tr("Image"), "image")
         self.result_kind.currentIndexChanged.connect(self._update_select_fields_visibility)
         self.select_options = QTextEdit()
         self.select_options.setFixedHeight(90)
@@ -83,6 +84,7 @@ class TestDialog(QDialog):
         content_layout.addLayout(form)
 
         range_group = QGroupBox(tr("Reference Ranges"))
+        self.range_group = range_group
         range_layout = QVBoxLayout(range_group)
         range_form = QGridLayout()
 
@@ -287,6 +289,9 @@ class TestDialog(QDialog):
                 return
         else:
             select_options = []
+        if result_kind == "image":
+            # Image results have no inline default value.
+            default_result_value = ""
 
         multiplier_text = self.result_multiplier.text().strip()
         try:
@@ -325,12 +330,18 @@ class TestDialog(QDialog):
         self.accept()
 
     def _update_select_fields_visibility(self) -> None:
-        is_select = self.result_kind.currentData() == "select"
+        kind = self.result_kind.currentData()
+        is_select = kind == "select"
         self.select_options_label.setVisible(is_select)
         self.select_options.setVisible(is_select)
-        is_numeric = self.result_kind.currentData() == "numeric"
+        is_numeric = kind == "numeric"
         self.result_multiplier_label.setVisible(is_numeric)
         self.result_multiplier.setVisible(is_numeric)
+        # Image results carry no default value or reference ranges.
+        is_image = kind == "image"
+        self.default_result_label.setVisible(not is_image)
+        self.default_result_value.setVisible(not is_image)
+        self.range_group.setVisible(not is_image)
 
     def _load_equipment_choices(self) -> None:
         current_value = self.category_name.currentText().strip()

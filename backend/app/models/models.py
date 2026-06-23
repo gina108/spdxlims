@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,6 +55,7 @@ class TestCatalog(Base):
     default_result_value: Mapped[str | None] = mapped_column(Text)
     price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     unit: Mapped[str | None] = mapped_column(String(32))
+    formula: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
@@ -152,6 +153,7 @@ class LabOrder(Base):
     ordered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(24), nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class OrderItem(Base):
@@ -195,6 +197,30 @@ class Result(Base):
     entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class ResultImage(Base):
+    __tablename__ = "result_image"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("order_item.id", ondelete="CASCADE"), nullable=False)
+    image_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(64), nullable=False, default="image/png")
+    caption: Mapped[str | None] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReportItemImageSnapshot(Base):
+    __tablename__ = "report_item_image_snapshot"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    report_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("report_snapshot.id", ondelete="CASCADE"), nullable=False)
+    order_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("order_item.id"))
+    image_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(64), nullable=False, default="image/png")
+    caption: Mapped[str | None] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class ReportSnapshot(Base):
@@ -387,7 +413,7 @@ class AuditEvent(Base):
 # Basic data integrity constraints
 AppUser.__table__.append_constraint(CheckConstraint("role in ('admin','tech','reviewer','lab_manager')", name="ck_app_user_role"))
 Patient.__table__.append_constraint(CheckConstraint("sex in ('M','F','O','X') or sex is null", name="ck_patient_sex"))
-TestCatalog.__table__.append_constraint(CheckConstraint("result_kind in ('numeric','text','select')", name="ck_test_catalog_result_kind"))
+TestCatalog.__table__.append_constraint(CheckConstraint("result_kind in ('numeric','text','select','image')", name="ck_test_catalog_result_kind"))
 TestReferenceRange.__table__.append_constraint(CheckConstraint("sex in ('M','F','O','X') or sex is null", name="ck_test_reference_range_sex"))
 Patient.__table__.append_constraint(CheckConstraint("age_unit in ('days','months','years') or age_unit is null", name="ck_patient_age_unit"))
 Provider.__table__.append_constraint(CheckConstraint("provider_type in ('doctor','clinic')", name="ck_provider_type"))
