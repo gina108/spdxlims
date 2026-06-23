@@ -122,3 +122,26 @@ func TestHostOnlyAcceptsPlainIPAndEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestLookupInstrumentCodeNormalized(t *testing.T) {
+	prof := profile.Profile{Mapping: profile.MappingSettings{TestMappings: []profile.TestMapping{
+		{Pattern: "GLU L", CanonicalAssay: "Glucose", LISTestID: "CM250-GLU"},
+		{Pattern: "CRE L", CanonicalAssay: "Creatinine", LISTestID: "CM250-CRE"},
+		{Pattern: "%HbA1c", CanonicalAssay: "HbA1c (%)", LISTestID: "CM250-HBA1CP"},
+	}}}
+	cases := map[string]string{
+		"GLUL":         "GLU L", // LIMS-normalized raw_code -> spaced pattern
+		"CREL":         "CRE L",
+		"GLU L":        "GLU L", // exact pattern
+		"CM250-GLU":    "GLU L", // lis_test_id
+		"Glucose":      "GLU L", // canonical assay
+		"%HbA1c":       "%HbA1c",
+		"%HBA1C":       "%HbA1c", // LIMS-normalized raw_code keeps the %
+		"nonexistent":  "",
+	}
+	for in, want := range cases {
+		if got := lookupInstrumentCode(prof, in); got != want {
+			t.Errorf("lookupInstrumentCode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

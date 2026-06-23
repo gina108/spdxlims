@@ -793,20 +793,40 @@ func instrumentCodesForOrder(prof profile.Profile, tests []models.PendingTestReq
 	return codes, skipped
 }
 
-// lookupInstrumentCode resolves a LIS test code to the instrument code (the
-// mapping's Pattern). It matches on lis_test_id first, then falls back to the
-// instrument pattern or canonical assay in case the LIMS sends those directly.
+// normalizeInstrumentCode mirrors the LIMS _normalize_instrument_code: uppercase
+// and keep only alphanumerics plus -_%#. This lets a LIMS-supplied raw code like
+// "GLUL" (spaces stripped on save) resolve to the profile pattern "GLU L".
+func normalizeInstrumentCode(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(s) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '%' || r == '#' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// lookupInstrumentCode resolves a code from the LIMS to the instrument code (the
+// mapping's Pattern). It matches on lis_test_id first, then the instrument
+// pattern or canonical assay, and finally a normalized comparison — the LIMS
+// pushes the normalized raw_code ("GLUL"), which must still recover the spaced
+// pattern "GLU L" the analyzer expects.
 func lookupInstrumentCode(prof profile.Profile, lisCode string) string {
 	want := strings.ToLower(strings.TrimSpace(lisCode))
+	wantNorm := normalizeInstrumentCode(lisCode)
 	for _, m := range prof.Mapping.TestMappings {
 		if strings.ToLower(strings.TrimSpace(m.LISTestID)) == want {
 			return strings.TrimSpace(m.Pattern)
 		}
 	}
 	for _, m := range prof.Mapping.TestMappings {
-		if strings.ToLower(strings.TrimSpace(m.Pattern)) == want ||
+		pattern := strings.TrimSpace(m.Pattern)
+		if strings.ToLower(pattern) == want ||
 			strings.ToLower(strings.TrimSpace(m.CanonicalAssay)) == want {
-			return strings.TrimSpace(m.Pattern)
+			return pattern
+		}
+		if wantNorm != "" && normalizeInstrumentCode(pattern) == wantNorm {
+			return pattern
 		}
 	}
 	return ""
