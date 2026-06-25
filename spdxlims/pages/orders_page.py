@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 
 from spdxlims.database import Database, OrderSummaryRecord, ResultEntryRecord
 from spdxlims.deployment import DeploymentService
-from spdxlims.niimbot_client import NIIMBOTClient, NIIMBOTClientError
+from spdxlims.label_printer_client import LabelPrinterClient, LabelPrinterError
 from spdxlims.patient_dialog import PatientDialog as SharedPatientDialog
 from spdxlims.patient_service import PatientService
 from spdxlims.order_service import OrderService
@@ -96,6 +96,7 @@ class OrdersPage(DataAwarePage):
         cards.addWidget(self.recent_orders_panel, 4)
         root.addLayout(cards, 1)
         self._doctor_choices: list[tuple[int | str, str]] = []
+        self._client_choices: list[tuple[int | str, str]] = []
 
         self.retranslate_ui()
         self.refresh_page_data()
@@ -273,7 +274,12 @@ class OrdersPage(DataAwarePage):
         self.print_receipt_button = QPushButton()
         self.print_receipt_button.setProperty("class", "secondaryButton")
         self.print_receipt_button.clicked.connect(self.print_order_receipt)
+        self.cancel_edit_button = QPushButton()
+        self.cancel_edit_button.setProperty("class", "secondaryButton")
+        self.cancel_edit_button.clicked.connect(self.clear_order_form)
+        self.cancel_edit_button.setVisible(False)
         actions.addStretch(1)
+        actions.addWidget(self.cancel_edit_button)
         actions.addWidget(self.remove_button)
         actions.addWidget(self.save_and_print_labels_button)
         actions.addWidget(self.print_receipt_button)
@@ -322,9 +328,9 @@ class OrdersPage(DataAwarePage):
         self.import_and_print_button = QPushButton()
         self.import_and_print_button.setProperty("class", "primaryButton")
         self.import_and_print_button.setStyleSheet(
-            "QPushButton { background-color: #7c3aed; color: #ffffff; }"
-            "QPushButton:hover { background-color: #6d28d9; }"
-            "QPushButton:pressed { background-color: #5b21b6; }"
+            "QPushButton { background-color: #bd93f9; color: #1a1a1a; border: none; font-weight: 800; }"
+            "QPushButton:hover { background-color: #caa9fa; }"
+            "QPushButton:pressed { background-color: #a77de6; }"
         )
         self.import_and_print_button.clicked.connect(self.import_and_print_from_excel)
         actions.addWidget(self.result_button, 0, 0, 1, 2)
@@ -436,10 +442,16 @@ class OrdersPage(DataAwarePage):
             selected_data=self.patient_combo.currentData(),
         )
         self._doctor_choices = [(doctor_id, label) for doctor_id, label in self.order_service.list_doctor_choices()]
+        _doctor_names = [label for _, label in self._doctor_choices]
+        _doctor_completer = QCompleter(_doctor_names, self.doctor_input)
+        _doctor_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        _doctor_completer.setFilterMode(Qt.MatchContains)
+        self.doctor_input.setCompleter(_doctor_completer)
+        self._client_choices = [(client_id, label) for client_id, label in self.order_service.list_client_choices()]
         selected_client_id = self.client_combo.currentData()
         self.set_combo_items(
             self.client_combo,
-            [(label, client_id) for client_id, label in self.order_service.list_client_choices()],
+            [(label, client_id) for client_id, label in self._client_choices],
             placeholder=tr("Select client"),
             selected_data=selected_client_id,
         )
@@ -736,11 +748,19 @@ class OrdersPage(DataAwarePage):
         if order_id is None:
             QMessageBox.warning(self, tr("Missing Selection"), tr("Select a recent order first."))
             return
-        dialog = OrderLabelsDialog(self.database, order_id=order_id, parent=self)
-        dialog.exec()
+        prefs = self.database.get_label_print_preferences()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._print_order_label_silent(order_id, prefs, LabelPrinterClient(), str(prefs.get("printer") or "niimbot:B1"))
+        except LabelPrinterError as exc:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, tr("Print Failed"), str(exc))
+            return
+        QApplication.restoreOverrideCursor()
+        QMessageBox.information(self, "Listo", "Etiqueta impresa.")
 
     def open_order_results_dialog(self) -> None:
-        order_id = self._active_order_id()
+        order_id = self._selected_recent_order_id()
         if order_id is None:
             QMessageBox.warning(self, tr("Missing Selection"), tr("Select a recent order first."))
             return
@@ -808,7 +828,7 @@ class OrdersPage(DataAwarePage):
         created = 0
         try:
             for item in plan:
-                self.database.create_order(
+                order_id = self.database.create_order(
                     order_number=str(item.get("order_number") or "") or None,
                     accession_id=str(item.get("accession_id") or "") or None,
                     sample_id=str(item.get("sample_id") or "") or None,
@@ -820,6 +840,12 @@ class OrdersPage(DataAwarePage):
                     notes=str(item.get("notes") or ""),
                 )
                 created += 1
+                self._maybe_broadcast_order(
+                    int(item["patient_id"]),
+                    order_id,
+                    order_items=list(item["order_items"]),
+                    doctor_name_override="",
+                )
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
             return
@@ -878,39 +904,29 @@ class OrdersPage(DataAwarePage):
                     notes=str(item.get("notes") or ""),
                 )
                 created_orders.append((order_id, item.get("client_id")))
+                self._maybe_broadcast_order(
+                    int(item["patient_id"]),
+                    order_id,
+                    order_items=list(item["order_items"]),
+                    doctor_name_override="",
+                )
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
             return
         self.refresh_page_data()
         self.notify_data_changed()
-        niimbot_client = NIIMBOTClient()
-        try:
-            printers = niimbot_client.list_printers()
-            printer = next((p for p in printers if p.id and p.status.lower() != "offline"), None)
-        except NIIMBOTClientError as exc:
-            QMessageBox.warning(
-                self,
-                tr("NIIMBOT Print Failed"),
-                "Se crearon " + str(len(created_orders)) + " órdenes pero no se pudo conectar a la impresora:\n" + str(exc),
-            )
-            return
-        if printer is None:
-            QMessageBox.warning(
-                self,
-                "Sin impresora",
-                "Se crearon " + str(len(created_orders)) + " órdenes pero no se encontró ninguna impresora NIIMBOT.",
-            )
-            return
+        _label_client = LabelPrinterClient()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         printed = 0
         first_error: str = ""
         try:
             for order_id, client_id in created_orders:
                 prefs = self.database.get_label_print_preferences(client_id)
+                printer_pref = str(prefs.get("printer") or "niimbot:B1")
                 try:
-                    self._print_order_label_silent(order_id, prefs, niimbot_client, printer.id)
+                    self._print_order_label_silent(order_id, prefs, _label_client, printer_pref)
                     printed += 1
-                except NIIMBOTClientError as exc:
+                except LabelPrinterError as exc:
                     first_error = str(exc)
                     break
         finally:
@@ -918,7 +934,7 @@ class OrdersPage(DataAwarePage):
         if first_error:
             QMessageBox.warning(
                 self,
-                tr("NIIMBOT Print Failed"),
+                tr("Print Failed"),
                 "Se crearon " + str(len(created_orders)) + " órdenes. "
                 + str(printed) + " etiqueta(s) impresas. Error: " + first_error,
             )
@@ -931,24 +947,12 @@ class OrdersPage(DataAwarePage):
             )
 
     def _silent_print_labels_niimbot(self, order_id: int, prefs: dict[str, str]) -> None:
-        client = NIIMBOTClient()
+        client = LabelPrinterClient()
+        printer_pref = str(prefs.get("printer") or "niimbot:B1")
         try:
-            available = client.list_printers()
-            printer = next((p for p in available if p.id and p.status.lower() != "offline"), None)
-        except NIIMBOTClientError as exc:
-            QMessageBox.warning(self, tr("NIIMBOT Print Failed"), str(exc))
-            return
-        if printer is None:
-            QMessageBox.warning(
-                self,
-                tr("NIIMBOT Print Failed"),
-                tr("No NIIMBOT printer found. Connect the printer and try again."),
-            )
-            return
-        try:
-            self._print_order_label_silent(order_id, prefs, client, printer.id)
-        except NIIMBOTClientError as exc:
-            QMessageBox.warning(self, tr("NIIMBOT Print Failed"), str(exc))
+            self._print_order_label_silent(order_id, prefs, client, printer_pref)
+        except LabelPrinterError as exc:
+            QMessageBox.warning(self, tr("Print Failed"), str(exc))
 
     def _silent_print_labels_system(self, order_id: int, prefs: dict[str, str], printer_pref: str) -> None:
         label_rows = self.database.get_order_label_entries(order_id)
@@ -990,7 +994,7 @@ class OrdersPage(DataAwarePage):
         self,
         order_id: int,
         prefs: dict[str, str],
-        client: NIIMBOTClient,
+        client: LabelPrinterClient,
         printer_id: str,
     ) -> None:
         label_rows = self.database.get_order_label_entries(order_id)
@@ -1003,6 +1007,7 @@ class OrdersPage(DataAwarePage):
         size_key = str(prefs.get("size") or "small_tall")
         payload_key = str(prefs.get("payload") or "order_only")
         copies = max(1, int(str(prefs.get("copies") or "1")))
+        density = max(1, min(5, int(str(prefs.get("density") or "4"))))
         panel_codes = self.database.get_order_panel_codes(order_id)
         if panel_codes:
             panel_extra_copies = self.database.get_panel_extra_copies()
@@ -1036,6 +1041,7 @@ class OrdersPage(DataAwarePage):
             text_lines=text_lines,
             show_barcode=show_barcode,
             copies=copies,
+            density=density,
         )
 
     def _build_order_import_plan(self, rows: list[dict[str, str]]) -> tuple[list[dict[str, object]], list[str]]:
@@ -1169,8 +1175,13 @@ class OrdersPage(DataAwarePage):
         normalized = client_name.strip()
         if not normalized:
             return None
-        for client_id, label in self.order_service.list_client_choices():
-            if str(label).strip().casefold() == normalized.casefold():
+        for client_id, label in self._client_choices:
+            label_str = str(label).strip()
+            if label_str.casefold() == normalized.casefold():
+                return int(client_id)
+            # label may be "Name (phone)" — also try matching against name only
+            name_part = label_str.split(" (")[0].strip()
+            if name_part.casefold() == normalized.casefold():
                 return int(client_id)
         return None
 
@@ -1325,10 +1336,13 @@ class OrdersPage(DataAwarePage):
         return doctor_id
 
     def _update_form_mode(self) -> None:
-        if self.edit_order_id is None:
-            self.save_button.setText(tr("Save Order"))
-        else:
+        editing = self.edit_order_id is not None
+        if editing:
             self.save_button.setText(tr("Update Order"))
+            self.cancel_edit_button.setText(tr("Cancel Edit"))
+        else:
+            self.save_button.setText(tr("Save Order"))
+        self.cancel_edit_button.setVisible(editing)
 
     def _load_order_record(self, record) -> None:
         self.edit_order_id = record.id
@@ -1549,11 +1563,7 @@ class OrdersPage(DataAwarePage):
         if order_id is None:
             return
         prefs = self.database.get_label_print_preferences()
-        printer_pref = str(prefs.get("printer") or "niimbot:B1")
-        if printer_pref.startswith("niimbot:"):
-            self._silent_print_labels_niimbot(order_id, prefs)
-        else:
-            self._silent_print_labels_system(order_id, prefs, printer_pref)
+        self._silent_print_labels_niimbot(order_id, prefs)
 
     def print_order_receipt(self) -> None:
         if self.edit_order_id is not None:
@@ -1633,8 +1643,21 @@ class OrdersPage(DataAwarePage):
         </html>
         """
 
-    def _maybe_broadcast_order(self, patient_id: int, order_id: int | None = None) -> None:
-        """Send order to any bidirectional-enabled instrument profiles, silently on error."""
+    def _maybe_broadcast_order(
+        self,
+        patient_id: int,
+        order_id: int | None = None,
+        *,
+        order_items: list | None = None,
+        doctor_name_override: str | None = None,
+    ) -> None:
+        """Send order to any bidirectional-enabled instrument profiles, silently on error.
+
+        By default the order's tests and doctor are read from the live form state
+        (self.selected_items / self.doctor_input). The Excel-import paths pass
+        order_items and doctor_name_override explicitly so imported orders are
+        broadcast with their own tests rather than whatever is in the form.
+        """
         try:
             configs = self.database.list_instrument_order_match_configs()
             enabled = [c for c in configs if c.broadcast_enabled]
@@ -1646,7 +1669,11 @@ class OrdersPage(DataAwarePage):
             patient_name = f"{patient.first_name} {patient.last_name}".strip() if patient else ""
             dob = str(patient.date_of_birth or "") if patient else ""
             sex = str(patient.sex or "") if patient else ""
-            doctor_name = self.doctor_input.text().strip()
+            doctor_name = (
+                self.doctor_input.text().strip()
+                if doctor_name_override is None
+                else doctor_name_override
+            )
 
             # Resolve the order number — used as sample_id for ASTM analyzers.
             order_number = ""
@@ -1674,9 +1701,16 @@ class OrdersPage(DataAwarePage):
             for cfg in enabled:
                 try:
                     protocol = (cfg.broadcast_protocol or "hl7_orm").lower()
-                    if protocol == "astm":
+                    # File-drop analyzers (e.g. CM250) have no TCP transport; the Go
+                    # engine writes their order file (.ANA) when a pending order is
+                    # pushed, so route them through the same engine endpoint as ASTM.
+                    writes_order_file = instrument_broadcast.profile_writes_order_files(
+                        cfg.instrument_profile
+                    )
+                    if protocol == "astm" or writes_order_file:
                         # Push pending order to the Go engine's in-memory store so it
-                        # can respond to ASTM Q record queries from the analyzer.
+                        # can respond to ASTM Q record queries from the analyzer and/or
+                        # write an order file for file-drop analyzers.
                         if not order_number:
                             continue
                         mappings = self.database.list_instrument_result_mappings(
@@ -1687,7 +1721,7 @@ class OrdersPage(DataAwarePage):
                             for m in mappings
                         }
                         tests = []
-                        for item in self.selected_items:
+                        for item in (self.selected_items if order_items is None else order_items):
                             if item.get("item_type") != "test":
                                 continue
                             tid = item.get("test_id")

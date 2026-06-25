@@ -58,6 +58,26 @@ def _get_transport_address(profile_id: str) -> tuple[str, int] | None:
         return None
 
 
+def profile_writes_order_files(profile_id: str) -> bool:
+    """Return True if the profile drops worklist files on push (e.g. CM250 .ANA).
+
+    File-drop analyzers have no TCP transport to broadcast to; instead the Go
+    engine writes an order file when a pending order is pushed. This reads the
+    profile's ``orders.write_on_push`` flag so the caller knows to route the
+    order through the engine's pending-orders endpoint rather than broadcast_order.
+    """
+    yaml_path = _find_profile_yaml(profile_id)
+    if yaml_path is None:
+        return False
+    try:
+        with open(yaml_path, encoding="utf-8") as f:
+            data = _yaml.safe_load(f)
+        return bool((data or {}).get("orders", {}).get("write_on_push"))
+    except Exception:
+        _log.debug("Error reading orders.write_on_push from %s", yaml_path, exc_info=True)
+        return False
+
+
 def _hl7_escape(value: str) -> str:
     return (value or "").replace("\\", "\\E\\").replace("|", "\\F\\").replace("^", "\\S\\").replace("&", "\\T\\")
 

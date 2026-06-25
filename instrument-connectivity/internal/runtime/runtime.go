@@ -746,7 +746,22 @@ func (a *App) writeOrderFile(req models.PendingOrderRequest) {
 		return
 	}
 	prof, err := a.profiles.Get(req.ProfileID)
-	if err != nil || !prof.Orders.WriteOnPush || strings.TrimSpace(prof.Orders.Directory) == "" {
+	if err != nil {
+		// The order was pushed for a profile the engine can't resolve; the file
+		// will silently never be written, so surface it rather than dropping it.
+		a.recordError(req.ProfileID, "", models.TransportFileDrop, err,
+			map[string]any{"stage": "write_order_file_profile", "sample_id": req.SampleID}, nil)
+		return
+	}
+	// Profiles that don't import orders as drop files (most HL7/ASTM analyzers)
+	// legitimately have no orders block — skip those quietly.
+	if !prof.Orders.WriteOnPush {
+		return
+	}
+	if strings.TrimSpace(prof.Orders.Directory) == "" {
+		a.recordError(prof.ID, "", models.TransportFileDrop,
+			fmt.Errorf("order %s: write_on_push set but no orders directory configured", req.SampleID),
+			map[string]any{"stage": "write_order_file_config", "sample_id": req.SampleID}, prof.Transport)
 		return
 	}
 	codes, skipped := instrumentCodesForOrder(prof, req.Tests)
@@ -756,20 +771,40 @@ func (a *App) writeOrderFile(req models.PendingOrderRequest) {
 			map[string]any{"stage": "write_order_file_mapping", "sample_id": req.SampleID}, prof.Transport)
 	}
 	if len(codes) == 0 {
+		// write_on_push is on but nothing mapped to an instrument code, so the
+		// analyzer would get no worklist file. Record it instead of returning
+		// silently — this is exactly the case that used to drop orders invisibly.
+		a.recordError(prof.ID, "", models.TransportFileDrop,
+			fmt.Errorf("order %s: no instrument codes resolved from tests %v; order file not written", req.SampleID, req.Tests),
+			map[string]any{"stage": "write_order_file_no_codes", "sample_id": req.SampleID}, prof.Transport)
 		return
 	}
-	path, err := orderfile.WriteOrder(orderfile.Config{
+	// Retry transient write failures (e.g. the UNC share is briefly unreachable
+	// or locked at the moment the order is pushed) before giving up.
+	cfg := orderfile.Config{
 		Directory:     prof.Orders.Directory,
 		FileExtension: prof.Orders.FileExtension,
 		WriteOnPush:   prof.Orders.WriteOnPush,
-	}, orderfile.OrderRecord{
+	}
+	rec := orderfile.OrderRecord{
 		OrderNumber: strings.TrimSpace(req.SampleID),
 		PatientName: req.PatientName,
 		TestCodes:   codes,
-	})
+	}
+	const maxAttempts = 3
+	var path string
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		path, err = orderfile.WriteOrder(cfg, rec)
+		if err == nil {
+			break
+		}
+		if attempt < maxAttempts {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+	}
 	if err != nil {
 		a.recordError(prof.ID, "", models.TransportFileDrop, err,
-			map[string]any{"stage": "write_order_file", "sample_id": req.SampleID}, prof.Transport)
+			map[string]any{"stage": "write_order_file", "sample_id": req.SampleID, "attempts": maxAttempts}, prof.Transport)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "[ORDER] wrote order file for sample %s -> %s\n", req.SampleID, path)
