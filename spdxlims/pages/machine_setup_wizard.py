@@ -86,7 +86,7 @@ class _SectionLabel(QLabel):
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
         self.setWordWrap(True)
-        self.setStyleSheet("color: #555; font-size: 13px; padding: 4px 0 10px 0;")
+        self.setStyleSheet("color: #A8B3C2; font-size: 13px; padding: 4px 0 10px 0;")
 
 
 class MachineSetupWizard(QDialog):
@@ -120,10 +120,10 @@ class MachineSetupWizard(QDialog):
 
         self._title_label = QLabel()
         self._title_label.setStyleSheet(
-            "font-size: 17px; font-weight: bold; color: #222; padding-bottom: 2px;"
+            "font-size: 17px; font-weight: bold; color: #F0F4FF; padding-bottom: 2px;"
         )
         self._step_label = QLabel()
-        self._step_label.setStyleSheet("color: #999; font-size: 11px; padding-bottom: 10px;")
+        self._step_label.setStyleSheet("color: #697789; font-size: 11px; padding-bottom: 10px;")
 
         root.addWidget(self._title_label)
         root.addWidget(self._step_label)
@@ -224,7 +224,7 @@ class MachineSetupWizard(QDialog):
         serial_form.addRow("Puerto serial:", serial_btn_row)
         self._serial_hint = QLabel("Si no sabe cuál es el puerto, haga clic en 'Buscar puertos'.")
         self._serial_hint.setWordWrap(True)
-        self._serial_hint.setStyleSheet("color: #777; font-size: 11px;")
+        self._serial_hint.setStyleSheet("color: #A8B3C2; font-size: 11px;")
         serial_form.addRow(self._serial_hint)
         layout.addWidget(self._serial_group)
 
@@ -284,13 +284,13 @@ class MachineSetupWizard(QDialog):
         self._capture_protocol_label.setStyleSheet("font-size: 13px;")
         self._capture_codes_label = QLabel()
         self._capture_codes_label.setWordWrap(True)
-        self._capture_codes_label.setStyleSheet("color: #555; font-size: 12px;")
+        self._capture_codes_label.setStyleSheet("color: #A8B3C2; font-size: 12px;")
         result_layout.addWidget(self._capture_protocol_label)
         result_layout.addWidget(self._capture_codes_label)
         self._capture_result_group.hide()
 
         self._skip_capture_btn = QPushButton("Continuar sin detección automática")
-        self._skip_capture_btn.setStyleSheet("color: #777;")
+        self._skip_capture_btn.setStyleSheet("color: #A8B3C2;")
         self._skip_capture_btn.clicked.connect(self._skip_capture)
         self._skip_capture_btn.hide()
 
@@ -326,7 +326,7 @@ class MachineSetupWizard(QDialog):
         layout.addWidget(scroll, 1)
 
         add_row_btn = QPushButton("+ Agregar código manualmente")
-        add_row_btn.setStyleSheet("color: #555;")
+        add_row_btn.setStyleSheet("color: #A8B3C2;")
         add_row_btn.clicked.connect(lambda: self._add_mapping_row("", "", ""))
         layout.addWidget(add_row_btn)
         return page
@@ -445,7 +445,7 @@ class MachineSetupWizard(QDialog):
             )
             self._engine_status_label.setStyleSheet(
                 "font-size: 12px; padding: 8px; border-radius: 4px; "
-                "background: #eafaf1; color: #1a7a44;"
+                "background: #0D2B1A; color: #5ad08c;"
             )
         else:
             self._engine_status_label.setText(
@@ -455,7 +455,7 @@ class MachineSetupWizard(QDialog):
             )
             self._engine_status_label.setStyleSheet(
                 "font-size: 12px; padding: 8px; border-radius: 4px; "
-                "background: #fff8e1; color: #7a5c00;"
+                "background: #2B1E00; color: #f5c451;"
             )
 
     # ------------------------------------------------------------------
@@ -698,7 +698,7 @@ class MachineSetupWizard(QDialog):
             "¡Conexión exitosa! Haga clic en 'Siguiente' para asignar los análisis."
         )
         self._capture_status.setStyleSheet(
-            "font-size: 13px; padding: 6px 0; color: #1a7a44; font-weight: bold;"
+            "font-size: 13px; padding: 6px 0; color: #5ad08c; font-weight: bold;"
         )
 
     def _skip_capture(self) -> None:
@@ -758,7 +758,7 @@ class MachineSetupWizard(QDialog):
 
         remove_btn = QPushButton("✕")
         remove_btn.setFixedSize(26, 26)
-        remove_btn.setStyleSheet("color: #cc4444; border: none;")
+        remove_btn.setStyleSheet("color: #ff7b7b; border: none;")
 
         row_layout.addWidget(code_edit)
         row_layout.addWidget(name_edit)
@@ -872,7 +872,7 @@ class MachineSetupWizard(QDialog):
             parts.append("Configuración bidireccional habilitada.")
         self._save_status.setText("  ".join(parts))
         self._save_status.setStyleSheet(
-            "font-size: 12px; padding: 6px 0; color: #1a7a44; font-weight: bold;"
+            "font-size: 12px; padding: 6px 0; color: #5ad08c; font-weight: bold;"
         )
 
     def _connection_label(self) -> str:

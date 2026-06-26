@@ -171,10 +171,10 @@ class EquipmentPage(DataAwarePage):
         setup_group = QGroupBox()
         setup_layout = QFormLayout(setup_group)
         self.connection_mode = QComboBox()
-        self.connection_mode.addItem("Analyzer sends to this PC", "network_inbound")
-        self.connection_mode.addItem("This PC connects to analyzer", "network_outbound")
-        self.connection_mode.addItem("Serial / USB adapter", "serial")
-        self.connection_mode.addItem("File folder", "file_drop")
+        self.connection_mode.addItem(tr("Analyzer sends to this PC"), "network_inbound")
+        self.connection_mode.addItem(tr("This PC connects to analyzer"), "network_outbound")
+        self.connection_mode.addItem(tr("Serial / USB adapter"), "serial")
+        self.connection_mode.addItem(tr("File folder"), "file_drop")
         self.setup_ip = QLineEdit()
         self.setup_port = QLineEdit()
         self.setup_serial = QLineEdit()
@@ -195,9 +195,9 @@ class EquipmentPage(DataAwarePage):
         scan_layout = QVBoxLayout(scan_group)
         scan_form = QFormLayout()
         self.scan_mode = QComboBox()
-        self.scan_mode.addItem("Quick scan", "quick")
-        self.scan_mode.addItem("Full subnet scan", "full")
-        self.scan_mode.addItem("Custom", "custom")
+        self.scan_mode.addItem(tr("Quick scan"), "quick")
+        self.scan_mode.addItem(tr("Full subnet scan"), "full")
+        self.scan_mode.addItem(tr("Custom"), "custom")
         self.scan_cidrs = QLineEdit()
         self.scan_ports = QLineEdit()
         self.scan_host_limit = QLineEdit()
@@ -387,7 +387,7 @@ class EquipmentPage(DataAwarePage):
         self.next_maintenance_date.setPlaceholderText("YYYY-MM-DD")
         self.scan_cidrs.setPlaceholderText("10.0.0.0/24")
         self.scan_ports.setPlaceholderText("5100,5000,2575,3001,4000,8080,9100")
-        self.scan_host_limit.setPlaceholderText("64 or 254")
+        self.scan_host_limit.setPlaceholderText(tr("64 or 254"))
         self.setup_summary.setText(tr("Choose how the analyzer connects. The page will fill the right fields and notes for the equipment record."))
         self.scan_status.setText(tr("Run discovery to see connected network devices and serial ports."))
         self.mapping_status.setText(tr("Map analyzer result codes to LIMS tests here. Saved mappings are used when importing instrument results."))
@@ -399,6 +399,22 @@ class EquipmentPage(DataAwarePage):
         self.status.addItem(tr("Retired"), "retired")
         status_index = self.status.findData(current_status)
         self.status.setCurrentIndex(status_index if status_index >= 0 else 0)
+        current_mode = self.connection_mode.currentData()
+        self.connection_mode.clear()
+        self.connection_mode.addItem(tr("Analyzer sends to this PC"), "network_inbound")
+        self.connection_mode.addItem(tr("This PC connects to analyzer"), "network_outbound")
+        self.connection_mode.addItem(tr("Serial / USB adapter"), "serial")
+        self.connection_mode.addItem(tr("File folder"), "file_drop")
+        mode_index = self.connection_mode.findData(current_mode)
+        self.connection_mode.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        current_scan_mode = self.scan_mode.currentData()
+        self.scan_mode.clear()
+        self.scan_mode.addItem(tr("Quick scan"), "quick")
+        self.scan_mode.addItem(tr("Full subnet scan"), "full")
+        self.scan_mode.addItem(tr("Custom"), "custom")
+        scan_index = self.scan_mode.findData(current_scan_mode)
+        self.scan_mode.setCurrentIndex(scan_index if scan_index >= 0 else 0)
+        self.scan_host_limit.setPlaceholderText(tr("64 or 254"))
         self.table.setHorizontalHeaderLabels([tr("Name"), tr("Type"), tr("Model"), tr("Serial"), tr("Location"), tr("Status"), tr("Next Maintenance"), tr("ID")])
         self.discovery_table.setHorizontalHeaderLabels([tr("Source"), tr("Device"), tr("Address"), tr("Ports"), tr("Likely Profile")])
         self.mapping_table_group.setTitle(self.mapping_profile.currentText().strip() or tr("Saved Mappings"))
@@ -425,7 +441,8 @@ class EquipmentPage(DataAwarePage):
             yaml_profiles = {p.stem for p in _PROFILES_DIR.glob("*.yaml")}
         except Exception:
             pass
-        for profile in sorted(db_profiles | yaml_profiles):
+        builtin_profiles = set(self.ANALYZER_CODE_CHOICES.keys())
+        for profile in sorted(db_profiles | yaml_profiles | builtin_profiles):
             self.mapping_profile.addItem(profile)
         self.mapping_profile.setCurrentText(current)
         self.mapping_profile.blockSignals(False)
@@ -604,18 +621,23 @@ class EquipmentPage(DataAwarePage):
         profile = self.mapping_profile.currentText().strip()
         self.mapping_table_group.setTitle(profile or tr("Saved Mappings"))
         mappings = self.database.list_instrument_result_mappings(instrument_profile=profile)
-        mapped_exact = {m.raw_code.upper() for m in mappings}
-        mapped_stripped = {m.raw_code.upper().replace("%", "").replace("#", "") for m in mappings}
+        # Saved raw_codes are stored normalized (uppercased, spaces/punctuation
+        # stripped by _normalize_instrument_code), so compare the profile patterns
+        # with the SAME normalization. Otherwise space-bearing codes like "GLU L"
+        # never match the stored "GLUL" and show as "Not mapped" despite being mapped.
+        norm = self.database._normalize_instrument_code
+        mapped_exact = {norm(m.raw_code) for m in mappings}
+        mapped_stripped = {code.replace("%", "").replace("#", "") for code in mapped_exact}
         alias_groups = self._get_alias_groups(profile)
         known_codes = self._get_profile_codes(profile)
 
         def _is_covered(code: str) -> bool:
-            up = code.upper()
-            if up in mapped_exact:
+            normalized = norm(code)
+            if normalized in mapped_exact:
                 return True
-            if up.replace("%", "").replace("#", "") in mapped_stripped:
+            if normalized.replace("%", "").replace("#", "") in mapped_stripped:
                 return True
-            return bool(alias_groups.get(up, frozenset()) & mapped_exact)
+            return any(norm(alias) in mapped_exact for alias in alias_groups.get(code.upper(), frozenset()))
 
         # One entry per alias group; later entries (numeric aliases) overwrite earlier ones
         # so the numeric code is shown rather than the alphabetic primary code.
@@ -750,7 +772,7 @@ class EquipmentPage(DataAwarePage):
         profile = self.setup_profile.text().strip()
         notes = []
         if mode in {"network_inbound", "network_outbound"}:
-            self.equipment_type.setText("Analyzer")
+            self.equipment_type.setText(tr("Analyzer"))
             if ip:
                 self.location.setText(ip)
                 self.scan_cidrs.setText(self._cidr_from_ip(ip))
@@ -758,21 +780,21 @@ class EquipmentPage(DataAwarePage):
                 self.scan_ports.setText(self._merge_csv(self.scan_ports.text(), port))
             endpoint = f"{ip}:{port}" if ip and port else port
             if mode == "network_inbound":
-                notes.append(f"Connectivity: analyzer sends results to this PC on 0.0.0.0:{port or '<port>'}.")
+                notes.append(f"Conectividad: el analizador envía resultados a esta PC en 0.0.0.0:{port or '<puerto>'}.")
             else:
-                notes.append(f"Connectivity: this PC connects to analyzer at {endpoint or '<ip:port>'}.")
+                notes.append(f"Conectividad: esta PC se conecta al analizador en {endpoint or '<ip:puerto>'}.")
         elif mode == "serial":
-            self.equipment_type.setText("Analyzer")
+            self.equipment_type.setText(tr("Analyzer"))
             if serial:
                 self.location.setText(serial)
                 self.serial_number.setText(self.serial_number.text() or serial)
-            notes.append(f"Connectivity: serial port {serial or '<COM port>'}, common start 9600 8N1.")
+            notes.append(f"Conectividad: puerto serial {serial or '<puerto COM>'}, inicio habitual 9600 8N1.")
         else:
-            self.equipment_type.setText("Analyzer")
-            notes.append("Connectivity: file drop / watched folder.")
+            self.equipment_type.setText(tr("Analyzer"))
+            notes.append("Conectividad: carpeta de archivos / carpeta vigilada.")
         if profile:
             self.mapping_profile.setCurrentText(profile)
-            notes.append(f"Instrument profile: {profile}.")
+            notes.append(f"Perfil del instrumento: {profile}.")
         self._append_notes(notes)
         self.setup_summary.setText(" ".join(notes) if notes else tr("Setup hints applied."))
 
@@ -808,7 +830,7 @@ class EquipmentPage(DataAwarePage):
         profile = str(device.get("profile") or "")
         if not self.name.text().strip():
             self.name.setText(str(device.get("name") or address))
-        self.equipment_type.setText("Analyzer" if source in {"network", "serial"} else source.title())
+        self.equipment_type.setText(tr("Analyzer") if source in {"network", "serial"} else source.title())
         self.location.setText(address)
         if source == "serial":
             self.serial_number.setText(str(device.get("serial") or address))
@@ -1100,15 +1122,15 @@ class EquipmentPage(DataAwarePage):
         self.order_match_profile.currentTextChanged.connect(self._on_order_match_profile_changed)
 
         self.order_match_instrument_field = QComboBox()
-        self.order_match_instrument_field.addItem("Sample ID — Número de muestra (OBR-3)", "sample_id")
-        self.order_match_instrument_field.addItem("Accession ID (OBR-2)", "accession_id")
+        self.order_match_instrument_field.addItem(tr("Sample ID — Número de muestra (OBR-3)"), "sample_id")
+        self.order_match_instrument_field.addItem(tr("Accession ID (OBR-2)"), "accession_id")
         self.order_match_instrument_field.addItem("Run ID / Código de barras", "analyzer_run_id")
-        self.order_match_instrument_field.addItem("Patient ID", "patient_id")
+        self.order_match_instrument_field.addItem(tr("Patient ID"), "patient_id")
 
         self.order_match_order_field = QComboBox()
         self.order_match_order_field.addItem("Número de orden (order_number)", "order_number")
-        self.order_match_order_field.addItem("Sample ID", "sample_id")
-        self.order_match_order_field.addItem("Accession ID", "accession_id")
+        self.order_match_order_field.addItem(tr("Sample ID"), "sample_id")
+        self.order_match_order_field.addItem(tr("Accession ID"), "accession_id")
 
         self.order_match_auto_import = QCheckBox("Importar resultados automáticamente")
         self.order_match_auto_import.setChecked(True)
