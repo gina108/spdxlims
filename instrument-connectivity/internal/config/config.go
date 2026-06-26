@@ -1,6 +1,7 @@
 package config
 
 import (
+    "os"
     "path/filepath"
     "time"
 )
@@ -36,7 +37,7 @@ func Default(dataDir, listenAddr string) Config {
         CaptureDir: filepath.Join(dataDir, "captures"),
         BundleDir: filepath.Join(dataDir, "support-bundles"),
         ListenAddr: listenAddr,
-        UIAssetsDir: filepath.Join("web"),
+        UIAssetsDir: resolveUIAssetsDir(),
         RetentionDays: 30,
         SessionEventMax: 5000,
         RuntimeErrorMax: 2000,
@@ -49,4 +50,25 @@ func Default(dataDir, listenAddr string) Config {
         NetworkScanHostLimit: 64,
         AutoResume: true,
     }
+}
+
+// resolveUIAssetsDir finds the web/ UI assets directory. It tries paths relative
+// to the running executable first (works for service and manual binary runs where
+// CWD may differ from the install root), then falls back to a CWD-relative path
+// (which covers `go run` where the working directory is set to the source root).
+func resolveUIAssetsDir() string {
+    if exe, err := os.Executable(); err == nil {
+        exeDir := filepath.Dir(exe)
+        // Deployed layout: bin/exe with web/ in the parent (package root).
+        // Dev layout: instrument-connectivity/bin/exe with web/ one level up.
+        for _, candidate := range []string{
+            filepath.Join(exeDir, "..", "web"),
+            filepath.Join(exeDir, "web"),
+        } {
+            if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+                return filepath.Clean(candidate)
+            }
+        }
+    }
+    return "web"
 }

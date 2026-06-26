@@ -408,7 +408,30 @@ func StartProfileWorker(p profile.Profile, handler PayloadHandler, onError Error
 	if len(qhs) > 0 {
 		qh = qhs[0]
 	}
-	switch strings.ToLower(strings.TrimSpace(p.Transport.Type)) {
+	transportType := strings.ToLower(strings.TrimSpace(p.Transport.Type))
+	// For multi-record protocols over TCP/serial, each transmission may contain
+	// several patient records concatenated as newline-separated lines. Wrap the
+	// handler to dispatch each line as its own payload so every patient gets a
+	// separate capture and can be matched to its own LIMS order independently.
+	// (File drop already does this splitting inside startFileDropWorker.)
+	strategy := strings.ToLower(strings.TrimSpace(p.Parsing.Strategy))
+	if (strategy == "cm250" || strategy == "wiener_res") && transportType != "file_drop" {
+		orig := handler
+		handler = func(raw []byte, deviceID string, t models.TransportType) error {
+			lines := splitNonEmptyLines(raw)
+			if len(lines) <= 1 {
+				return orig(raw, deviceID, t)
+			}
+			var lastErr error
+			for _, line := range lines {
+				if err := orig(line, deviceID, t); err != nil {
+					lastErr = err
+				}
+			}
+			return lastErr
+		}
+	}
+	switch transportType {
 	case "file_drop":
 		return startFileDropWorker(p, handler, onError, onState)
 	case "tcp_server":
@@ -445,6 +468,82 @@ func startFileDropWorker(p profile.Profile, handler PayloadHandler, onError Erro
 		}
 	}
 
+	processFile := func(path string) {
+		if onState != nil {
+			onState("processing", map[string]any{"path": path})
+		}
+		raw, err := readFileDropWhenReady(path)
+		if err != nil {
+			onError(err, map[string]any{"stage": "file_drop_read", "path": path})
+			if onState != nil {
+				onState("error", map[string]any{"path": path})
+			}
+			return
+		}
+		if len(raw) == 0 {
+			return
+		}
+		// CM250 files contain one patient record per line. Split and dispatch each
+		// line as its own payload so every patient gets a separate capture and can
+		// be matched to its own LIMS order independently.
+		if strings.EqualFold(strings.TrimSpace(p.Parsing.Strategy), "cm250") {
+			lines := splitNonEmptyLines(raw)
+			if len(lines) > 1 {
+				anyErr := false
+				for _, line := range lines {
+					if err := handler(line, filepath.Base(path), models.TransportFileDrop); err != nil {
+						onError(err, map[string]any{"stage": "file_drop_process", "path": path})
+						anyErr = true
+					}
+				}
+				if anyErr {
+					if archErr := archiveFileDropFile(path, "errors"); archErr != nil {
+						onError(archErr, map[string]any{"stage": "file_drop_archive", "path": path})
+					}
+					if onState != nil {
+						onState("error", map[string]any{"path": path})
+					}
+				} else {
+					if archErr := archiveFileDropFile(path, "imported"); archErr != nil {
+						onError(archErr, map[string]any{"stage": "file_drop_archive", "path": path})
+					}
+					if onState != nil {
+						onState("active", map[string]any{"path": path})
+					}
+				}
+				return
+			}
+		}
+		if err := handler(raw, filepath.Base(path), models.TransportFileDrop); err != nil {
+			onError(err, map[string]any{"stage": "file_drop_process", "path": path})
+			if archErr := archiveFileDropFile(path, "errors"); archErr != nil {
+				onError(archErr, map[string]any{"stage": "file_drop_archive", "path": path})
+			}
+			if onState != nil {
+				onState("error", map[string]any{"path": path})
+			}
+		} else {
+			if archErr := archiveFileDropFile(path, "imported"); archErr != nil {
+				onError(archErr, map[string]any{"stage": "file_drop_archive", "path": path})
+			}
+			if onState != nil {
+				onState("active", map[string]any{"path": path})
+			}
+		}
+	}
+
+	// Process files already in the watch directories so files that arrived
+	// before the watcher started are not silently skipped.
+	for _, dir := range directories {
+		cleaned := NormalizeWatchedPath(dir)
+		entries, _ := os.ReadDir(cleaned)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				processFile(filepath.Join(cleaned, entry.Name()))
+			}
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	recent := map[string]time.Time{}
@@ -472,7 +571,7 @@ func startFileDropWorker(p profile.Profile, handler PayloadHandler, onError Erro
 				if event.Op&(1|2|8|16) == 0 {
 					continue
 				}
-				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+				if info, err := os.Stat(event.Name); err != nil || info.IsDir() {
 					continue
 				}
 				mu.Lock()
@@ -482,28 +581,7 @@ func startFileDropWorker(p profile.Profile, handler PayloadHandler, onError Erro
 				}
 				recent[event.Name] = time.Now()
 				mu.Unlock()
-				if onState != nil {
-					onState("processing", map[string]any{"path": event.Name})
-				}
-				raw, err := os.ReadFile(event.Name)
-				if err != nil {
-					onError(err, map[string]any{"stage": "file_drop_read", "path": event.Name})
-					if onState != nil {
-						onState("error", map[string]any{"path": event.Name})
-					}
-					continue
-				}
-				if len(raw) == 0 {
-					continue
-				}
-				if err := handler(raw, filepath.Base(event.Name), models.TransportFileDrop); err != nil {
-					onError(err, map[string]any{"stage": "file_drop_process", "path": event.Name})
-					if onState != nil {
-						onState("error", map[string]any{"path": event.Name})
-					}
-				} else if onState != nil {
-					onState("active", map[string]any{"path": event.Name})
-				}
+				processFile(event.Name)
 			case err, ok := <-watcher.Errors():
 				if !ok {
 					return
@@ -520,11 +598,117 @@ func startFileDropWorker(p profile.Profile, handler PayloadHandler, onError Erro
 					}
 				}
 				mu.Unlock()
+				// Fallback poll: fsnotify can silently miss events on Windows
+				// (network shares, certain copy tools). Re-scan every 30 s so
+				// files that were dropped without a watcher event still get picked up.
+				for _, dir := range directories {
+					cleaned := NormalizeWatchedPath(dir)
+					entries, _ := os.ReadDir(cleaned)
+					for _, entry := range entries {
+						if entry.IsDir() {
+							continue
+						}
+						path := filepath.Join(cleaned, entry.Name())
+						mu.Lock()
+						_, seen := recent[path]
+						mu.Unlock()
+						if !seen {
+							processFile(path)
+						}
+					}
+				}
 			}
 		}
 	}()
 
 	return &loopWorker{cancel: cancel, done: done}, nil
+}
+
+// readFileDropWhenReady reads a freshly dropped instrument file, tolerating the
+// brief window where the analyzer is still writing it. Instruments such as the
+// CM250 trigger the filesystem watch event the instant they begin writing the
+// .RES file, so an immediate read fails with a Windows sharing violation
+// ("being used by another process"). We wait for the file size to settle and
+// retry the read with a short backoff so we only parse fully-written files.
+func readFileDropWhenReady(path string) ([]byte, error) {
+	const (
+		maxAttempts = 20
+		delay       = 250 * time.Millisecond
+	)
+	var (
+		lastErr     error
+		lastSize    int64 = -1
+		stableCount int
+	)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			lastErr = statErr
+			time.Sleep(delay)
+			continue
+		}
+		// Only attempt a read once the size has stopped changing across two
+		// consecutive checks, so we don't grab a half-written file.
+		if info.Size() != lastSize {
+			lastSize = info.Size()
+			stableCount = 0
+			time.Sleep(delay)
+			continue
+		}
+		if stableCount < 2 {
+			stableCount++
+			time.Sleep(delay)
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			return raw, nil
+		}
+		// Writer still holds the file open; back off and retry.
+		lastErr = err
+		time.Sleep(delay)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("file %s not ready after %d attempts", path, maxAttempts)
+	}
+	return nil, lastErr
+}
+
+func archiveFileDropFile(src, subdir string) error {
+	dir := filepath.Join(filepath.Dir(src), subdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("archive mkdir %s: %w", dir, err)
+	}
+	stamp := time.Now().Format("20060102_150405")
+	base := filepath.Base(src)
+	ext := filepath.Ext(base)
+	name := base[:len(base)-len(ext)] + "_" + stamp + ext
+	dst := filepath.Join(dir, name)
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	// Rename can fail across devices or on locked network shares — fall back to
+	// copy then delete so the file is still removed from the watch directory.
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("archive open %s: %w", src, err)
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		_ = in.Close()
+		return fmt.Errorf("archive create %s: %w", dst, err)
+	}
+	_, copyErr := io.Copy(out, in)
+	_ = in.Close()
+	_ = out.Close()
+	if copyErr != nil {
+		_ = os.Remove(dst)
+		return fmt.Errorf("archive copy %s: %w", src, copyErr)
+	}
+	if err := os.Remove(src); err != nil {
+		return fmt.Errorf("archive remove %s: %w", src, err)
+	}
+	return nil
 }
 
 func startTCPServerWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) (Worker, error) {
@@ -987,4 +1171,17 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func splitNonEmptyLines(raw []byte) [][]byte {
+	normalized := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
+	parts := bytes.Split(normalized, []byte("\n"))
+	result := make([][]byte, 0, len(parts))
+	for _, line := range parts {
+		if len(bytes.TrimSpace(line)) > 0 {
+			result = append(result, line)
+		}
+	}
+	return result
 }

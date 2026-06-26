@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS runtime_status (profile_id TEXT NOT NULL, device_id T
 CREATE TABLE IF NOT EXISTS runtime_errors (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, device_id TEXT NOT NULL, transport_type TEXT NOT NULL, message TEXT NOT NULL, detail_json TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS unmapped_observations (id TEXT PRIMARY KEY, capture_id TEXT NOT NULL, profile_id TEXT NOT NULL, device_id TEXT NOT NULL, instrument_test_code TEXT NOT NULL, instrument_test_name TEXT, value_raw TEXT NOT NULL, units_raw TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS maintenance_status (id INTEGER PRIMARY KEY CHECK (id = 1), last_cleanup_json TEXT, next_cleanup_at TEXT, cleanup_interval TEXT, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS results (profile_id TEXT NOT NULL, analyzer_run_id TEXT NOT NULL, device_id TEXT NOT NULL, capture_id TEXT NOT NULL, patient_id TEXT, sample_id TEXT, accession_id TEXT, observations_json TEXT NOT NULL, first_received_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (profile_id, analyzer_run_id));
+CREATE TABLE IF NOT EXISTS results (profile_id TEXT NOT NULL, analyzer_run_id TEXT NOT NULL, run_date TEXT NOT NULL DEFAULT '', device_id TEXT NOT NULL, capture_id TEXT NOT NULL, patient_id TEXT, sample_id TEXT, accession_id TEXT, observations_json TEXT NOT NULL, first_received_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (profile_id, analyzer_run_id, run_date));
 CREATE TABLE IF NOT EXISTS network_devices (device_id TEXT PRIMARY KEY, host TEXT, ip TEXT NOT NULL, cidr TEXT, interface_name TEXT, mac TEXT, open_ports_json TEXT, reachability TEXT NOT NULL, probe_latency_ms INTEGER, banner TEXT, banner_protocol TEXT, likely_protocols_json TEXT, seen_count INTEGER NOT NULL DEFAULT 1, stability_score REAL NOT NULL DEFAULT 0, metadata_json TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS network_device_sightings (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, cidr TEXT, interface_name TEXT, probe_latency_ms INTEGER, open_ports_json TEXT, banner_protocol TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS network_device_links (network_device_id TEXT NOT NULL, profile_id TEXT NOT NULL, runtime_device_id TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.5, seen_count INTEGER NOT NULL DEFAULT 1, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (network_device_id, profile_id, runtime_device_id));
@@ -184,6 +184,49 @@ CREATE TABLE IF NOT EXISTS network_link_audit (id TEXT PRIMARY KEY, action TEXT 
 		`ALTER TABLE network_device_links ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5`,
 	} {
 		_, _ = s.DB.Exec(stmt)
+	}
+	// Migrate results table to include run_date in the primary key so that
+	// instruments that reuse run_id numbers (counter wrap-around) don't
+	// overwrite a previous patient's results row.
+	var runDateCount int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('results') WHERE name='run_date'`).Scan(&runDateCount)
+	if runDateCount == 0 {
+		tx, err := s.DB.Begin()
+		if err == nil {
+			_, err = tx.Exec(`CREATE TABLE results_v2 (
+				profile_id TEXT NOT NULL,
+				analyzer_run_id TEXT NOT NULL,
+				run_date TEXT NOT NULL DEFAULT '',
+				device_id TEXT NOT NULL,
+				capture_id TEXT NOT NULL,
+				patient_id TEXT,
+				sample_id TEXT,
+				accession_id TEXT,
+				observations_json TEXT NOT NULL,
+				first_received_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (profile_id, analyzer_run_id, run_date)
+			)`)
+		}
+		if err == nil {
+			_, err = tx.Exec(`INSERT OR IGNORE INTO results_v2
+				SELECT profile_id, analyzer_run_id,
+				       COALESCE(date(first_received_at), '') AS run_date,
+				       device_id, capture_id, patient_id, sample_id, accession_id,
+				       observations_json, first_received_at, updated_at
+				FROM results`)
+		}
+		if err == nil {
+			_, err = tx.Exec(`DROP TABLE results`)
+		}
+		if err == nil {
+			_, err = tx.Exec(`ALTER TABLE results_v2 RENAME TO results`)
+		}
+		if err != nil {
+			_ = tx.Rollback()
+		} else {
+			_ = tx.Commit()
+		}
 	}
 	return nil
 }
@@ -1374,6 +1417,7 @@ func parseOptionalTime(v string) *time.Time {
 type Result struct {
 	ProfileID       string               `json:"profile_id"`
 	AnalyzerRunID   string               `json:"analyzer_run_id"`
+	RunDate         string               `json:"run_date"`
 	DeviceID        string               `json:"device_id"`
 	CaptureID       string               `json:"capture_id"`
 	PatientID       string               `json:"patient_id,omitempty"`
@@ -1395,12 +1439,13 @@ func (s *Store) UpsertResult(msg models.InstrumentMessage, captureID string, rec
 	if strings.TrimSpace(msg.AnalyzerRunID) == "" {
 		return nil
 	}
+	runDate := receivedAt.UTC().Format("2006-01-02")
 	obsJSON, _ := json.Marshal(msg.Observations)
 	now := receivedAt.UTC().Format(time.RFC3339Nano)
 	_, err := s.DB.Exec(`
-		INSERT INTO results (profile_id, analyzer_run_id, device_id, capture_id, patient_id, sample_id, accession_id, observations_json, first_received_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(profile_id, analyzer_run_id) DO UPDATE SET
+		INSERT INTO results (profile_id, analyzer_run_id, run_date, device_id, capture_id, patient_id, sample_id, accession_id, observations_json, first_received_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(profile_id, analyzer_run_id, run_date) DO UPDATE SET
 			device_id = excluded.device_id,
 			capture_id = excluded.capture_id,
 			patient_id = excluded.patient_id,
@@ -1408,7 +1453,7 @@ func (s *Store) UpsertResult(msg models.InstrumentMessage, captureID string, rec
 			accession_id = excluded.accession_id,
 			observations_json = excluded.observations_json,
 			updated_at = excluded.updated_at`,
-		msg.SourceProfileID, msg.AnalyzerRunID, msg.SourceDeviceID, captureID,
+		msg.SourceProfileID, msg.AnalyzerRunID, runDate, msg.SourceDeviceID, captureID,
 		msg.PatientID, msg.SampleID, msg.AccessionID, string(obsJSON), now, now)
 	return err
 }
@@ -1432,7 +1477,7 @@ func (s *Store) ListResults(filter ResultFilter) ([]Result, error) {
 		clauses = append(clauses, "updated_at >= ?")
 		args = append(args, filter.Since.UTC().Format(time.RFC3339Nano))
 	}
-	query := `SELECT profile_id, analyzer_run_id, device_id, capture_id, COALESCE(patient_id,''), COALESCE(sample_id,''), COALESCE(accession_id,''), observations_json, first_received_at, updated_at FROM results`
+	query := `SELECT profile_id, analyzer_run_id, COALESCE(run_date,''), device_id, capture_id, COALESCE(patient_id,''), COALESCE(sample_id,''), COALESCE(accession_id,''), observations_json, first_received_at, updated_at FROM results`
 	if len(clauses) > 0 {
 		query += ` WHERE ` + strings.Join(clauses, ` AND `)
 	}
@@ -1447,7 +1492,7 @@ func (s *Store) ListResults(filter ResultFilter) ([]Result, error) {
 	for rows.Next() {
 		var r Result
 		var obsJSON, firstReceived, updatedAt string
-		if err := rows.Scan(&r.ProfileID, &r.AnalyzerRunID, &r.DeviceID, &r.CaptureID, &r.PatientID, &r.SampleID, &r.AccessionID, &obsJSON, &firstReceived, &updatedAt); err != nil {
+		if err := rows.Scan(&r.ProfileID, &r.AnalyzerRunID, &r.RunDate, &r.DeviceID, &r.CaptureID, &r.PatientID, &r.SampleID, &r.AccessionID, &obsJSON, &firstReceived, &updatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(obsJSON), &r.Observations)

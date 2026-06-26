@@ -15,6 +15,13 @@ transport:
 parsing:
   strategy: line_text
 mapping:
+  value_normalization:
+    neg: Negativo
+    negative: Negativo
+    pos: Positivo
+    positive: Positivo
+    trace: Trazas
+    normal: Normal
   test_code_aliases:
     LEU:
       - LEU
@@ -42,20 +49,59 @@ mapping:
       pattern: LEU
       canonical_assay: Leukocytes
       lis_test_id: LIS-UA-LEU
+      semiquant_map:
+        "-neg":
+          display: Negativo
+        "+-":
+          display: Trazas
+          value: 15
+        "1+":
+          display: "Positivo+"
+          value: 70
+        "2+":
+          display: "Positivo++"
+          value: 125
+        "3+":
+          display: "Positivo+++"
+          value: 500
     - match_type: exact
       pattern: NIT
       canonical_assay: Nitrite
       lis_test_id: LIS-UA-NIT
+      semiquant_map:
+        "-neg":
+          display: Negativo
+        "+pos":
+          display: Positivo
     - match_type: exact
       pattern: URO
       canonical_assay: Urobilinogen
       lis_test_id: LIS-UA-URO
       normalized_units: mg/dL
+      semiquant_map:
+        "-":
+          display: "0.2"
+          value: 0.2
     - match_type: exact
       pattern: PRO
       canonical_assay: Protein
       lis_test_id: LIS-UA-PRO
       normalized_units: mg/dL
+      semiquant_map:
+        "-neg":
+          display: Negativo
+        "+-":
+          display: "15"
+          value: 15
+        "1+":
+          display: "30"
+          value: 30
+        "2+":
+          display: "100"
+          value: 100
+        "3+":
+          display: "300"
+          value: 300
     - match_type: exact
       pattern: PH
       canonical_assay: Urine pH
@@ -64,6 +110,21 @@ mapping:
       pattern: BLO
       canonical_assay: Blood
       lis_test_id: LIS-UA-BLO
+      semiquant_map:
+        "-neg":
+          display: Negativo
+        "+-":
+          display: Trazas
+          value: 10
+        "1+":
+          display: "Positivo+"
+          value: 25
+        "2+":
+          display: "Positivo++"
+          value: 80
+        "3+":
+          display: "Positivo+++"
+          value: 200
     - match_type: exact
       pattern: SG
       canonical_assay: Specific Gravity
@@ -72,17 +133,55 @@ mapping:
       pattern: KET
       canonical_assay: Ketones
       lis_test_id: LIS-UA-KET
+      normalized_units: mg/dL
+      semiquant_map:
+        "-neg":
+          display: Negativo
+        "+-":
+          display: "5"
+          value: 5
+        "1+":
+          display: "15"
+          value: 15
     - match_type: exact
       pattern: BIL
       canonical_assay: Bilirubin
       lis_test_id: LIS-UA-BIL
+      normalized_units: mg/dL
+      semiquant_map:
+        "-neg":
+          display: Negativo
+        "1+":
+          display: "1"
+          value: 1
+        "2+":
+          display: "2"
+          value: 2
     - match_type: exact
       pattern: GLU
       canonical_assay: Glucose
       lis_test_id: LIS-UA-GLU
+      normalized_units: mg/dL
+      semiquant_map:
+        "-neg":
+          display: Negativo
+        "+-":
+          display: "100"
+          value: 100
+        "1+":
+          display: "250"
+          value: 250
+        "2+":
+          display: "500"
+          value: 500
+        "3+":
+          display: "1000"
+          value: 1000
   unit_normalization:
     mg/dl: mg/dL
     eu/dl: EU/dL
+    ery/ul: Ery/uL
+    leu/ul: Leu/uL
   qc_filter_patterns:
     - "DATE:"
     - "OPERATOR:"

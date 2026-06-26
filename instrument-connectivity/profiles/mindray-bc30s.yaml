@@ -1,6 +1,7 @@
 id: mindray-bc30s
 name: Mindray BC-30s
 protocol_hint: hl7_v2
+bidirectional: true
 device_metadata:
   vendor: Mindray
   model: BC-30s
@@ -8,10 +9,6 @@ transport:
   type: tcp_client
   remote_address: 10.0.0.2:5100
   session_mode: hl7
-  discovery_hints:
-    - hl7_listener
-  discovery_ports:
-    - 5100
 parsing:
   strategy: hl7_oru
 mapping:

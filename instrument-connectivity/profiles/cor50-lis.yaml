@@ -6,7 +6,7 @@ device_metadata:
   model: "50"
 transport:
   type: tcp_server
-  listen_address: 0.0.0.0:5100
+  listen_address: 0.0.0.0:5101
   remote_address: 10.0.0.3:5100
   discovery_hints:
     - hl7_listener
