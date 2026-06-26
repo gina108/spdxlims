@@ -175,13 +175,13 @@ class AddonManager:
             ),
             AddonManifest(
                 addon_id="facturas",
-                name="Facturas",
+                name="PORTAL",
                 version="1.0.0",
-                description="Invoice and factura workflows packaged as a separate add-on.",
+                description="Client web portal integration: pull clinic orders and publish result PDFs.",
                 nav_entries=[
                     AddonNavEntry(
                         entry_id="facturas",
-                        nav_label="Facturas",
+                        nav_label="PORTAL",
                         workspace="administrative",
                     )
                 ],
@@ -195,10 +195,10 @@ class AddonManager:
     def _build_page_factories(
         self,
     ) -> dict[str, Callable[[Database, DeploymentService], QWidget]]:
-        from spdxlims.pages.addon_placeholder_page import AddonPlaceholderPage
         from spdxlims.pages.admin_suite_page import AdminSuitePage
         from spdxlims.pages.equipment_page import EquipmentPage
         from spdxlims.pages.pdf_table_extractor_page import PdfTableExtractorPage
+        from spdxlims.pages.portal_page import PortalPage
 
         return {
             "administrative_tools": lambda database, deployment: AdminSuitePage(database, deployment),
@@ -206,10 +206,7 @@ class AddonManager:
             "pdf_table_extractor": lambda _database, _deployment: PdfTableExtractorPage(
                 self.data_dir / "addons" / "pdf_table_extractor"
             ),
-            "facturas": lambda _database, _deployment: AddonPlaceholderPage(
-                self,
-                next(addon for addon in self.list_addons() if addon.manifest.addon_id == "facturas"),
-            ),
+            "facturas": lambda database, deployment: PortalPage(self.data_dir, database, deployment),
         }
 
     def _get_manifest(self, addon_id: str) -> AddonManifest:
