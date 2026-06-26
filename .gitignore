@@ -70,6 +70,12 @@ sample_addons/dist/
 # Generated XML output files
 INV-*.xml
 
+# Generated invoice PDFs and ad hoc local scratch/output files
+INV-*.pdf
+auto.txt
+cm250_order_*.txt
+niimbot-helper/scripts/label_render_*.png
+
 # Local spreadsheet workbooks and ad hoc exports
 *.xlsx
 *.xls
