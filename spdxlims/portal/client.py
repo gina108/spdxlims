@@ -103,6 +103,21 @@ class PortalClient:
         items = (payload or {}).get("tests", []) if isinstance(payload, dict) else []
         return [item for item in items if isinstance(item, dict)]
 
+    def create_test(self, name: str, category: str | None = None, turnaround_hours: int | None = None) -> dict[str, Any]:
+        """POST /lis/tests -> the created catalog row (id, name, category, ...)."""
+        body: dict[str, Any] = {"name": name}
+        if category is not None:
+            body["category"] = category
+        if turnaround_hours is not None:
+            body["turnaround_hours"] = turnaround_hours
+        payload = self._request("POST", "/lis/tests", body)
+        return (payload or {}).get("test", {}) if isinstance(payload, dict) else {}
+
+    def update_test(self, portal_test_id: int, **fields: Any) -> dict[str, Any]:
+        """PATCH /lis/tests/:id with any of name/category/turnaround_hours/is_active."""
+        payload = self._request("PATCH", f"/lis/tests/{int(portal_test_id)}", fields)
+        return (payload or {}).get("test", {}) if isinstance(payload, dict) else {}
+
     def pending_orders(self) -> list[PendingOrder]:
         """GET /lis/orders/pending -> pending orders with patient fields."""
         payload = self._request("GET", "/lis/orders/pending")
