@@ -20,7 +20,7 @@ class BillingMixin:
 
     def list_invoice_order_choices(self) -> list[tuple[int, str]]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name FROM orders o INNER JOIN patients p ON p.id = o.patient_id WHERE COALESCE(o.is_preallocated, 0) = 0 ORDER BY o.created_at DESC, o.id DESC LIMIT 100").fetchall()
+            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name FROM orders o INNER JOIN patients p ON p.id = o.patient_id WHERE COALESCE(o.is_preallocated, 0) = 0 AND COALESCE(o.is_archived, 0) = 0 ORDER BY o.created_at DESC, o.id DESC LIMIT 100").fetchall()
         return [(row["id"], f'{row["order_number"]} - {row["patient_name"]}') for row in rows]
 
     def list_filtered_invoice_order_choices(
@@ -45,21 +45,31 @@ class BillingMixin:
                                ELSE ''
                            END
                        ) AS patient_name,
-                       COALESCE(
-                           SUM(
-                               CASE
-                                   WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN COALESCE(t.price, 0)
-                                   ELSE 0
-                               END
-                           ),
-                           0
-                       ) AS total_amount
+                       COALESCE((
+                           SELECT SUM(panel_price.price)
+                           FROM (
+                               SELECT MAX(COALESCE(cpp.price, tp.price, 0)) AS price
+                               FROM order_tests ot_pt
+                               INNER JOIN tests t_pt ON t_pt.id = ot_pt.test_id
+                               LEFT JOIN test_panels tp ON (
+                                   UPPER(TRIM(tp.code)) = UPPER(TRIM(ot_pt.source_label))
+                                   OR UPPER(TRIM(tp.name)) = UPPER(TRIM(ot_pt.source_label))
+                               )
+                               LEFT JOIN client_panel_prices cpp
+                                   ON cpp.panel_id = tp.id AND cpp.client_id = o.client_id
+                               WHERE ot_pt.order_id = o.id
+                                 AND ot_pt.source_label IS NOT NULL AND ot_pt.source_label != ''
+                                 AND t_pt.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                               GROUP BY COALESCE(CAST(tp.id AS TEXT), UPPER(TRIM(ot_pt.source_label)))
+                           ) AS panel_price
+                       ), 0) AS total_amount
                 FROM orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN clients c ON c.id = o.client_id
                 LEFT JOIN order_tests ot ON ot.order_id = o.id
                 LEFT JOIN tests t ON t.id = ot.test_id
                 WHERE COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
                   AND (? IS NULL OR o.client_id = ?)
                   AND (? = '' OR DATE(COALESCE(o.ordered_at, o.created_at)) >= DATE(?))
                   AND (? = '' OR DATE(COALESCE(o.ordered_at, o.created_at)) <= DATE(?))
@@ -113,21 +123,31 @@ class BillingMixin:
                                ELSE ''
                            END
                        ) AS patient_name,
-                       COALESCE(
-                           SUM(
-                               CASE
-                                   WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN COALESCE(t.price, 0)
-                                   ELSE 0
-                               END
-                           ),
-                           0
-                       ) AS total_amount
+                       COALESCE((
+                           SELECT SUM(panel_price.price)
+                           FROM (
+                               SELECT MAX(COALESCE(cpp.price, tp.price, 0)) AS price
+                               FROM order_tests ot_pt
+                               INNER JOIN tests t_pt ON t_pt.id = ot_pt.test_id
+                               LEFT JOIN test_panels tp ON (
+                                   UPPER(TRIM(tp.code)) = UPPER(TRIM(ot_pt.source_label))
+                                   OR UPPER(TRIM(tp.name)) = UPPER(TRIM(ot_pt.source_label))
+                               )
+                               LEFT JOIN client_panel_prices cpp
+                                   ON cpp.panel_id = tp.id AND cpp.client_id = o.client_id
+                               WHERE ot_pt.order_id = o.id
+                                 AND ot_pt.source_label IS NOT NULL AND ot_pt.source_label != ''
+                                 AND t_pt.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                               GROUP BY COALESCE(CAST(tp.id AS TEXT), UPPER(TRIM(ot_pt.source_label)))
+                           ) AS panel_price
+                       ), 0) AS total_amount
                 FROM orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN clients c ON c.id = o.client_id
                 LEFT JOIN order_tests ot ON ot.order_id = o.id
                 LEFT JOIN tests t ON t.id = ot.test_id
                 WHERE COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
                   AND (? IS NULL OR o.client_id = ?)
                   AND (? = '' OR DATE(COALESCE(o.ordered_at, o.created_at)) >= DATE(?))
                   AND (? = '' OR DATE(COALESCE(o.ordered_at, o.created_at)) <= DATE(?))
@@ -155,7 +175,30 @@ class BillingMixin:
 
     def calculate_order_total(self, order_id: int) -> float:
         with self.connect() as connection:
-            row = connection.execute("SELECT COALESCE(SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN COALESCE(t.price, 0) ELSE 0 END), 0) AS total FROM order_tests ot INNER JOIN tests t ON t.id = ot.test_id WHERE ot.order_id = ?", (order_id,)).fetchone()
+            row = connection.execute(
+                """
+                SELECT COALESCE((
+                    SELECT SUM(panel_price.price)
+                    FROM (
+                        SELECT MAX(COALESCE(cpp.price, tp.price, 0)) AS price
+                        FROM order_tests ot_pt
+                        INNER JOIN tests t_pt ON t_pt.id = ot_pt.test_id
+                        LEFT JOIN test_panels tp ON (
+                            UPPER(TRIM(tp.code)) = UPPER(TRIM(ot_pt.source_label))
+                            OR UPPER(TRIM(tp.name)) = UPPER(TRIM(ot_pt.source_label))
+                        )
+                        LEFT JOIN client_panel_prices cpp
+                            ON cpp.panel_id = tp.id
+                           AND cpp.client_id = (SELECT client_id FROM orders WHERE id = ?)
+                        WHERE ot_pt.order_id = ?
+                          AND ot_pt.source_label IS NOT NULL AND ot_pt.source_label != ''
+                          AND t_pt.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                        GROUP BY COALESCE(CAST(tp.id AS TEXT), UPPER(TRIM(ot_pt.source_label)))
+                    ) AS panel_price
+                ), 0) AS total
+                """,
+                (int(order_id), int(order_id)),
+            ).fetchone()
         return float(row["total"] if row is not None else 0)
 
     def get_order_client_id(self, order_id: int) -> int | None:
@@ -258,15 +301,24 @@ class BillingMixin:
                        o.order_number,
                        o.client_id,
                        c.cfdi_use,
-                       COALESCE(
-                           SUM(
-                               CASE
-                                   WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN COALESCE(t.price, 0)
-                                   ELSE 0
-                               END
-                           ),
-                           0
-                       ) AS total_amount
+                       COALESCE((
+                           SELECT SUM(panel_price.price)
+                           FROM (
+                               SELECT MAX(COALESCE(cpp.price, tp.price, 0)) AS price
+                               FROM order_tests ot_pt
+                               INNER JOIN tests t_pt ON t_pt.id = ot_pt.test_id
+                               LEFT JOIN test_panels tp ON (
+                                   UPPER(TRIM(tp.code)) = UPPER(TRIM(ot_pt.source_label))
+                                   OR UPPER(TRIM(tp.name)) = UPPER(TRIM(ot_pt.source_label))
+                               )
+                               LEFT JOIN client_panel_prices cpp
+                                   ON cpp.panel_id = tp.id AND cpp.client_id = o.client_id
+                               WHERE ot_pt.order_id = o.id
+                                 AND ot_pt.source_label IS NOT NULL AND ot_pt.source_label != ''
+                                 AND t_pt.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                               GROUP BY COALESCE(CAST(tp.id AS TEXT), UPPER(TRIM(ot_pt.source_label)))
+                           ) AS panel_price
+                       ), 0) AS total_amount
                 FROM orders o
                 LEFT JOIN clients c ON c.id = o.client_id
                 LEFT JOIN order_tests ot ON ot.order_id = o.id
@@ -451,15 +503,24 @@ class BillingMixin:
                                ELSE ''
                            END
                        ) AS patient_name,
-                       COALESCE(
-                           SUM(
-                               CASE
-                                   WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN COALESCE(t.price, 0)
-                                   ELSE 0
-                               END
-                           ),
-                           0
-                       ) AS total_amount,
+                       COALESCE((
+                           SELECT SUM(panel_price.price)
+                           FROM (
+                               SELECT MAX(COALESCE(cpp.price, tp.price, 0)) AS price
+                               FROM order_tests ot_pt
+                               INNER JOIN tests t_pt ON t_pt.id = ot_pt.test_id
+                               LEFT JOIN test_panels tp ON (
+                                   UPPER(TRIM(tp.code)) = UPPER(TRIM(ot_pt.source_label))
+                                   OR UPPER(TRIM(tp.name)) = UPPER(TRIM(ot_pt.source_label))
+                               )
+                               LEFT JOIN client_panel_prices cpp
+                                   ON cpp.panel_id = tp.id AND cpp.client_id = o.client_id
+                               WHERE ot_pt.order_id = o.id
+                                 AND ot_pt.source_label IS NOT NULL AND ot_pt.source_label != ''
+                                 AND t_pt.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                               GROUP BY COALESCE(CAST(tp.id AS TEXT), UPPER(TRIM(ot_pt.source_label)))
+                           ) AS panel_price
+                       ), 0) AS total_amount,
                        GROUP_CONCAT(
                            DISTINCT CASE
                                WHEN ot.source_label IS NOT NULL AND ot.source_label != '' THEN ot.source_label
@@ -480,7 +541,13 @@ class BillingMixin:
         return [dict(row) for row in rows]
 
     def list_invoice_order_panels(self, invoice_id: int) -> list[dict[str, Any]]:
-        """One row per (order, panel) with that panel's subtotal."""
+        """One row per (order, panel) with that panel's price for the order's client.
+
+        The price is the client-specific panel price (client_panel_prices) when
+        present, otherwise the panel's default price (test_panels.price). The
+        panel is resolved from order_tests.source_label, matched to test_panels
+        by code or name.
+        """
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -496,21 +563,62 @@ class BillingMixin:
                            CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != ''
                                 THEN ' ' || p.middle_name ELSE '' END
                        ) AS patient_name,
-                       ot.source_label AS panel,
-                       COALESCE(
-                           SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
-                                    THEN COALESCE(t.price, 0) ELSE 0 END),
-                           0
-                       ) AS panel_total
+                       COALESCE(tp.name, ot.source_label) AS panel,
+                       COALESCE(MAX(COALESCE(cpp.price, tp.price, 0)), 0) AS panel_total
                 FROM invoice_orders io
                 INNER JOIN orders o ON o.id = io.order_id
                 INNER JOIN patients p ON p.id = o.patient_id
                 INNER JOIN order_tests ot ON ot.order_id = o.id
                 INNER JOIN tests t ON t.id = ot.test_id
+                LEFT JOIN test_panels tp ON (
+                    UPPER(TRIM(tp.code)) = UPPER(TRIM(ot.source_label))
+                    OR UPPER(TRIM(tp.name)) = UPPER(TRIM(ot.source_label))
+                )
+                LEFT JOIN client_panel_prices cpp
+                    ON cpp.panel_id = tp.id AND cpp.client_id = o.client_id
                 WHERE ot.source_label IS NOT NULL AND ot.source_label != ''
                   AND t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
-                GROUP BY o.id, o.order_number, order_date, patient_name, ot.source_label
-                ORDER BY order_date, o.id, ot.source_label
+                GROUP BY o.id, o.order_number, order_date, patient_name, panel
+                ORDER BY order_date, o.id, panel
+                """,
+                (int(invoice_id), int(invoice_id)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_invoice_tests(self, invoice_id: int) -> list[dict[str, Any]]:
+        """One row per individual test on the invoice, with order/patient context."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                WITH invoice_orders AS (
+                    SELECT order_id FROM invoices WHERE id = ? AND order_id IS NOT NULL
+                    UNION
+                    SELECT order_id FROM invoice_order_links WHERE invoice_id = ?
+                )
+                SELECT o.order_number,
+                       DATE(COALESCE(o.ordered_at, o.created_at)) AS order_date,
+                       TRIM(
+                           p.first_name || ' ' || p.last_name ||
+                           CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != ''
+                                THEN ' ' || p.middle_name ELSE '' END
+                       ) AS patient_name,
+                       COALESCE(
+                           (SELECT tp.name FROM test_panels tp
+                             WHERE UPPER(TRIM(tp.code)) = UPPER(TRIM(ot.source_label))
+                                OR UPPER(TRIM(tp.name)) = UPPER(TRIM(ot.source_label))
+                             LIMIT 1),
+                           ot.source_label
+                       ) AS panel,
+                       COALESCE(NULLIF(ot.display_name, ''), t.name) AS test_name,
+                       t.code AS test_code,
+                       COALESCE(t.price, 0) AS price
+                FROM invoice_orders io
+                INNER JOIN orders o ON o.id = io.order_id
+                INNER JOIN patients p ON p.id = o.patient_id
+                INNER JOIN order_tests ot ON ot.order_id = o.id
+                INNER JOIN tests t ON t.id = ot.test_id
+                WHERE t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                ORDER BY order_date, o.id, ot.sort_order, t.name
                 """,
                 (int(invoice_id), int(invoice_id)),
             ).fetchall()
@@ -571,3 +679,16 @@ class BillingMixin:
                 ),
             )
             return int(cursor.lastrowid)
+
+    def delete_invoice(self, invoice_id: int) -> bool:
+        """Permanently delete an invoice.
+
+        Foreign keys are enabled per connection, so the ON DELETE CASCADE on
+        invoice_order_links removes the order links too, freeing those orders to
+        be re-invoiced. Returns True when a row was removed.
+        """
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM invoices WHERE id = ?", (int(invoice_id),)
+            )
+            return cursor.rowcount > 0

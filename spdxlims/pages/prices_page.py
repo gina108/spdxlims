@@ -19,7 +19,12 @@ from spdxlims.client_pricing_excel import (
     read_client_price_matrix,
     write_client_price_workbook,
 )
-from spdxlims.database import ClientRecord, Database, TestRecord
+from spdxlims.panel_pricing_excel import (
+    build_panel_price_sheets,
+    read_panel_price_matrix,
+    write_panel_price_workbook,
+)
+from spdxlims.database import ClientRecord, Database, PanelRecord, TestRecord
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
@@ -35,6 +40,7 @@ class PricesPage(DataAwarePage):
         self.test_service = TestService(database, deployment_service)
         self.test_records: list[TestRecord] = []
         self.client_records: list[ClientRecord] = []
+        self.panel_records: list[PanelRecord] = []
         self.status_filter = 'active'
 
         root = QVBoxLayout(self)
@@ -63,6 +69,10 @@ class PricesPage(DataAwarePage):
         self.export_client_prices_button.clicked.connect(self.export_client_prices)
         self.import_client_prices_button = QPushButton()
         self.import_client_prices_button.clicked.connect(self.import_client_prices)
+        self.export_panel_prices_button = QPushButton()
+        self.export_panel_prices_button.clicked.connect(self.export_panel_prices)
+        self.import_panel_prices_button = QPushButton()
+        self.import_panel_prices_button.clicked.connect(self.import_panel_prices)
         self.edit_button = QPushButton()
         self.edit_button.clicked.connect(self.edit_selected_test)
         top.addWidget(self.search, 1)
@@ -71,6 +81,8 @@ class PricesPage(DataAwarePage):
         top.addWidget(self.all_button)
         top.addWidget(self.export_client_prices_button)
         top.addWidget(self.import_client_prices_button)
+        top.addWidget(self.export_panel_prices_button)
+        top.addWidget(self.import_panel_prices_button)
         top.addWidget(self.edit_button)
         layout.addLayout(top)
 
@@ -96,11 +108,15 @@ class PricesPage(DataAwarePage):
         self.all_button.setText(tr('All'))
         self.export_client_prices_button.setText(tr('Export Client Prices'))
         self.import_client_prices_button.setText(tr('Import Client Prices'))
+        self.export_panel_prices_button.setText(tr('Export Panel Prices'))
+        self.import_panel_prices_button.setText(tr('Import Panel Prices'))
         self.edit_button.setText(tr('Edit Selected Test'))
         self.table.setHorizontalHeaderLabels([tr('Code'), tr('Name'), tr('Category'), tr('Price'), tr('Status')])
         workbook_enabled = not self._uses_server()
         self.export_client_prices_button.setEnabled(workbook_enabled)
         self.import_client_prices_button.setEnabled(workbook_enabled)
+        self.export_panel_prices_button.setEnabled(workbook_enabled)
+        self.import_panel_prices_button.setEnabled(workbook_enabled)
 
     def refresh_on_show(self) -> None:
         self.refresh_prices()
@@ -112,6 +128,7 @@ class PricesPage(DataAwarePage):
             self.test_records = []
             QMessageBox.warning(self, tr('Connection Test'), str(exc))
         self.client_records = [] if self._uses_server() else self.database.list_clients(status_filter='all')
+        self.panel_records = [] if self._uses_server() else self.database.list_panels(status_filter='all')
         self.refresh_table()
 
     def refresh_table(self) -> None:
@@ -166,6 +183,70 @@ class PricesPage(DataAwarePage):
             tr('Imported'),
             tr('Client prices imported. Updated: {updated_count}, Cleared: {cleared_count}', updated_count=updated_count, cleared_count=cleared_count),
         )
+
+    def export_panel_prices(self) -> None:
+        if self._uses_server():
+            return
+        path, _ = QFileDialog.getSaveFileName(self, tr('Save Panel Price Workbook'), 'panel_prices.xlsx', tr('Excel Workbook (*.xlsx)'))
+        if not path:
+            return
+        overrides = self.database.list_client_panel_price_overrides()
+        sheets = build_panel_price_sheets(self.panel_records, self.client_records, overrides)
+        target = write_panel_price_workbook(path, sheets)
+        QMessageBox.information(self, tr('Exported'), tr('Panel price workbook saved: {path}', path=str(target)))
+
+    def import_panel_prices(self) -> None:
+        if self._uses_server():
+            return
+        path, _ = QFileDialog.getOpenFileName(self, tr('Import Panel Prices'), '', tr('Excel Workbook (*.xlsx)'))
+        if not path:
+            return
+        try:
+            rows, client_columns = read_panel_price_matrix(path)
+            default_updates, override_updates = self._build_panel_price_updates(rows, client_columns)
+        except ValueError as exc:
+            QMessageBox.critical(self, tr('Import Failed'), str(exc))
+            return
+        self.database.apply_panel_default_prices(default_updates)
+        updated_count, cleared_count = self.database.apply_client_panel_price_overrides(override_updates)
+        self.refresh_prices()
+        QMessageBox.information(
+            self,
+            tr('Imported'),
+            tr('Panel prices imported. Updated: {updated_count}, Cleared: {cleared_count}', updated_count=updated_count, cleared_count=cleared_count),
+        )
+
+    def _build_panel_price_updates(self, rows: list[dict[str, str]], client_columns: list[tuple[int, str]]) -> tuple[dict[int, float], dict[tuple[int, int], float | None]]:
+        known_client_ids = {record.id for record in self.client_records}
+        unknown_clients = [label for client_id, label in client_columns if client_id not in known_client_ids]
+        if unknown_clients:
+            raise ValueError(tr('Unknown clients in workbook: {clients}', clients=', '.join(unknown_clients)))
+        code_map = {record.code: record.id for record in self.panel_records}
+        default_updates: dict[int, float] = {}
+        override_updates: dict[tuple[int, int], float | None] = {}
+        for row in rows:
+            panel_code = row.get('panel_code', '').strip()
+            if not panel_code:
+                continue
+            panel_id = code_map.get(panel_code)
+            if panel_id is None:
+                raise ValueError(tr('Unknown panel code in workbook: {code}', code=panel_code))
+            row_number = row.get('__row_number__', '?')
+            try:
+                default_price = parse_optional_price(row.get('default_price', ''))
+            except ValueError as exc:
+                raise ValueError(tr('Invalid price in row {row_number} for panel {code}.', row_number=row_number, code=panel_code)) from exc
+            if default_price is not None:
+                default_updates[panel_id] = default_price
+            for client_id, _label in client_columns:
+                # read_panel_price_matrix lowercases row keys, so normalize the lookup.
+                header = f'client:{client_id}:{_label}'.strip().lower()
+                try:
+                    price = parse_optional_price(row.get(header, ''))
+                except ValueError as exc:
+                    raise ValueError(tr('Invalid price in row {row_number} for panel {code}.', row_number=row_number, code=panel_code)) from exc
+                override_updates[(client_id, panel_id)] = price
+        return default_updates, override_updates
 
     def _build_client_price_updates(self, rows: list[dict[str, str]], client_columns: list[tuple[int, str]]) -> dict[tuple[int, int], float | None]:
         known_client_ids = {record.id for record in self.client_records}

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from html import escape
+import base64
+import mimetypes
 import sqlite3
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCore import QDate, QMarginsF, QSizeF, Qt, QUrl
+from PySide6.QtCore import QDate, QMarginsF, QSize, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -22,6 +24,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QLayout,
+    QScrollArea,
+    QSplitter,
     QTableWidget,
     QTextEdit,
     QVBoxLayout,
@@ -29,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from spdxlims.admin_cfdi import write_cfdi_preview_xml
-from spdxlims.admin_excel import build_admin_export_sheets, build_client_results_sheet, build_invoice_excel_sheet, write_admin_export_workbook
+from spdxlims.admin_excel import build_admin_export_sheets, build_invoice_excel_sheet, write_admin_export_workbook
 from spdxlims.database import (
     BillingCustomerRecord,
     ClientRecord,
@@ -51,6 +56,9 @@ from spdxlims.whatsapp_phone import normalize_whatsapp_phone
 class AdministrativePage(DataAwarePage):
     FILTER_DATE_MIN = QDate(2000, 1, 1)
 
+    def minimumSizeHint(self) -> QSize:
+        return QSize(1, 1)
+
     def __init__(self, database: Database, *, section_mode: str = 'full') -> None:
         super().__init__()
         self.database = database
@@ -68,6 +76,7 @@ class AdministrativePage(DataAwarePage):
         self.movement_records: list[InventoryMovementRecord] = []
 
         root = QVBoxLayout(self)
+        root.setSizeConstraint(QLayout.SetNoConstraint)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         root.addWidget(self.summary)
@@ -80,10 +89,19 @@ class AdministrativePage(DataAwarePage):
             grid.addWidget(self._build_supplier_group(), 0, 1)
             grid.addWidget(self._build_movement_group(), 1, 0, 1, 2)
             grid.addWidget(self._build_export_group(), 2, 0, 1, 2)
+            root.addLayout(grid)
         elif self.section_mode == 'collections':
-            grid.addWidget(self._build_billing_group(), 0, 0)
-            grid.addWidget(self._build_invoice_group(), 0, 1)
-            grid.addWidget(self._build_client_results_export_group(), 1, 0, 1, 2)
+            top_split = QSplitter(Qt.Horizontal)
+            top_split.setChildrenCollapsible(False)
+            _left_scroll = QScrollArea()
+            _left_scroll.setWidgetResizable(True)
+            _left_scroll.setFrameShape(QScrollArea.NoFrame)
+            _left_scroll.setWidget(self._build_invoice_group())
+            top_split.addWidget(_left_scroll)
+            top_split.addWidget(self._build_invoice_preview_group())
+            top_split.setSizes([5000, 5000])
+            root.addWidget(top_split, 1)
+            self.invoice_table.itemSelectionChanged.connect(self._update_invoice_preview)
         else:
             grid.addWidget(self._build_billing_group(), 0, 0)
             grid.addWidget(self._build_doctor_group(), 0, 1)
@@ -92,10 +110,11 @@ class AdministrativePage(DataAwarePage):
             grid.addWidget(self._build_movement_group(), 2, 0)
             grid.addWidget(self._build_invoice_group(), 2, 1)
             grid.addWidget(self._build_export_group(), 3, 0, 1, 2)
-        root.addLayout(grid)
+            root.addLayout(grid)
 
         self.retranslate_ui()
         self.refresh_data()
+        self.setMinimumWidth(1)
 
     def _styled_group(self, title: str = '') -> tuple[QGroupBox, QVBoxLayout]:
         group = QGroupBox(title)
@@ -255,69 +274,8 @@ class AdministrativePage(DataAwarePage):
         self.invoice_info = QLabel()
         self.invoice_info.setWordWrap(True)
         layout.addWidget(self.invoice_info)
-        form = QFormLayout()
-        self.invoice_labels: dict[str, QLabel] = {}
-        self.invoice_mode = QComboBox()
-        self.invoice_mode.currentIndexChanged.connect(self.update_invoice_mode)
-        self.invoice_number = QLineEdit()
-        self.invoice_number.setReadOnly(True)
-        self.invoice_date = QLineEdit(date.today().isoformat())
-        self.invoice_client = QComboBox()
-        self.invoice_client.currentIndexChanged.connect(self.sync_invoice_client_defaults)
-        self.invoice_order = QComboBox()
-        self.invoice_order.currentIndexChanged.connect(self.sync_invoice_total_from_order)
-        self.receipt_order = QComboBox()
-        self.receipt_order.currentIndexChanged.connect(self.sync_receipt_total_from_order)
-        self.invoice_filter_client = QComboBox()
-        self.invoice_filter_date_from = QDateEdit()
-        self.invoice_filter_date_to = QDateEdit()
-        self.invoice_status = QComboBox()
-        self.invoice_total = QLineEdit('0.00')
-        self.invoice_cfdi_use = QComboBox()
-        self.invoice_cfdi_use.addItem('', '')
-        for code, label in USO_CFDI_OPTIONS:
-            self.invoice_cfdi_use.addItem(label, code)
-        self.invoice_payment_form = QComboBox()
-        for code, label in FORMA_PAGO_OPTIONS:
-            self.invoice_payment_form.addItem(label, code)
-        self.invoice_payment_method = QComboBox()
-        for code, label in METODO_PAGO_OPTIONS:
-            self.invoice_payment_method.addItem(label, code)
-        self.invoice_currency = QLineEdit('MXN')
-        self.invoice_notes = QTextEdit()
-        self.invoice_notes.setMinimumHeight(72)
-        self.invoice_filter_status = QLabel()
-        self.invoice_filter_status.setWordWrap(True)
-        today = QDate.currentDate()
-        for widget in (self.invoice_filter_date_from, self.invoice_filter_date_to):
-            widget.setCalendarPopup(True)
-            widget.setDisplayFormat("yyyy-MM-dd")
-            widget.setMinimumDate(self.FILTER_DATE_MIN)
-        self.invoice_filter_date_from.setDate(today.addMonths(-1))
-        self.invoice_filter_date_to.setDate(today)
-        for key, field in [('invoice_mode', self.invoice_mode), ('invoice_number', self.invoice_number), ('invoice_date', self.invoice_date), ('invoice_client', self.invoice_client), ('invoice_order', self.invoice_order), ('receipt_order', self.receipt_order), ('invoice_status', self.invoice_status), ('invoice_total', self.invoice_total), ('invoice_cfdi_use', self.invoice_cfdi_use), ('invoice_payment_form', self.invoice_payment_form), ('invoice_payment_method', self.invoice_payment_method), ('invoice_currency', self.invoice_currency), ('invoice_notes', self.invoice_notes)]:
-            label = QLabel()
-            self.invoice_labels[key] = label
-            form.addRow(label, field)
-        self.invoice_filter_labels: dict[str, QLabel] = {}
-        filter_form = QFormLayout()
-        self.invoice_date_range_row = QWidget()
-        invoice_date_range_layout = QHBoxLayout(self.invoice_date_range_row)
-        invoice_date_range_layout.setContentsMargins(0, 0, 0, 0)
-        invoice_date_range_layout.addWidget(QLabel(tr("From")))
-        invoice_date_range_layout.addWidget(self.invoice_filter_date_from, 1)
-        invoice_date_range_layout.addWidget(QLabel(tr("To")))
-        invoice_date_range_layout.addWidget(self.invoice_filter_date_to, 1)
-        for key, field in [('invoice_filter_client', self.invoice_filter_client), ('invoice_filter_date_range', self.invoice_date_range_row)]:
-            label = QLabel()
-            self.invoice_filter_labels[key] = label
-            filter_form.addRow(label, field)
-        layout.addLayout(form)
-        layout.addLayout(filter_form)
-        layout.addWidget(self.invoice_filter_status)
-        button_row = QHBoxLayout()
-        self.apply_invoice_filter_button = QPushButton()
-        self.apply_invoice_filter_button.clicked.connect(self.apply_invoice_filters)
+        button_row = QGridLayout()
+        button_row.setSpacing(4)
         self.clear_invoice_filter_button = QPushButton()
         self.clear_invoice_filter_button.clicked.connect(self.clear_invoice_filters)
         self.save_invoice_button = QPushButton()
@@ -336,18 +294,92 @@ class AdministrativePage(DataAwarePage):
         self.export_invoice_excel_button.clicked.connect(self.export_selected_invoice_excel)
         self.send_invoice_whatsapp_button = QPushButton()
         self.send_invoice_whatsapp_button.clicked.connect(self.send_selected_invoice_whatsapp)
-        button_row.addWidget(self.apply_invoice_filter_button)
-        button_row.addWidget(self.clear_invoice_filter_button)
-        button_row.addWidget(self.save_invoice_button)
-        button_row.addWidget(self.batch_invoice_button)
-        button_row.addWidget(self.create_receipt_button)
-        button_row.addWidget(self.print_invoice_button)
-        button_row.addWidget(self.export_invoice_pdf_button)
-        button_row.addWidget(self.export_invoice_excel_button)
-        button_row.addWidget(self.send_invoice_whatsapp_button)
-        button_row.addWidget(self.export_cfdi_button)
-        button_row.addStretch(1)
+        self.delete_invoice_button = QPushButton()
+        self.delete_invoice_button.clicked.connect(self.delete_selected_invoice)
+        self._invoice_buttons = [
+            self.clear_invoice_filter_button,
+            self.save_invoice_button,
+            self.batch_invoice_button,
+            self.create_receipt_button,
+            self.print_invoice_button,
+            self.export_invoice_pdf_button,
+            self.export_invoice_excel_button,
+            self.send_invoice_whatsapp_button,
+            self.export_cfdi_button,
+            self.delete_invoice_button,
+        ]
+        self._invoice_button_grid = button_row
+        # Place every button once so they get parented to the group; isHidden()
+        # only reports explicit hides after this. update_invoice_mode() then calls
+        # _relayout_invoice_buttons() to reflow just the visible ones (rows of 4).
+        for _index, _button in enumerate(self._invoice_buttons):
+            button_row.addWidget(_button, _index // 4, _index % 4)
         layout.addLayout(button_row)
+        form = QFormLayout()
+        self.invoice_labels: dict[str, QLabel] = {}
+        self.invoice_mode = QComboBox()
+        self.invoice_mode.currentIndexChanged.connect(self.update_invoice_mode)
+        self.invoice_number = QLineEdit()
+        self.invoice_number.setReadOnly(True)
+        self.invoice_date = QLineEdit(date.today().isoformat())
+        self.invoice_client = QComboBox()
+        self.invoice_client.currentIndexChanged.connect(self.sync_invoice_client_defaults)
+        self.invoice_order = QComboBox()
+        self.invoice_order.currentIndexChanged.connect(self.sync_invoice_total_from_order)
+        self.receipt_order = QComboBox()
+        self.receipt_order.currentIndexChanged.connect(self.sync_receipt_total_from_order)
+        self.invoice_filter_client = QComboBox()
+        _today = QDate.currentDate()
+        self.invoice_filter_date_from = QDateEdit(_today.addMonths(-1))
+        self.invoice_filter_date_to = QDateEdit(_today)
+        self.invoice_status = QComboBox()
+        self.invoice_total = QLineEdit('0.00')
+        self.invoice_cfdi_use = QComboBox()
+        self.invoice_cfdi_use.addItem('', '')
+        for code, label in USO_CFDI_OPTIONS:
+            self.invoice_cfdi_use.addItem(label, code)
+        self.invoice_payment_form = QComboBox()
+        for code, label in FORMA_PAGO_OPTIONS:
+            self.invoice_payment_form.addItem(label, code)
+        self.invoice_payment_method = QComboBox()
+        for code, label in METODO_PAGO_OPTIONS:
+            self.invoice_payment_method.addItem(label, code)
+        self.invoice_currency = QLineEdit('MXN')
+        self.invoice_notes = QTextEdit()
+        self.invoice_notes.setMinimumHeight(72)
+        self.invoice_filter_status = QLabel()
+        self.invoice_filter_status.setWordWrap(True)
+        for widget in (self.invoice_filter_date_from, self.invoice_filter_date_to):
+            widget.setCalendarPopup(True)
+            widget.setDisplayFormat("yyyy-MM-dd")
+            widget.setMinimumDate(self.FILTER_DATE_MIN)
+        # Filters auto-apply on change (replaces the former "Apply filters" button).
+        # refresh_choices() is guarded against re-entrancy because it also
+        # repopulates invoice_filter_client.
+        self.invoice_filter_client.currentIndexChanged.connect(self.refresh_choices)
+        self.invoice_filter_date_from.dateChanged.connect(self.refresh_choices)
+        self.invoice_filter_date_to.dateChanged.connect(self.refresh_choices)
+        for key, field in [('invoice_mode', self.invoice_mode), ('invoice_number', self.invoice_number), ('invoice_date', self.invoice_date), ('invoice_client', self.invoice_client), ('invoice_order', self.invoice_order), ('receipt_order', self.receipt_order), ('invoice_status', self.invoice_status), ('invoice_total', self.invoice_total), ('invoice_cfdi_use', self.invoice_cfdi_use), ('invoice_payment_form', self.invoice_payment_form), ('invoice_payment_method', self.invoice_payment_method), ('invoice_currency', self.invoice_currency), ('invoice_notes', self.invoice_notes)]:
+            label = QLabel()
+            self.invoice_labels[key] = label
+            form.addRow(label, field)
+        self.invoice_filter_labels: dict[str, QLabel] = {}
+        filter_form = QFormLayout()
+        self.invoice_date_range_row = QWidget()
+        invoice_date_range_layout = QHBoxLayout(self.invoice_date_range_row)
+        invoice_date_range_layout.setContentsMargins(0, 0, 0, 0)
+        invoice_date_range_layout.addWidget(QLabel(tr("From")))
+        invoice_date_range_layout.addWidget(self.invoice_filter_date_from, 1)
+        invoice_date_range_layout.addWidget(QLabel(tr("To")))
+        invoice_date_range_layout.addWidget(self.invoice_filter_date_to, 1)
+        for key, field in [('invoice_filter_date_range', self.invoice_date_range_row), ('invoice_filter_client', self.invoice_filter_client)]:
+            label = QLabel()
+            self.invoice_filter_labels[key] = label
+            filter_form.addRow(label, field)
+        # Periodo + Cliente sit directly under the buttons, above the rest of the form.
+        layout.addLayout(filter_form)
+        layout.addLayout(form)
+        layout.addWidget(self.invoice_filter_status)
         self.invoice_table = QTableWidget(0, 6)
         self.invoice_table.setObjectName('recentPatientsTable')
         self.invoice_table.horizontalHeader().setStretchLastSection(True)
@@ -362,34 +394,6 @@ class AdministrativePage(DataAwarePage):
         layout.addWidget(self.receipt_table)
         return self.invoice_group
 
-    def _build_client_results_export_group(self) -> QWidget:
-        self.client_results_group, layout = self._styled_group()
-        self.client_results_info = QLabel()
-        self.client_results_info.setWordWrap(True)
-        controls = QHBoxLayout()
-        self.client_results_client = QComboBox()
-        self.client_results_date_from = QDateEdit()
-        self.client_results_date_from.setCalendarPopup(True)
-        self.client_results_date_from.setDate(QDate.currentDate().addMonths(-1))
-        self.client_results_date_to = QDateEdit()
-        self.client_results_date_to.setCalendarPopup(True)
-        self.client_results_date_to.setDate(QDate.currentDate())
-        self.client_results_export_button = QPushButton()
-        self.client_results_export_button.clicked.connect(self._export_client_results)
-        self.client_results_status = QLabel()
-        self.client_results_status.setWordWrap(True)
-        controls.addWidget(self.client_results_client, 2)
-        controls.addWidget(QLabel(tr("From")))
-        controls.addWidget(self.client_results_date_from)
-        controls.addWidget(QLabel(tr("To")))
-        controls.addWidget(self.client_results_date_to)
-        controls.addWidget(self.client_results_export_button)
-        controls.addStretch(1)
-        layout.addWidget(self.client_results_info)
-        layout.addLayout(controls)
-        layout.addWidget(self.client_results_status)
-        return self.client_results_group
-
     def _build_export_group(self) -> QWidget:
         self.export_group, layout = self._styled_group()
         self.export_info = QLabel()
@@ -403,6 +407,14 @@ class AdministrativePage(DataAwarePage):
         layout.addWidget(self.export_status)
         return self.export_group
 
+    def _build_invoice_preview_group(self) -> QWidget:
+        self.invoice_preview_group, layout = self._styled_group()
+        self.invoice_preview = QTextEdit()
+        self.invoice_preview.setReadOnly(True)
+        self.invoice_preview.setStyleSheet('background:#ffffff; color:#111827;')
+        layout.addWidget(self.invoice_preview)
+        return self.invoice_preview_group
+
     def retranslate_ui(self) -> None:
         self.summary.setText(
             tr('Inventory, suppliers, stock movements, and Excel exports.')
@@ -411,7 +423,7 @@ class AdministrativePage(DataAwarePage):
             if self.section_mode == 'collections'
             else tr('Administrative addon for billing, inventory, invoicing, and Excel exports.')
         )
-        if self.section_mode != 'inventory':
+        if hasattr(self, 'billing_group'):
             self.billing_group.setTitle(tr('Customer Billing'))
             self.billing_info.setText(tr('Review customers and outstanding balances for administrative follow-up.'))
             self.billing_search.setPlaceholderText(tr('Search customers'))
@@ -467,6 +479,8 @@ class AdministrativePage(DataAwarePage):
 
         if self.section_mode != 'inventory':
             self.invoice_group.setTitle(tr('Cobranza de clientes') if self.section_mode == 'collections' else tr('Invoicing'))
+            if hasattr(self, 'invoice_preview_group'):
+                self.invoice_preview_group.setTitle(tr('Vista Previa de Factura'))
             self.invoice_info.setText(
                 tr('Create cobranza records and customer invoice entries.')
                 if self.section_mode == 'collections'
@@ -480,9 +494,9 @@ class AdministrativePage(DataAwarePage):
             self.invoice_mode.addItem(tr('Invoice / Receipt by Order'), 'order')
             mode_index = self.invoice_mode.findData(current_mode or 'client')
             self.invoice_mode.setCurrentIndex(mode_index if mode_index >= 0 else 0)
-            for key, label in [('invoice_filter_client', 'Client Filter'), ('invoice_filter_date_range', 'Date Range')]:
-                self.invoice_filter_labels[key].setText(tr(label))
-            self.apply_invoice_filter_button.setText(tr('Apply Invoice Filters'))
+            self.invoice_filter_labels['invoice_filter_client'].setText(tr('Client Filter'))
+            date_range_label = tr('Periodo (Desde — Hasta)') if self.section_mode == 'collections' else tr('Date Range')
+            self.invoice_filter_labels['invoice_filter_date_range'].setText(date_range_label)
             self.clear_invoice_filter_button.setText(tr('Clear Invoice Filters'))
             self.save_invoice_button.setText(tr('Save Invoice'))
             self.batch_invoice_button.setText(
@@ -496,6 +510,7 @@ class AdministrativePage(DataAwarePage):
             self.export_invoice_excel_button.setText(tr('Export Invoice Excel'))
             self.send_invoice_whatsapp_button.setText(tr('Send via WhatsApp'))
             self.export_cfdi_button.setText(tr('Export CFDI Preview XML'))
+            self.delete_invoice_button.setText(tr('Delete Invoice'))
             self.invoice_table.setHorizontalHeaderLabels([tr('Invoice Number'), tr('Customer'), tr('Invoice Date'), tr('Status'), tr('Total Amount'), tr('Orders')])
             self.receipt_table.setHorizontalHeaderLabels([tr('Receipt Number'), tr('Order Number'), tr('Customer'), tr('Patient'), tr('Receipt Date'), tr('Total Amount')])
             current_status = self.invoice_status.currentData()
@@ -513,11 +528,6 @@ class AdministrativePage(DataAwarePage):
             index = self.movement_type.findData(current_movement)
             self.movement_type.setCurrentIndex(index if index >= 0 else 0)
 
-        if self.section_mode == 'collections':
-            self.client_results_group.setTitle(tr('Client Results Export'))
-            self.client_results_info.setText(tr('Export all test results for a client between two dates to Excel.'))
-            self.client_results_export_button.setText(tr('Export to Excel'))
-
         if self.section_mode == 'inventory':
             self.export_group.setTitle(tr('Excel Export'))
             self.export_info.setText(tr('Export customers, inventory, invoices, suppliers, and stock movements to Excel.'))
@@ -529,7 +539,7 @@ class AdministrativePage(DataAwarePage):
         self.refresh_data()
 
     def refresh_data(self) -> None:
-        if self.section_mode != 'inventory':
+        if hasattr(self, 'billing_group'):
             self.billing_records = self.database.list_billing_customers()
             if self.section_mode != 'collections':
                 self.doctor_records = self.database.list_doctors(status_filter='all')
@@ -545,7 +555,7 @@ class AdministrativePage(DataAwarePage):
         if self.section_mode != 'inventory':
             self.invoice_number.setText(self.database.next_invoice_number())
         self.refresh_choices()
-        if self.section_mode != 'inventory':
+        if hasattr(self, 'billing_group'):
             self.refresh_billing_table()
             if self.section_mode != 'collections':
                 self.refresh_doctor_table()
@@ -559,9 +569,18 @@ class AdministrativePage(DataAwarePage):
             self.refresh_invoice_table()
             self.refresh_receipt_table()
 
-    def refresh_choices(self) -> None:
-        if self.section_mode == 'collections':
-            self.set_combo_items(self.client_results_client, [(label, client_id) for client_id, label in self.database.list_client_choices(active_only=False)], placeholder=tr('All clients'), selected_data=self.client_results_client.currentData())
+    def refresh_choices(self, *_args) -> None:
+        # Guard against re-entrancy: this repopulates invoice_filter_client, whose
+        # currentIndexChanged is wired back here for auto-apply of the filters.
+        if getattr(self, '_refreshing_choices', False):
+            return
+        self._refreshing_choices = True
+        try:
+            self._refresh_choices_impl()
+        finally:
+            self._refreshing_choices = False
+
+    def _refresh_choices_impl(self) -> None:
         if self.section_mode != 'inventory':
             self.set_combo_items(self.invoice_client, [(label, client_id) for client_id, label in self.database.list_client_choices(active_only=True, include_ids=[self.invoice_client.currentData()] if self.invoice_client.currentData() is not None else None)], placeholder=tr('Select client'), selected_data=self.invoice_client.currentData())
             self.set_combo_items(self.invoice_filter_client, [(label, client_id) for client_id, label in self.database.list_client_choices(active_only=True)], placeholder=tr('All clients'), selected_data=self.invoice_filter_client.currentData())
@@ -581,18 +600,41 @@ class AdministrativePage(DataAwarePage):
             return
         mode = str(self.invoice_mode.currentData() or 'client')
         client_mode = mode == 'client'
+        collections_mode = self.section_mode == 'collections'
         for key in ('invoice_client', 'invoice_order', 'receipt_order'):
             self.invoice_labels[key].setVisible(not client_mode)
             getattr(self, key).setVisible(not client_mode)
         self.save_invoice_button.setVisible(not client_mode)
         self.create_receipt_button.setVisible(not client_mode)
         self.batch_invoice_button.setVisible(client_mode)
+        # In collections client mode hide secondary fields so date pickers are prominent
+        hide_in_collections = collections_mode and client_mode
+        for key in ('invoice_mode', 'invoice_number', 'invoice_total', 'invoice_cfdi_use',
+                    'invoice_payment_form', 'invoice_payment_method', 'invoice_currency'):
+            self.invoice_labels[key].setVisible(not hide_in_collections)
+            getattr(self, key).setVisible(not hide_in_collections)
         self.invoice_filter_labels['invoice_filter_client'].setText(tr('Client') if client_mode else tr('Client Filter'))
         self.invoice_info.setText(
             tr('Select a client and date range, then create a printable invoice that can be exported as PDF or sent through WhatsApp.')
             if client_mode
             else tr('Create invoice or receipt records for individual orders.')
         )
+        self._relayout_invoice_buttons()
+
+    def _relayout_invoice_buttons(self) -> None:
+        """Lay out only the visible action buttons in rows of four.
+
+        Mode toggles hide some buttons (e.g. Save Invoice / Create Receipt in
+        client mode). Re-adding just the visible ones keeps the grid gap-free
+        instead of leaving empty cells where hidden buttons would sit.
+        """
+        grid = self._invoice_button_grid
+        while grid.count():
+            grid.takeAt(0)
+        columns = 4
+        visible = [button for button in self._invoice_buttons if not button.isHidden()]
+        for index, button in enumerate(visible):
+            grid.addWidget(button, index // columns, index % columns)
 
     def refresh_billing_table(self) -> None:
         query = self.billing_search.text().strip().lower()
@@ -648,6 +690,15 @@ class AdministrativePage(DataAwarePage):
 
     def refresh_receipt_table(self) -> None:
         self.set_table_rows(self.receipt_table, [(r.receipt_number, r.order_number, r.client_name or '', r.patient_name, r.receipt_date, self._format_decimal(r.total_amount)) for r in self.receipt_records[:25]])
+
+    def _update_invoice_preview(self) -> None:
+        if not hasattr(self, 'invoice_preview'):
+            return
+        row = self.invoice_table.currentRow()
+        if row < 0 or row >= min(25, len(self.invoice_records)):
+            self.invoice_preview.clear()
+            return
+        self.invoice_preview.setHtml(self._build_invoice_html(self.invoice_records[row]))
 
     def open_client_dialog(self) -> None:
         dialog = ClientDialog(self.database, self)
@@ -755,14 +806,16 @@ class AdministrativePage(DataAwarePage):
             return
         self.invoice_total.setText(self._format_decimal(self.database.calculate_order_total(order_id)))
 
-    def apply_invoice_filters(self) -> None:
-        self.refresh_choices()
-
     def clear_invoice_filters(self) -> None:
-        self.invoice_filter_client.setCurrentIndex(0)
         today = QDate.currentDate()
+        filter_widgets = (self.invoice_filter_client, self.invoice_filter_date_from, self.invoice_filter_date_to)
+        for widget in filter_widgets:
+            widget.blockSignals(True)
+        self.invoice_filter_client.setCurrentIndex(0)
         self.invoice_filter_date_from.setDate(today.addMonths(-1))
         self.invoice_filter_date_to.setDate(today)
+        for widget in filter_widgets:
+            widget.blockSignals(False)
         self.refresh_choices()
 
     def save_invoice(self) -> None:
@@ -890,17 +943,30 @@ class AdministrativePage(DataAwarePage):
             return
         document = QTextDocument()
         document.setHtml(self._build_invoice_html(invoice))
-        printer = QPrinter(QPrinter.HighResolution)
+        printer = QPrinter(QPrinter.ScreenResolution)
         preview = QPrintPreviewDialog(printer, self)
-        preview.paintRequested.connect(document.print)
+        preview.paintRequested.connect(getattr(document, 'print', None) or document.print_)
         preview.exec()
 
     def export_selected_invoice_pdf(self) -> None:
         invoice = self._selected_invoice()
         if invoice is None:
             return
-        path = self._export_invoice_pdf(invoice)
-        QMessageBox.information(self, tr('Saved'), tr('Invoice PDF saved: {path}', path=str(path)))
+        default_name = self._invoice_pdf_path(invoice).name
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr('Save Invoice PDF'), default_name, tr('PDF File (*.pdf)')
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() != '.pdf':
+            target = target.with_suffix('.pdf')
+        try:
+            target = self._export_invoice_pdf(invoice, target)
+        except Exception as exc:  # noqa: BLE001 - surface any export failure to the user
+            QMessageBox.critical(self, tr('Export Failed'), tr('Could not export the invoice PDF: {error}', error=str(exc)))
+            return
+        QMessageBox.information(self, tr('Saved'), tr('Invoice PDF saved: {path}', path=str(target)))
 
     def send_selected_invoice_whatsapp(self) -> None:
         invoice = self._selected_invoice()
@@ -953,6 +1019,30 @@ class AdministrativePage(DataAwarePage):
         target = write_admin_export_workbook(path, sheets)
         QMessageBox.information(self, tr('Saved'), tr('Invoice exported: {path}', path=str(target)))
 
+    def delete_selected_invoice(self) -> None:
+        invoice = self._selected_invoice()
+        if invoice is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            tr('Delete Invoice'),
+            tr(
+                'Permanently delete invoice {number}? Its orders will become available to '
+                'invoice again. This cannot be undone.',
+                number=invoice.invoice_number,
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        if not self.database.delete_invoice(invoice.id):
+            QMessageBox.warning(self, tr('Delete Failed'), tr('The invoice could not be found.'))
+            return
+        self.refresh_data()
+        self.notify_data_changed()
+        QMessageBox.information(self, tr('Deleted'), tr('Invoice {number} deleted.', number=invoice.invoice_number))
+
     def _selected_invoice(self) -> InvoiceRecord | None:
         row = self.invoice_table.currentRow()
         if row < 0 or row >= min(25, len(self.invoice_records)):
@@ -960,22 +1050,22 @@ class AdministrativePage(DataAwarePage):
             return None
         return self.invoice_records[row]
 
-    def _export_invoice_pdf(self, invoice: InvoiceRecord) -> Path:
-        path = self._invoice_pdf_path(invoice)
+    def _export_invoice_pdf(self, invoice: InvoiceRecord, target: Path | None = None) -> Path:
+        path = target if target is not None else self._invoice_pdf_path(invoice)
         path.parent.mkdir(parents=True, exist_ok=True)
-        document = QTextDocument()
-        printer = QPrinter(QPrinter.HighResolution)
+        # ScreenResolution (96 DPI) renders the HTML's px units at their intended
+        # CSS size. HighResolution makes QTextDocument emit px values verbatim as
+        # point sizes and then scale the page by ~0.06, collapsing fonts to ~0.7pt.
+        printer = QPrinter(QPrinter.ScreenResolution)
         printer.setPageSize(QPageSize(QPageSize.A4))
         printer.setPageMargins(QMarginsF(8, 8, 8, 8), QPageLayout.Millimeter)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(str(path))
-        paint_rect = printer.pageLayout().paintRectPoints()
-        if not paint_rect.isEmpty():
-            document.setPageSize(QSizeF(paint_rect.size()))
-            document.setTextWidth(float(paint_rect.width()))
+        document = QTextDocument()
         document.setDocumentMargin(0)
         document.setHtml(self._build_invoice_html(invoice))
-        document.print(printer)
+        print_document = getattr(document, 'print', None) or document.print_
+        print_document(printer)
         return path
 
     def _invoice_pdf_path(self, invoice: InvoiceRecord) -> Path:
@@ -983,40 +1073,111 @@ class AdministrativePage(DataAwarePage):
         safe_client = ''.join(character if character.isalnum() or character in ('-', '_') else '_' for character in (invoice.client_name or 'client'))
         return self.database.db_path.parent / 'exports' / 'invoices' / f'{safe_invoice}_{safe_client}.pdf'
 
+    def _invoice_logo_html(self, logo_path: str) -> str:
+        """Return an <img> for the report logo as a base64 data URI.
+
+        Falls back to the bundled brand logo when the lab profile has no logo
+        configured. Embedding the bytes keeps the image visible when the HTML is
+        rendered by QTextDocument for PDF export.
+        """
+        candidates: list[Path] = []
+        if logo_path:
+            value = str(logo_path).strip()
+            if value.startswith("file:///"):
+                value = value.removeprefix("file:///")
+            if value and not value.startswith(("http://", "https://")):
+                candidates.append(Path(value))
+        candidates.append(Path(__file__).resolve().parent.parent / "assets" / "SDXpurple.png")
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            mime = mimetypes.guess_type(candidate.name)[0] or "image/png"
+            data = base64.b64encode(candidate.read_bytes()).decode("ascii")
+            return f'<img class="logo" height="56" src="data:{mime};base64,{data}">'
+        return ""
+
     def _build_invoice_html(self, invoice: InvoiceRecord) -> str:
         settings = self.database.get_lab_settings()
-        orders = self.database.list_invoice_orders(invoice.id)
-        rows = ''.join(
+        currency = escape(invoice.currency or "MXN")
+        logo_html = self._invoice_logo_html(getattr(settings, "logo_path", "") or "")
+
+        # --- Page 1: breakdown by panel ---------------------------------
+        # Pricing is per panel. Group the per-order panel prices into one line
+        # per (panel, price): "BH  29 x $price = subtotal".
+        panel_rows = self.database.list_invoice_order_panels(invoice.id)
+        summary: dict[tuple[str, float], int] = {}
+        for row in panel_rows:
+            name = str(row.get('panel') or tr('Panel'))
+            price = float(row.get('panel_total') or 0)
+            summary[(name, price)] = summary.get((name, price), 0) + 1
+
+        breakdown_rows = ''.join(
             '<tr>'
-            f'<td>{escape(str(order.get("order_number") or ""))}</td>'
-            f'<td>{escape(str(order.get("order_date") or ""))}</td>'
-            f'<td>{escape(str(order.get("patient_name") or ""))}</td>'
-            f'<td style="text-align:right;">{self._format_decimal(float(order.get("total_amount") or 0))}</td>'
+            f'<td>{escape(name)}</td>'
+            f'<td style="text-align:right;">{count}</td>'
+            f'<td style="text-align:right;">{self._format_decimal(price)}</td>'
+            f'<td style="text-align:right;">{self._format_decimal(price * count)}</td>'
             '</tr>'
-            for order in orders
+            for (name, price), count in sorted(summary.items(), key=lambda item: item[0][0].lower())
         )
-        if not rows:
-            rows = f'<tr><td colspan="4">{escape(tr("No linked orders found."))}</td></tr>'
+        if not breakdown_rows:
+            breakdown_rows = f'<tr><td colspan="4">{escape(tr("No linked orders found."))}</td></tr>'
+
+        # Grand total = sum of the panel breakdown lines (kept consistent with
+        # what is printed on the page, independent of the stored total).
+        grand_total = sum(price * count for (_name, price), count in summary.items())
+
+        # --- Detail pages: every single test (informational listing) -----
+        tests = self.database.list_invoice_tests(invoice.id)
+        panel_details: list[tuple[str, str, str, str]] = []
+        seen_panels: set[tuple[str, str, str, str]] = set()
+        for test in tests:
+            row = (
+                str(test.get("order_number") or ""),
+                str(test.get("order_date") or ""),
+                str(test.get("patient_name") or ""),
+                str(test.get("panel") or ""),
+            )
+            if row in seen_panels:
+                continue
+            seen_panels.add(row)
+            panel_details.append(row)
+        detail_rows = ''.join(
+            '<tr>'
+            f'<td>{escape(order_number)}</td>'
+            f'<td>{escape(order_date)}</td>'
+            f'<td>{escape(patient_name)}</td>'
+            f'<td>{escape(panel)}</td>'
+            '</tr>'
+            for order_number, order_date, patient_name, panel in panel_details
+        )
+        if not detail_rows:
+            detail_rows = f'<tr><td colspan="4">{escape(tr("No linked orders found."))}</td></tr>'
+
         return f"""
         <html>
         <head>
             <style>
                 body {{ font-family: Arial, sans-serif; color: #111827; }}
                 .header {{ border-bottom: 2px solid #7c3aed; padding-bottom: 12px; margin-bottom: 18px; }}
-                .brand {{ font-size: 26px; font-weight: 700; color: #6d28d9; }}
+                .logo {{ height: 56px; margin-bottom: 6px; }}
+                .brand {{ font-size: 26px; font-weight: 700; color: #111827; }}
                 .meta {{ color: #4b5563; font-size: 11px; }}
                 .grid {{ display: table; width: 100%; margin-bottom: 16px; }}
                 .cell {{ display: table-cell; width: 50%; vertical-align: top; }}
                 h1 {{ font-size: 20px; margin: 0 0 8px 0; }}
+                h2 {{ font-size: 15px; margin: 18px 0 4px 0; color: #374151; }}
                 table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
                 th {{ background: #ede9fe; text-align: left; }}
                 th, td {{ border: 1px solid #d1d5db; padding: 7px; font-size: 11px; }}
-                .total {{ text-align: right; font-size: 16px; font-weight: 700; margin-top: 14px; }}
+                .total {{ font-size: 20px; font-weight: 700; color: #111827; margin: 6px 0 4px 0; }}
+                .detail {{ page-break-before: always; }}
                 .notes {{ margin-top: 18px; white-space: pre-wrap; color: #374151; }}
             </style>
         </head>
         <body>
             <div class="header">
+                {logo_html}
                 <div class="brand">{escape(settings.lab_name or "SDX")}</div>
                 <div class="meta">{escape(settings.address or "")}</div>
                 <div class="meta">{escape(settings.phone or "")} {escape(settings.email or "")}</div>
@@ -1029,52 +1190,43 @@ class AdministrativePage(DataAwarePage):
                     <div>{escape(tr("Status"))}: {escape(self._format_invoice_status(invoice.status))}</div>
                 </div>
                 <div class="cell">
-                    <div>{escape(tr("Currency"))}: {escape(invoice.currency or "MXN")}</div>
+                    <div>{escape(tr("Currency"))}: {currency}</div>
                     <div>{escape(tr("Payment Form"))}: {escape(invoice.payment_form or "")}</div>
                     <div>{escape(tr("Payment Method"))}: {escape(invoice.payment_method or "")}</div>
                     <div>{escape(tr("CFDI Use"))}: {escape(invoice.cfdi_use or "")}</div>
                 </div>
             </div>
-            <table>
+            <div class="total">{escape(tr("Total"))}: {self._format_decimal(grand_total)} {currency}</div>
+            <h2>{escape(tr("Breakdown by Panel"))}</h2>
+            <table width="100%" cellspacing="0">
                 <thead>
                     <tr>
-                        <th>{escape(tr("Order"))}</th>
-                        <th>{escape(tr("Date"))}</th>
-                        <th>{escape(tr("Patient"))}</th>
-                        <th style="text-align:right;">{escape(tr("Amount"))}</th>
+                        <th>{escape(tr("Panel"))}</th>
+                        <th style="text-align:right;">{escape(tr("Quantity"))}</th>
+                        <th style="text-align:right;">{escape(tr("Unit Price"))}</th>
+                        <th style="text-align:right;">{escape(tr("Subtotal"))}</th>
                     </tr>
                 </thead>
-                <tbody>{rows}</tbody>
+                <tbody>{breakdown_rows}</tbody>
             </table>
-            <div class="total">{escape(tr("Total"))}: {self._format_decimal(invoice.total_amount)} {escape(invoice.currency or "MXN")}</div>
+            <div class="detail">
+                <h2>{escape(tr("Test Detail"))}</h2>
+                <table width="100%" cellspacing="0">
+                    <thead>
+                        <tr>
+                            <th>{escape(tr("Order"))}</th>
+                            <th>{escape(tr("Date"))}</th>
+                            <th>{escape(tr("Patient"))}</th>
+                            <th>{escape(tr("Panel"))}</th>
+                        </tr>
+                    </thead>
+                    <tbody>{detail_rows}</tbody>
+                </table>
+            </div>
             <div class="notes">{escape(invoice.notes or "")}</div>
         </body>
         </html>
         """
-
-    def _export_client_results(self) -> None:
-        client_id = self.client_results_client.currentData()
-        date_from = self._filter_date_value(self.client_results_date_from)
-        date_to = self._filter_date_value(self.client_results_date_to)
-        rows = self.database.list_client_results_for_export(
-            client_id=client_id,
-            date_from=date_from,
-            date_to=date_to,
-        )
-        if not rows:
-            QMessageBox.information(self, tr('No Data'), tr('No results found for the selected criteria.'))
-            return
-        client_label = self.client_results_client.currentText().strip().replace(' ', '_') or 'all'
-        default_name = f'results_{client_label}_{date_from or "start"}_{date_to or "end"}.xlsx'
-        path, _ = QFileDialog.getSaveFileName(
-            self, tr('Save Results Export'), default_name, tr('Excel Workbook (*.xlsx)')
-        )
-        if not path:
-            return
-        sheets = build_client_results_sheet(rows)
-        target = write_admin_export_workbook(path, sheets)
-        self.client_results_status.setText(tr('Saved: {path}', path=str(target)))
-        QMessageBox.information(self, tr('Saved'), tr('Results exported: {path}', path=str(target)))
 
     def export_admin_workbook(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, tr('Save Administrative Export'), 'administrative_export.xlsx', tr('Excel Workbook (*.xlsx)'))
