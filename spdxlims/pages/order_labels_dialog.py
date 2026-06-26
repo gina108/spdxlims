@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QTextDocument
-from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter
+from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from spdxlims.database import Database
-from spdxlims.niimbot_client import NIIMBOTClient, NIIMBOTClientError
+from spdxlims.label_printer_client import LabelPrinterClient, LabelPrinterError
 from spdxlims.i18n import tr
 
 
@@ -73,6 +73,7 @@ class OrderLabelsDialog(QDialog):
         self.label_rows: list[dict[str, object]] = list(label_rows or [])
         self.client_id: int | None = None
         self._loading_preferences = False
+        self._saved_printer = 'niimbot:B1'
         self.show_barcode = True
         self.show_patient_name = True
         self.setWindowTitle(tr("Print Labels"))
@@ -131,10 +132,32 @@ class OrderLabelsDialog(QDialog):
         self.copies_input.setRange(1, 99)
         self.copies_input.setValue(1)
         self.copies_input.valueChanged.connect(self._refresh_preview)
+        self.density_label = QLabel()
+        self.density_input = QSpinBox()
+        self.density_input.setRange(1, 5)
+        self.density_input.setValue(4)
+        self.density_input.setToolTip(tr("Print darkness (1=light, 5=dark). Increase for cheap or thick labels."))
+        self.density_input.valueChanged.connect(self._on_density_changed)
+        self.printer_label = QLabel()
+        self.printer_combo = QComboBox()
+        self.printer_combo.currentIndexChanged.connect(self._on_printer_changed)
+        self._printer_refresh_btn = QPushButton("⟳")
+        self._printer_refresh_btn.setFixedWidth(28)
+        self._printer_refresh_btn.setToolTip(tr("Refresh printer list"))
+        self._printer_refresh_btn.clicked.connect(self._refresh_printer_combo)
+        printer_container = QWidget()
+        printer_layout = QHBoxLayout(printer_container)
+        printer_layout.setContentsMargins(0, 0, 0, 0)
+        printer_layout.addWidget(self.printer_combo)
+        printer_layout.addWidget(self._printer_refresh_btn)
         controls.addWidget(self.show_order_number_text, 0, 0, 1, 2)
         controls.addWidget(self.show_datetime, 0, 2, 1, 2)
         controls.addWidget(self.copies_label, 1, 0)
         controls.addWidget(self.copies_input, 1, 1)
+        controls.addWidget(self.density_label, 1, 2)
+        controls.addWidget(self.density_input, 1, 3)
+        controls.addWidget(self.printer_label, 2, 0)
+        controls.addWidget(printer_container, 2, 1, 1, 3)
         root.addLayout(controls)
 
         self.preview = QTextEdit()
@@ -167,6 +190,8 @@ class OrderLabelsDialog(QDialog):
             return
         self.info.setText(tr("Preview the specimen labels for the selected order before printing."))
         self.copies_label.setText(tr("Copies"))
+        self.density_label.setText(tr("Darkness"))
+        self.printer_label.setText(tr("Printer"))
         self.show_order_number_text.setText(tr("Show Order Number Text"))
         self.show_datetime.setText(tr("Show Date, Sex & Age"))
         self.client_id = self._resolve_client_id()
@@ -179,7 +204,7 @@ class OrderLabelsDialog(QDialog):
         if not panel_codes:
             return
         saved_extras = self.database.get_panel_extra_copies()
-        header_row = 2
+        header_row = 3
         header = QLabel("Copias extra por panel:")
         self._controls.addWidget(header, header_row, 0, 1, 4)
         for i, code in enumerate(panel_codes, start=1):
@@ -225,6 +250,14 @@ class OrderLabelsDialog(QDialog):
             self.copies_input.setValue(max(1, int(str(preferences.get('copies') or '1'))))
         except ValueError:
             self.copies_input.setValue(1)
+        try:
+            self.density_input.setValue(max(1, min(5, int(str(preferences.get('density') or '4')))))
+        except ValueError:
+            self.density_input.setValue(4)
+        self._saved_printer = str(preferences.get('printer') or 'niimbot:B1')
+        self._populate_printer_combo(self._saved_printer)
+        is_system = self._saved_printer.startswith('system:') or self._saved_printer == 'system_default'
+        self.print_niimbot_button.setText(tr("Print to Printer") if is_system else tr("Print to NIIMBOT"))
         self._loading_preferences = False
         self._refresh_preview()
 
@@ -239,6 +272,8 @@ class OrderLabelsDialog(QDialog):
             show_patient_name=self.show_patient_name,
             show_order_number_text=self.show_order_number_text.isChecked(),
             show_datetime=self.show_datetime.isChecked(),
+            density=str(self.density_input.value()),
+            printer=str(self.printer_combo.currentData() or 'niimbot:B1'),
         )
 
     def _on_template_changed(self) -> None:
@@ -252,6 +287,33 @@ class OrderLabelsDialog(QDialog):
         self._refresh_preview()
         if not self._loading_preferences:
             self._save_label_preferences()
+
+    def _on_density_changed(self) -> None:
+        if not self._loading_preferences:
+            self._save_label_preferences()
+
+    def _populate_printer_combo(self, saved: str = "") -> None:
+        self.printer_combo.blockSignals(True)
+        self.printer_combo.clear()
+        self.printer_combo.addItem(tr("NIIMBOT B1 (via helper)"), "niimbot:B1")
+        self.printer_combo.addItem(tr("Default system printer"), "system_default")
+        for p in QPrinterInfo.availablePrinters():
+            name = p.printerName()
+            self.printer_combo.addItem(name, f"system:{name}")
+        idx = self.printer_combo.findData(saved or "niimbot:B1")
+        self.printer_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.printer_combo.blockSignals(False)
+
+    def _refresh_printer_combo(self) -> None:
+        self._populate_printer_combo(str(self.printer_combo.currentData() or ""))
+
+    def _on_printer_changed(self) -> None:
+        if self._loading_preferences:
+            return
+        self._saved_printer = str(self.printer_combo.currentData() or "niimbot:B1")
+        is_system = self._saved_printer.startswith("system:") or self._saved_printer == "system_default"
+        self.print_niimbot_button.setText(tr("Print to Printer") if is_system else tr("Print to NIIMBOT"))
+        self._save_label_preferences()
 
     def _apply_template_defaults(self) -> None:
         if not hasattr(self, "payload_combo"):
@@ -304,6 +366,11 @@ class OrderLabelsDialog(QDialog):
 
     def print_labels(self) -> None:
         printer = QPrinter(QPrinter.HighResolution)
+        saved_printer = getattr(self, '_saved_printer', 'system_default')
+        if saved_printer.startswith('system:'):
+            printer_name = saved_printer[len('system:'):]
+            if printer_name:
+                printer.setPrinterName(printer_name)
         preview = QPrintPreviewDialog(printer, self)
         document = QTextDocument()
         document.setHtml(self.preview.toHtml())
@@ -324,17 +391,23 @@ class OrderLabelsDialog(QDialog):
             return
         copies = self._copies_count()
         width_mm, height_mm = self._niimbot_label_size(self.size_combo.currentData())
-        client = NIIMBOTClient()
+        saved_printer = self._saved_printer
+        client = LabelPrinterClient()
         try:
-            printers = client.list_printers()
-            printer = next((item for item in printers if item.id and item.status.lower() != "offline"), None)
-            if printer is None:
-                raise NIIMBOTClientError(tr("No NIIMBOT printer was reported by the local helper."))
+            printer_id = saved_printer
+            if saved_printer.startswith("niimbot:"):
+                printers = client.list_printers()
+                niimbot = next(
+                    (p for p in printers if p.id.startswith("niimbot:") and p.status.lower() != "offline"),
+                    None,
+                )
+                if niimbot is None:
+                    raise LabelPrinterError(tr("No NIIMBOT printer was reported by the local helper."))
+                printer_id = niimbot.id
             token = self._build_token(base_row, "order_only")
-            safe_token = "".join(character if character.isalnum() else "" for character in token.upper()) or token.upper()
-            patient_name = str(base_row.get("patient_name") or "").strip()
+            safe_token = "".join(ch if ch.isalnum() else "" for ch in token.upper()) or token.upper()
             client.print_label(
-                printer_id=printer.id,
+                printer_id=printer_id,
                 width_mm=width_mm,
                 height_mm=height_mm,
                 barcode_value=safe_token,
@@ -342,14 +415,15 @@ class OrderLabelsDialog(QDialog):
                 text_lines=self._label_text_lines(base_row),
                 show_barcode=self.show_barcode,
                 copies=copies,
+                density=self.density_input.value(),
             )
-        except NIIMBOTClientError as exc:
-            QMessageBox.warning(self, tr("NIIMBOT Print Failed"), str(exc))
+        except LabelPrinterError as exc:
+            QMessageBox.warning(self, tr("Print Failed"), str(exc))
             return
         QMessageBox.information(
             self,
             tr("Printed"),
-            tr("Sent {count} NIIMBOT label(s) to the printer.", count=str(copies)),
+            tr("Sent {count} label(s) to the printer.", count=str(copies)),
         )
 
     def _base_label_row(self, rows: list[dict[str, object]]) -> dict[str, object] | None:

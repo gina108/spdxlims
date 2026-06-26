@@ -146,9 +146,10 @@ def print_label(payload: dict[str, Any]) -> None:
     if width_mm <= 0 or height_mm <= 0:
         raise RuntimeError("label size is required")
 
+    density = max(1, min(5, int(payload.get("density") or 4)))
     port = resolve_port(printer_id)
     image = render_label(width_mm, height_mm, barcode_value, human_text, text_lines, show_barcode=show_barcode)
-    print_b1_image(port, image, copies=copies, density=3)
+    print_b1_image(port, image, copies=copies, density=density)
 
 
 def print_b1_image(port: str, image: Image.Image, *, copies: int, density: int) -> None:
@@ -157,7 +158,7 @@ def print_b1_image(port: str, image: Image.Image, *, copies: int, density: int) 
         reset_transport_buffers(client)
         for _copy_number in range(copies):
             transceive_required(client, 0x21, bytes((density,)), respoffset=16)
-            transceive_required(client, 0x23, b"\x01", respoffset=16)
+            transceive_required(client, 0x23, b"\x03", respoffset=16)
             # Newer B1 firmware expects total pages and page color in PrintStart.
             transceive_required(client, 0x01, struct.pack(">H5B", 1, 0, 0, 0, 0, 0))
             transceive_required(client, 0x03, b"\x01")

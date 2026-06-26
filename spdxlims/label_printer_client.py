@@ -8,35 +8,39 @@ from pathlib import Path
 from typing import Any
 
 
-class NIIMBOTClientError(RuntimeError):
+class LabelPrinterError(RuntimeError):
     pass
 
 
 @dataclass(slots=True)
-class NIIMBOTPrinter:
+class LabelPrinter:
     id: str
     model: str
     connection: str
     status: str
 
 
-class NIIMBOTClient:
-    def list_printers(self) -> list[NIIMBOTPrinter]:
-        payload = self._run_bridge("list-printers", stdin_data=None)
-        if not isinstance(payload, list):
-            raise NIIMBOTClientError("Unexpected printers response from NIIMBOT bridge.")
-        printers: list[NIIMBOTPrinter] = []
-        for item in payload:
-            if not isinstance(item, dict):
+class LabelPrinterClient:
+    """Dispatches label print jobs to the correct bridge (NIIMBOT or Windows GDI)."""
+
+    def list_printers(self) -> list[LabelPrinter]:
+        printers: list[LabelPrinter] = []
+        for script in (self._niimbot_script(), self._generic_script()):
+            if not script.exists():
                 continue
-            printers.append(
-                NIIMBOTPrinter(
-                    id=str(item.get("id") or ""),
-                    model=str(item.get("model") or ""),
-                    connection=str(item.get("connection") or ""),
-                    status=str(item.get("status") or ""),
-                )
-            )
+            try:
+                result = self._run_bridge(script, "list-printers", None)
+                if isinstance(result, list):
+                    for item in result:
+                        if isinstance(item, dict) and item.get("id"):
+                            printers.append(LabelPrinter(
+                                id=str(item.get("id") or ""),
+                                model=str(item.get("model") or ""),
+                                connection=str(item.get("connection") or ""),
+                                status=str(item.get("status") or ""),
+                            ))
+            except LabelPrinterError:
+                pass
         return printers
 
     def print_label(
@@ -54,10 +58,7 @@ class NIIMBOTClient:
     ) -> dict[str, Any]:
         payload = {
             "printer_id": printer_id,
-            "label": {
-                "width_mm": width_mm,
-                "height_mm": height_mm,
-            },
+            "label": {"width_mm": width_mm, "height_mm": height_mm},
             "content": {
                 "barcode_type": "code39",
                 "barcode_value": barcode_value,
@@ -68,13 +69,13 @@ class NIIMBOTClient:
             "copies": copies,
             "density": max(1, min(5, density)),
         }
-        return self._run_bridge("print-label", stdin_data=json.dumps(payload).encode("utf-8"))
+        script = self._niimbot_script() if printer_id.startswith("niimbot:") else self._generic_script()
+        return self._run_bridge(script, "print-label", json.dumps(payload).encode("utf-8"))
 
-    def _run_bridge(self, command: str, *, stdin_data: bytes | None) -> Any:
-        script = self._bridge_script()
+    def _run_bridge(self, script: Path, command: str, stdin_data: bytes | None) -> Any:
         if not script.exists():
-            raise NIIMBOTClientError(
-                "The NIIMBOT bridge script was not found. "
+            raise LabelPrinterError(
+                f"Bridge script not found: {script.name}. "
                 "Make sure the niimbot-helper directory is present next to the application."
             )
         creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -87,20 +88,20 @@ class NIIMBOTClient:
                 creationflags=creation_flags,
             )
         except subprocess.TimeoutExpired as exc:
-            raise NIIMBOTClientError("The NIIMBOT bridge timed out.") from exc
+            raise LabelPrinterError("The label printer bridge timed out.") from exc
         except OSError as exc:
-            raise NIIMBOTClientError(f"Could not start the NIIMBOT bridge: {exc}") from exc
+            raise LabelPrinterError(f"Could not start the label printer bridge: {exc}") from exc
         if result.returncode != 0:
             message = result.stderr.decode("utf-8", errors="replace").strip()
-            raise NIIMBOTClientError(self._translate_bridge_error(message) or f"NIIMBOT bridge exited with code {result.returncode}.")
+            raise LabelPrinterError(self._translate_error(message) or f"Bridge exited with code {result.returncode}.")
         raw = result.stdout.decode("utf-8", errors="replace").strip()
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise NIIMBOTClientError("The NIIMBOT bridge returned invalid JSON.") from exc
+            raise LabelPrinterError("The label printer bridge returned invalid JSON.") from exc
 
     @staticmethod
-    def _translate_bridge_error(message: str) -> str:
+    def _translate_error(message: str) -> str:
         if not message:
             return message
         lowered = message.lower()
@@ -115,5 +116,9 @@ class NIIMBOTClient:
         return message
 
     @classmethod
-    def _bridge_script(cls) -> Path:
+    def _niimbot_script(cls) -> Path:
         return Path(__file__).resolve().parents[1] / "niimbot-helper" / "scripts" / "niimbot_bridge.py"
+
+    @classmethod
+    def _generic_script(cls) -> Path:
+        return Path(__file__).resolve().parents[1] / "niimbot-helper" / "scripts" / "generic_printer_bridge.py"
