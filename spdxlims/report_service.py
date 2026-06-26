@@ -86,3 +86,9 @@ class ReportService(ServiceBase):
         if preview_override is not None:
             body['preview_override'] = preview_override
         self.deployment_service.request_json('POST', f'/api/reports/orders/{order_id}/finalize', body)
+
+    def delete_saved_report(self, order_id: int | str) -> None:
+        if self._is_local():
+            self.database.delete_saved_report(int(order_id))
+            return
+        raise RuntimeError('Deleting saved reports is currently available only in local mode.')

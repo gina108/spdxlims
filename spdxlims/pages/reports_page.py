@@ -4,7 +4,7 @@ import importlib
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QEventLoop, QMarginsF, QTimer, QUrl
+from PySide6.QtCore import QDate, QEventLoop, QMarginsF, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -17,7 +17,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QLayout,
     QPushButton,
+    QScrollArea,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -40,6 +43,9 @@ except ImportError:  # pragma: no cover
 class ReportsPage(DataAwarePage):
     FILTER_DATE_MIN = QDate(2000, 1, 1)
 
+    def minimumSizeHint(self) -> QSize:
+        return QSize(1, 1)
+
     def __init__(self, database: Database, deployment_service: DeploymentService) -> None:
         super().__init__()
         self.database = database
@@ -51,14 +57,25 @@ class ReportsPage(DataAwarePage):
         self.preview: QWidget
         self._preview_html_setter: Callable[..., None] | None = None
 
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        selector_scroll = QScrollArea()
+        selector_scroll.setWidgetResizable(True)
+        selector_scroll.setFrameShape(QScrollArea.NoFrame)
+        selector_scroll.setWidget(self._build_selector_group())
+        splitter.addWidget(selector_scroll)
+        splitter.addWidget(self._build_preview_group())
+        splitter.setSizes([5000, 5000])
         root = QHBoxLayout(self)
-        root.addWidget(self._build_selector_group(), 1)
-        root.addWidget(self._build_preview_group(), 7)
+        root.setSizeConstraint(QLayout.SetNoConstraint)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(splitter)
 
         self.retranslate_ui()
         self.refresh_orders()
         self.load_branding_options()
         self._update_actions()
+        self.setMinimumWidth(1)
 
     def _build_selector_group(self) -> QWidget:
         self.selector_group = QGroupBox()
@@ -68,8 +85,9 @@ class ReportsPage(DataAwarePage):
         self.selector_labels: dict[str, QLabel] = {}
         self.report_client_filter = QComboBox()
         self.report_test_filter = QComboBox()
-        self.report_date_from = QDateEdit()
-        self.report_date_to = QDateEdit()
+        _today = QDate.currentDate()
+        self.report_date_from = QDateEdit(_today.addMonths(-1))
+        self.report_date_to = QDateEdit(_today)
         self.filter_button = QPushButton()
         self.filter_button.clicked.connect(self.apply_report_filters)
         self.clear_filter_button = QPushButton()
@@ -77,6 +95,9 @@ class ReportsPage(DataAwarePage):
         self.bulk_finalize_button = QPushButton()
         self.bulk_finalize_button.clicked.connect(self.finalize_filtered_reports)
         self.order_combo = QComboBox()
+        self.order_combo.setEditable(True)
+        self.order_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.order_combo.completer().setFilterMode(Qt.MatchFlag.MatchContains)
         self.load_button = QPushButton()
         self.load_button.clicked.connect(self.load_saved_or_live_preview)
         self.barcode_input = QLineEdit()
@@ -93,16 +114,26 @@ class ReportsPage(DataAwarePage):
         self.add_footer_button.clicked.connect(self.add_footer_image)
         self.filter_status = QLabel()
         self.filter_status.setWordWrap(True)
+        for combo in (
+            self.report_client_filter,
+            self.report_test_filter,
+            self.order_combo,
+            self.header_combo,
+            self.footer_combo,
+        ):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(10)
         for widget in (self.report_date_from, self.report_date_to):
             widget.setCalendarPopup(True)
             widget.setDisplayFormat("yyyy-MM-dd")
             widget.setMinimumDate(self.FILTER_DATE_MIN)
             widget.setSpecialValueText(" ")
-            widget.setDate(self.FILTER_DATE_MIN)
+            widget.setMaximumWidth(120)
 
         filter_actions_row = QWidget()
-        filter_actions_layout = QHBoxLayout(filter_actions_row)
+        filter_actions_layout = QVBoxLayout(filter_actions_row)
         filter_actions_layout.setContentsMargins(0, 0, 0, 0)
+        filter_actions_layout.setSpacing(4)
         filter_actions_layout.addWidget(self.filter_button)
         filter_actions_layout.addWidget(self.clear_filter_button)
         filter_actions_layout.addWidget(self.bulk_finalize_button)
@@ -194,7 +225,7 @@ class ReportsPage(DataAwarePage):
         web_view_class = self._get_web_view_class()
         if web_view_class is not None:
             self.preview = web_view_class()
-            self.preview.setStyleSheet('background:#ffffff; border:1px solid #c9d1dc;')
+            self.preview.setStyleSheet('background:#ffffff; border:2px solid #392c4b;')
             settings = getattr(self.preview, 'settings', None)
             if callable(settings):
                 preview_settings = settings()
@@ -210,7 +241,7 @@ class ReportsPage(DataAwarePage):
         else:
             self.preview = QTextEdit()
             self.preview.setReadOnly(True)
-            self.preview.setStyleSheet('background:#ffffff; color:#111111; border:1px solid #c9d1dc;')
+            self.preview.setStyleSheet('background:#ffffff; color:#111111; border:2px solid #392c4b;')
             self._preview_html_setter = self.preview.setHtml
         layout.addWidget(self.preview)
         return self.preview_group
@@ -650,4 +681,4 @@ class ReportsPage(DataAwarePage):
 
     @staticmethod
     def _empty_html() -> str:
-        return '<html><body style="font-family:Segoe UI, Arial, sans-serif;color:#dfe5ec;">Select an order to preview a report.</body></html>'
+        return '<html><body style="font-family:Segoe UI, Arial, sans-serif;color:#8b95aa;">Select an order to preview a report.</body></html>'

@@ -36,6 +36,11 @@ class ReportEditorDialog(QDialog):
         "reference_text",
         "comments",
     )
+    _ITEM_TYPE_COLORS: dict[str, tuple[str, str, str]] = {
+        "test":    ("#A8B3C2", "#21272D", "#2E3640"),
+        "heading": ("#C9A8FF", "#1E1242", "#7756BE"),
+        "comment": ("#697789", "#20252B", "#252C34"),
+    }
 
     def __init__(self, preview: dict[str, object], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,6 +68,10 @@ class ReportEditorDialog(QDialog):
         table_actions.addWidget(QLabel(tr("Report Rows")))
         table_actions.addStretch(1)
 
+        add_row_button = QPushButton(tr("Fila en blanca"))
+        add_row_button.clicked.connect(self._add_blank_row)
+        table_actions.addWidget(add_row_button)
+
         remove_button = QPushButton(tr("Delete Selected Row"))
         remove_button.clicked.connect(self._remove_selected_row)
         table_actions.addWidget(remove_button)
@@ -77,6 +86,8 @@ class ReportEditorDialog(QDialog):
         layout.addLayout(table_actions)
 
         self.items_table = QTableWidget(0, len(self._ROW_COLUMNS))
+        self.items_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.items_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.items_table.setHorizontalHeaderLabels(
             [
                 tr("Item Type"),
@@ -108,25 +119,14 @@ class ReportEditorDialog(QDialog):
         items = list(self._preview.get("items") or [])
         self.items_table.setRowCount(len(items))
         for row_index, item in enumerate(items):
-            item_type_combo = QComboBox()
-            item_type_combo.setStyleSheet(
-                """
-                QComboBox {
-                    padding: 1px 8px 1px 6px;
-                    margin: 0px;
-                    min-height: 24px;
-                }
-                QComboBox::drop-down {
-                    width: 18px;
-                    border: none;
-                }
-                """
-            )
-            item_type_combo.addItem(tr("Test"), "test")
-            item_type_combo.addItem(tr("Heading"), "heading")
-            item_type_combo.addItem(tr("Comment"), "comment")
-            current_index = item_type_combo.findData(str(item.get("item_type") or "test"))
+            item_type_combo = self._make_type_combo()
+            current_type = str(item.get("item_type") or "test")
+            current_index = item_type_combo.findData(current_type)
             item_type_combo.setCurrentIndex(current_index if current_index >= 0 else 0)
+            self._style_type_combo(item_type_combo, current_type)
+            item_type_combo.currentIndexChanged.connect(
+                lambda _idx, c=item_type_combo: self._style_type_combo(c, str(c.currentData() or "test"))
+            )
             self.items_table.setCellWidget(row_index, 0, item_type_combo)
             self._set_table_text(row_index, 1, str(item.get("test_name") or ""), metadata=dict(item))
             self._set_flag_combo(row_index, str(item.get("flag") or ""))
@@ -146,6 +146,23 @@ class ReportEditorDialog(QDialog):
         if row < 0:
             return
         self.items_table.removeRow(row)
+
+    def _add_blank_row(self) -> None:
+        row = self.items_table.rowCount()
+        self.items_table.insertRow(row)
+        item_type_combo = self._make_type_combo()
+        self._style_type_combo(item_type_combo, "test")
+        item_type_combo.currentIndexChanged.connect(
+            lambda _idx, c=item_type_combo: self._style_type_combo(c, str(c.currentData() or "test"))
+        )
+        self.items_table.setCellWidget(row, 0, item_type_combo)
+        self._set_table_text(row, 1, "", metadata={})
+        self._set_flag_combo(row, "")
+        self._set_table_text(row, 3, "")
+        self._set_table_text(row, 4, "")
+        self._set_table_text(row, 5, "")
+        self._set_table_text(row, 6, "")
+        self.items_table.setCurrentCell(row, 1)
 
     def _move_selected_row(self, offset: int) -> None:
         row = self.items_table.currentRow()
@@ -178,8 +195,10 @@ class ReportEditorDialog(QDialog):
     def _restore_row_data(self, row: int, row_data: dict[str, object]) -> None:
         combo = self.items_table.cellWidget(row, 0)
         if isinstance(combo, QComboBox):
-            index = combo.findData(str(row_data.get("item_type") or "test"))
+            item_type = str(row_data.get("item_type") or "test")
+            index = combo.findData(item_type)
             combo.setCurrentIndex(index if index >= 0 else 0)
+            self._style_type_combo(combo, item_type)
         self._set_table_text(row, 1, str(row_data.get("test_name") or ""), metadata=dict(row_data.get("__source_item") or {}))
         self._set_flag_combo(row, str(row_data.get("flag") or ""))
         self._set_table_text(row, 3, str(row_data.get("result_value") or ""))
@@ -200,6 +219,47 @@ class ReportEditorDialog(QDialog):
         index = combo.findData(normalized)
         combo.setCurrentIndex(index if index >= 0 else 0)
         self.items_table.setCellWidget(row, 2, combo)
+
+    def _make_type_combo(self) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem(tr("Test"), "test")
+        combo.addItem(tr("Heading"), "heading")
+        combo.addItem(tr("Comment"), "comment")
+        return combo
+
+    @staticmethod
+    def _style_combo(combo: QComboBox, color: str, bg: str, border: str) -> None:
+        combo.setStyleSheet(f"""
+            QComboBox {{
+                color: {color};
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 4px;
+                margin: 4px 6px;
+                padding: 2px 22px 2px 8px;
+                font-weight: 600;
+            }}
+            QComboBox::drop-down {{ border: none; width: 20px; }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {color};
+                margin-right: 6px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #20252B;
+                border: 1px solid #2E3640;
+                color: #F0F4FF;
+                selection-background-color: #341F5C;
+                outline: 0;
+            }}
+        """)
+
+    @classmethod
+    def _style_type_combo(cls, combo: QComboBox, value: str) -> None:
+        color, bg, border = cls._ITEM_TYPE_COLORS.get(value, cls._ITEM_TYPE_COLORS["test"])
+        cls._style_combo(combo, color, bg, border)
 
     def _flag_value(self, row: int) -> str:
         combo = self.items_table.cellWidget(row, 2)

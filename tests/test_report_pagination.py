@@ -2,6 +2,7 @@
 from spdxlims.report_layout import _rendered_image_height_mm, _row_page_limit_for_footer
 from spdxlims.report_layout import build_report_html
 from spdxlims.i18n import tr
+from spdxlims.db.results import ResultsMixin
 
 
 def test_report_header_places_age_above_birthdate() -> None:
@@ -210,3 +211,80 @@ def test_short_panel_metadata_fits_with_previous_rows_when_space_is_available(tm
 
     assert "Levaduras" in first_page_body
     assert "Metodología" in first_page_body
+
+
+def test_merge_restores_source_label_for_sub_headings() -> None:
+    # Sub-headings (e.g. "EXAMEN DE LAS CARACTERISTICAS FISICAS" inside
+    # "EXAMEN GENERAL DE ORINA") lose their source_label when a report is saved
+    # because heading rows have no order_test_id and are not matched by the
+    # normal merge path.  The fix must re-attach source_label so that all rows
+    # belonging to EGO end up in one pagination chunk, preventing the heading
+    # and first sub-section from being stranded on a different page.
+    saved_items = [
+        {"order_test_id": None, "item_type": "heading", "test_name": "EXAMEN GENERAL DE ORINA", "source_label": None},
+        {"order_test_id": None, "item_type": "heading", "test_name": "EXAMEN DE LAS CARACTERISTICAS FISICAS", "source_label": None},
+        {"order_test_id": "t1", "item_type": "test", "test_name": "Color", "result_value": "Amarillo", "source_label": None},
+    ]
+    live_items = [
+        {"order_test_id": None, "item_type": "heading", "test_name": "EXAMEN GENERAL DE ORINA", "source_label": None},
+        {"order_test_id": None, "item_type": "heading", "test_name": "EXAMEN DE LAS CARACTERISTICAS FISICAS", "source_label": "EXAMEN GENERAL DE ORINA"},
+        {"order_test_id": "t1", "item_type": "test", "test_name": "Color", "result_value": "Amarillo", "source_label": "EXAMEN GENERAL DE ORINA"},
+    ]
+    merged = ResultsMixin._merge_saved_result_values_into_live_items(saved_items, live_items)
+
+    ego_heading = merged[0]
+    fisicas_heading = merged[1]
+    color_test = merged[2]
+
+    # Top-level heading has no source_label in the live data — should stay None
+    assert not (ego_heading.get("source_label") or "").strip()
+    # Sub-heading must regain its source_label
+    assert fisicas_heading["source_label"] == "EXAMEN GENERAL DE ORINA"
+    # Test item source_label is restored via the normal order_test_id path
+    assert color_test["source_label"] == "EXAMEN GENERAL DE ORINA"
+
+
+def test_merge_skips_source_label_restore_for_ambiguous_heading_names() -> None:
+    # If two live headings share the same name, we cannot safely pick one; skip.
+    saved_items = [
+        {"order_test_id": None, "item_type": "heading", "test_name": "QUIMICAS", "source_label": None},
+    ]
+    live_items = [
+        {"order_test_id": None, "item_type": "heading", "test_name": "QUIMICAS", "source_label": "PANEL A"},
+        {"order_test_id": None, "item_type": "heading", "test_name": "QUIMICAS", "source_label": "PANEL B"},
+    ]
+    merged = ResultsMixin._merge_saved_result_values_into_live_items(saved_items, live_items)
+    assert not (merged[0].get("source_label") or "").strip()
+
+
+def test_panel_with_sub_headings_stays_together_in_saved_report_layout() -> None:
+    # Simulate a saved report where sub-headings have their source_label restored.
+    # All EGO rows should share panel_group = "EXAMEN GENERAL DE ORINA" so the
+    # pagination keeps them as one chunk and avoids a split.
+    ego_items = [
+        {"item_type": "heading", "test_name": "EXAMEN GENERAL DE ORINA"},
+        {"item_type": "heading", "test_name": "EXAMEN DE LAS CARACTERISTICAS FISICAS", "source_label": "EXAMEN GENERAL DE ORINA"},
+        {"item_type": "test", "test_name": "Color", "result_value": "Amarillo", "source_label": "EXAMEN GENERAL DE ORINA"},
+        {"item_type": "test", "test_name": "Aspecto", "result_value": "Claro", "source_label": "EXAMEN GENERAL DE ORINA"},
+        {"item_type": "test", "test_name": "Densidad", "result_value": "1.005", "source_label": "EXAMEN GENERAL DE ORINA"},
+        {"item_type": "heading", "test_name": "EXAMEN DE LAS CARACTERISTICAS QUIMICAS", "source_label": "EXAMEN GENERAL DE ORINA"},
+        *[{"item_type": "test", "test_name": f"Quim {i}", "result_value": "Neg", "source_label": "EXAMEN GENERAL DE ORINA"} for i in range(9)],
+        {"item_type": "heading", "test_name": "EXAMEN MICROSCOPICO DEL SEDIMENTO URINARIO", "source_label": "EXAMEN GENERAL DE ORINA"},
+        *[{"item_type": "test", "test_name": f"Micro {i}", "result_value": "Neg", "source_label": "EXAMEN GENERAL DE ORINA"} for i in range(9)],
+        {"item_type": "panel_meta", "comments": "Metodología: Fisicoquimico | Tipo de Muestra: Orina"},
+    ]
+    # Preceding items that fill ~13 row-units (TP+TT + GLUCOSA + CREATININA proxy)
+    preceding = [
+        {"item_type": "heading", "test_name": "PANEL PREVIO"},
+        *[{"item_type": "test", "test_name": f"Pre {i}", "result_value": "1"} for i in range(11)],
+        {"item_type": "panel_meta", "comments": "Met: algo"},
+    ]
+    html = build_report_html({"items": preceding + ego_items})
+
+    # All of EGO (every sub-heading and test) must appear on the same page.
+    pages = html.split("results-page-number")
+    ego_page = next((p for p in pages if "EXAMEN GENERAL DE ORINA" in p), None)
+    assert ego_page is not None, "EGO heading not found in any page"
+    assert "EXAMEN DE LAS CARACTERISTICAS FISICAS" in ego_page
+    assert "EXAMEN DE LAS CARACTERISTICAS QUIMICAS" in ego_page
+    assert "EXAMEN MICROSCOPICO DEL SEDIMENTO URINARIO" in ego_page

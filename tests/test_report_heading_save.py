@@ -208,6 +208,79 @@ def test_saved_report_preview_refreshes_panel_structure(tmp_path):
     assert "Colorimetria" in rendered[-1][2]
 
 
+def test_saved_report_preview_keeps_manually_edited_subtitle(tmp_path):
+    database = Database(tmp_path / "lims.db")
+    database.initialize()
+    patient_id = database.create_patient(
+        {
+            "first_name": "Maria",
+            "last_name": "",
+            "middle_name": "",
+            "sex": "F",
+            "date_of_birth": "",
+            "age_value": 30,
+            "age_unit": "years",
+            "phone": "",
+        }
+    )
+    database.create_test(
+        {
+            "code": "GLU",
+            "name": "Glucosa",
+            "category_name": "Chemistry",
+            "specimen_type": "Serum",
+            "method": "",
+            "result_kind": "text",
+            "select_options": [],
+            "default_result_value": "",
+            "price": 0,
+        },
+        [],
+    )
+    test_id = database.get_test_id_by_code("GLU")
+    assert test_id is not None
+    database.create_panel(
+        "CHEM",
+        "Quimica Clinica",
+        [
+            {"item_type": "heading", "heading_text": "Metabolitos", "label": "Metabolitos"},
+            {"item_type": "test", "test_id": test_id, "label": "Glucosa"},
+        ],
+        specimen_type="Suero",
+        method="Colorimetria",
+    )
+    panel_id = database.get_panel_id_by_code("CHEM")
+    assert panel_id is not None
+    order_items = [
+        {
+            "item_type": item.item_type,
+            "test_id": item.test_id,
+            "label": item.heading_text or item.label,
+            "source": "Quimica Clinica",
+        }
+        for item in database.get_panel_order_items(panel_id)
+    ]
+    order_id = database.create_order(None, None, None, patient_id, None, None, order_items, "draft", "")
+
+    preview = database.get_live_report_preview(order_id)
+    assert preview is not None
+    # Simulate the user editing the sub-heading text in the report editor.
+    for item in preview["items"]:
+        if item["item_type"] == "heading" and item["test_name"] == "Metabolitos":
+            item["test_name"] = "Metabolitos (suero en ayuno)"
+    database.finalize_report(order_id, preview_override=preview)
+
+    saved = database.get_saved_report_preview(order_id)
+
+    assert saved is not None
+    headings = [item["test_name"] for item in saved["items"] if item["item_type"] == "heading"]
+    # The auto-generated panel title still refreshes from the catalog...
+    assert "Quimica Clinica" in headings
+    # ...but the manually edited sub-heading is preserved on export.
+    assert "Metabolitos (suero en ayuno)" in headings
+    assert "Metabolitos" not in headings
+
+
 def test_old_order_recovers_panel_subheading_from_catalog(tmp_path):
     database = Database(tmp_path / "lims.db")
     database.initialize()
