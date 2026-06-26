@@ -35,6 +35,7 @@ class TestIn(BaseModel):
     result_kind: str = 'text'
     select_options: list[str] = []
     default_result_value: str = ''
+    formula: str = ''
     price: float = 0
     reference_ranges: list[ReferenceRangeIn] = []
 
@@ -63,6 +64,7 @@ class TestDetailOut(BaseModel):
     result_kind: str
     select_options: str | None = None
     default_result_value: str | None = None
+    formula: str | None = None
     price: float = 0
     is_active: bool
     reference_ranges: list[dict]
@@ -143,6 +145,7 @@ def create_test(payload: TestIn, db: Session = Depends(get_db), actor: UUID | No
         result_kind=payload.result_kind,
         select_options=_serialize_select_options(payload.select_options),
         default_result_value=payload.default_result_value.strip() or None,
+        formula=payload.formula.strip() or None,
         price=float(payload.price or 0),
         active=True,
     )
@@ -169,8 +172,8 @@ def update_test(test_id: str, payload: TestIn, db: Session = Depends(get_db), ac
     test.result_kind = payload.result_kind
     test.select_options = _serialize_select_options(payload.select_options)
     test.default_result_value = payload.default_result_value.strip() or None
+    test.formula = payload.formula.strip() or None
     test.price = float(payload.price or 0)
-    test.active = True
     db.query(TestReferenceRange).filter(TestReferenceRange.test_id == parsed_test_id).delete()
     db.flush()
     _replace_reference_ranges(parsed_test_id, payload.reference_ranges, db)
@@ -240,6 +243,7 @@ def _serialize_test_detail(test: TestCatalog, db: Session) -> TestDetailOut:
         result_kind=test.result_kind,
         select_options=test.select_options,
         default_result_value=test.default_result_value,
+        formula=test.formula,
         price=float(test.price or 0),
         is_active=bool(test.active),
         reference_ranges=[

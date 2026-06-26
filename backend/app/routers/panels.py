@@ -118,7 +118,6 @@ def update_panel(panel_id: str, payload: PanelIn, db: Session = Depends(get_db),
     before = _panel_audit_payload(panel, db)
     panel.code = payload.code.strip()
     panel.name = payload.name.strip()
-    panel.active = True
     db.query(PanelCatalogItem).filter(PanelCatalogItem.panel_id == parsed_panel_id).delete()
     db.flush()
     _replace_panel_items(parsed_panel_id, payload.items, db)

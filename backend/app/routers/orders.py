@@ -35,6 +35,7 @@ class OrderBrowserOut(BaseModel):
     doctor_name: str | None = None
     status: str
     item_count: int
+    is_archived: int = 0
 
 
 class TestChoiceOut(BaseModel):
@@ -130,6 +131,7 @@ def recent_orders(db: Session = Depends(get_db)):
             LabOrder.status,
             LabOrder.ordered_at,
         )
+        .where(LabOrder.is_archived.is_(False))
         .order_by(LabOrder.ordered_at.desc(), LabOrder.order_number.desc())
         .limit(25)
     ).all()
@@ -153,7 +155,7 @@ def recent_orders(db: Session = Depends(get_db)):
 
 
 @router.get("/search", response_model=list[OrderBrowserOut])
-def search_orders(search: str = "", db: Session = Depends(get_db), _actor: UUID | None = Depends(actor_from_header)):
+def search_orders(search: str = "", include_archived: bool = Query(False), db: Session = Depends(get_db), _actor: UUID | None = Depends(actor_from_header)):
     doctor_provider = aliased(Provider)
     client_provider = aliased(Provider)
     q = (
@@ -167,6 +169,7 @@ def search_orders(search: str = "", db: Session = Depends(get_db), _actor: UUID 
             client_provider.legal_name.label("client_name"),
             LabOrder.status,
             LabOrder.ordered_at,
+            LabOrder.is_archived,
             func.count(OrderItem.id).label("item_count"),
         )
         .join(Patient, Patient.id == LabOrder.patient_id)
@@ -183,8 +186,11 @@ def search_orders(search: str = "", db: Session = Depends(get_db), _actor: UUID 
             client_provider.legal_name,
             LabOrder.status,
             LabOrder.ordered_at,
+            LabOrder.is_archived,
         )
     )
+    if not include_archived:
+        q = q.where(LabOrder.is_archived.is_(False))
     normalized = search.strip()
     if normalized:
         like_value = f"%{normalized}%"
@@ -212,6 +218,7 @@ def search_orders(search: str = "", db: Session = Depends(get_db), _actor: UUID 
                 doctor_name=row.doctor_name,
                 status=row.status,
                 item_count=int(row.item_count or 0),
+                is_archived=1 if row.is_archived else 0,
             )
         )
     return result
@@ -306,6 +313,30 @@ def provider_choices(provider_type: str = Query(...), db: Session = Depends(get_
             label = row.legal_name if not row.phone else f"{row.legal_name} ({row.phone})"
         result.append(ProviderChoiceOut(id=str(row.id), label=label))
     return result
+
+
+@router.post("/{order_id}/archive")
+def archive_order(order_id: str, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
+    parsed_id = _parse_order_id(order_id)
+    order = db.get(LabOrder, parsed_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="order not found")
+    order.is_archived = True
+    log_audit(db, actor_user_id=actor, entity="order", entity_id=str(order.id), action="archive")
+    db.commit()
+    return {"id": str(order.id), "is_archived": True}
+
+
+@router.post("/{order_id}/unarchive")
+def unarchive_order(order_id: str, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
+    parsed_id = _parse_order_id(order_id)
+    order = db.get(LabOrder, parsed_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="order not found")
+    order.is_archived = False
+    log_audit(db, actor_user_id=actor, entity="order", entity_id=str(order.id), action="unarchive")
+    db.commit()
+    return {"id": str(order.id), "is_archived": False}
 
 
 def _build_order_detail(order: LabOrder, db: Session) -> OrderDetailOut:
