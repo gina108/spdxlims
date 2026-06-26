@@ -41,6 +41,7 @@ from spdxlims.database import Database, InstrumentResultMappingRecord, ResultEnt
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
+from spdxlims.pages.instrument_status_panel import InstrumentStatusPanel
 from spdxlims.report_export import build_pdf_export_path
 from spdxlims.report_layout import build_report_html
 from spdxlims.report_service import ReportService
@@ -96,15 +97,19 @@ class ReportPreviewDialog(QDialog):
         selected_header: str,
         footer_options: list[tuple[str, str]] | None = None,
         selected_footer: str = "",
+        reset_fetcher: Callable[[], dict[str, object] | None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._approved_clicked = False
         self._approved = approved
+        self._can_approve = can_approve
         self._html_renderer = html_renderer
         self._preview = dict(preview)
         self._approved_preview: dict[str, object] | None = None
         self._preview_dirty = False
+        self._was_reset = False
+        self._reset_fetcher = reset_fetcher
         self._web_view_class: type[QWidget] | None | bool = False
         self.preview_widget: QWidget
         self._preview_html_setter: Callable[..., None] | None = None
@@ -179,6 +184,12 @@ class ReportPreviewDialog(QDialog):
         close_button.clicked.connect(self.reject)
         button_row.addWidget(close_button)
 
+        if reset_fetcher is not None:
+            self.refresh_button = QPushButton(tr("Refresh from Server"))
+            self.refresh_button.setToolTip(tr("Reload report from the latest patient data and test results, discarding any manual edits."))
+            self.refresh_button.clicked.connect(self._refresh_from_server)
+            button_row.addWidget(self.refresh_button)
+
         self.edit_button = QPushButton(tr("Edit Report"))
         self.edit_button.setEnabled(can_approve)
         self.edit_button.clicked.connect(self._edit_report)
@@ -216,8 +227,31 @@ class ReportPreviewDialog(QDialog):
         return self._preview_dirty
 
     @property
+    def was_reset(self) -> bool:
+        return self._was_reset
+
+    @property
     def current_preview(self) -> dict[str, object]:
         return dict(self._preview)
+
+    def _refresh_from_server(self) -> None:
+        if self._reset_fetcher is None:
+            return
+        fresh = self._reset_fetcher()
+        if fresh is None:
+            QMessageBox.warning(self, tr("Refresh Failed"), tr("Could not load the latest report data for this order."))
+            return
+        fresh["header_image_path"] = self.selected_header
+        fresh["footer_signature_image_path"] = self.selected_footer
+        for key, checkbox in self._header_field_checkboxes.items():
+            fresh[key] = checkbox.isChecked()
+        self._preview = dict(fresh)
+        self._was_reset = True
+        self._preview_dirty = True
+        self._approved = False
+        self.approve_button.setText(tr("Approve and Export PDF"))
+        self.approve_button.setEnabled(self._can_approve)
+        self._set_preview_html(self._render_preview_html())
 
     def _approve_and_export(self) -> None:
         self._approved_clicked = True
@@ -322,6 +356,11 @@ class ReportEditorDialog(QDialog):
         "reference_text",
         "comments",
     )
+    _ITEM_TYPE_COLORS: dict[str, tuple[str, str, str]] = {
+        "test":    ("#A8B3C2", "#21272D", "#2E3640"),
+        "heading": ("#C9A8FF", "#1E1242", "#7756BE"),
+        "comment": ("#697789", "#20252B", "#252C34"),
+    }
 
     def __init__(self, preview: dict[str, object], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -348,6 +387,10 @@ class ReportEditorDialog(QDialog):
         table_actions = QHBoxLayout()
         table_actions.addWidget(QLabel(tr("Report Rows")))
         table_actions.addStretch(1)
+
+        add_row_button = QPushButton(tr("Fila en blanca"))
+        add_row_button.clicked.connect(self._add_blank_row)
+        table_actions.addWidget(add_row_button)
 
         remove_button = QPushButton(tr("Delete Selected Row"))
         remove_button.clicked.connect(self._remove_selected_row)
@@ -394,25 +437,14 @@ class ReportEditorDialog(QDialog):
         items = list(self._preview.get("items") or [])
         self.items_table.setRowCount(len(items))
         for row_index, item in enumerate(items):
-            item_type_combo = QComboBox()
-            item_type_combo.setStyleSheet(
-                """
-                QComboBox {
-                    padding: 1px 8px 1px 6px;
-                    margin: 0px;
-                    min-height: 24px;
-                }
-                QComboBox::drop-down {
-                    width: 18px;
-                    border: none;
-                }
-                """
-            )
-            item_type_combo.addItem(tr("Test"), "test")
-            item_type_combo.addItem(tr("Heading"), "heading")
-            item_type_combo.addItem(tr("Comment"), "comment")
-            current_index = item_type_combo.findData(str(item.get("item_type") or "test"))
+            item_type_combo = self._make_type_combo()
+            current_type = str(item.get("item_type") or "test")
+            current_index = item_type_combo.findData(current_type)
             item_type_combo.setCurrentIndex(current_index if current_index >= 0 else 0)
+            self._style_type_combo(item_type_combo, current_type)
+            item_type_combo.currentIndexChanged.connect(
+                lambda _idx, c=item_type_combo: self._style_type_combo(c, str(c.currentData() or "test"))
+            )
             self.items_table.setCellWidget(row_index, 0, item_type_combo)
             self._set_table_text(row_index, 1, str(item.get("test_name") or ""), metadata=dict(item))
             self._set_flag_combo(row_index, str(item.get("flag") or ""))
@@ -432,6 +464,23 @@ class ReportEditorDialog(QDialog):
         if row < 0:
             return
         self.items_table.removeRow(row)
+
+    def _add_blank_row(self) -> None:
+        row = self.items_table.rowCount()
+        self.items_table.insertRow(row)
+        item_type_combo = self._make_type_combo()
+        self._style_type_combo(item_type_combo, "test")
+        item_type_combo.currentIndexChanged.connect(
+            lambda _idx, c=item_type_combo: self._style_type_combo(c, str(c.currentData() or "test"))
+        )
+        self.items_table.setCellWidget(row, 0, item_type_combo)
+        self._set_table_text(row, 1, "", metadata={})
+        self._set_flag_combo(row, "")
+        self._set_table_text(row, 3, "")
+        self._set_table_text(row, 4, "")
+        self._set_table_text(row, 5, "")
+        self._set_table_text(row, 6, "")
+        self.items_table.setCurrentCell(row, 1)
 
     def _move_selected_row(self, offset: int) -> None:
         row = self.items_table.currentRow()
@@ -464,8 +513,10 @@ class ReportEditorDialog(QDialog):
     def _restore_row_data(self, row: int, row_data: dict[str, object]) -> None:
         combo = self.items_table.cellWidget(row, 0)
         if isinstance(combo, QComboBox):
-            index = combo.findData(str(row_data.get("item_type") or "test"))
+            item_type = str(row_data.get("item_type") or "test")
+            index = combo.findData(item_type)
             combo.setCurrentIndex(index if index >= 0 else 0)
+            self._style_type_combo(combo, item_type)
         self._set_table_text(row, 1, str(row_data.get("test_name") or ""), metadata=dict(row_data.get("__source_item") or {}))
         self._set_flag_combo(row, str(row_data.get("flag") or ""))
         self._set_table_text(row, 3, str(row_data.get("result_value") or ""))
@@ -486,6 +537,47 @@ class ReportEditorDialog(QDialog):
         index = combo.findData(normalized)
         combo.setCurrentIndex(index if index >= 0 else 0)
         self.items_table.setCellWidget(row, 2, combo)
+
+    def _make_type_combo(self) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem(tr("Test"), "test")
+        combo.addItem(tr("Heading"), "heading")
+        combo.addItem(tr("Comment"), "comment")
+        return combo
+
+    @staticmethod
+    def _style_combo(combo: QComboBox, color: str, bg: str, border: str) -> None:
+        combo.setStyleSheet(f"""
+            QComboBox {{
+                color: {color};
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 4px;
+                margin: 4px 6px;
+                padding: 2px 22px 2px 8px;
+                font-weight: 600;
+            }}
+            QComboBox::drop-down {{ border: none; width: 20px; }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {color};
+                margin-right: 6px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #20252B;
+                border: 1px solid #2E3640;
+                color: #F0F4FF;
+                selection-background-color: #341F5C;
+                outline: 0;
+            }}
+        """)
+
+    @classmethod
+    def _style_type_combo(cls, combo: QComboBox, value: str) -> None:
+        color, bg, border = cls._ITEM_TYPE_COLORS.get(value, cls._ITEM_TYPE_COLORS["test"])
+        cls._style_combo(combo, color, bg, border)
 
     def _flag_value(self, row: int) -> str:
         combo = self.items_table.cellWidget(row, 2)
@@ -615,14 +707,29 @@ class ResultsPage(DataAwarePage):
         self.instrument_result: dict[str, object] | None = None
         self.instrument_order_entries: list[ResultEntryRecord] = []
         self.engine_url = "http://127.0.0.1:9088"
+        # {profile_id: {NORM_CODE: {qualifier_prefix: display_label}}}
+        self._profile_semiquant_maps: dict[str, dict[str, dict[str, str]]] = {}
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(14)
         if self.show_instruments:
-            root.addWidget(self._build_instrument_group())
-        if self.show_review:
-            root.addWidget(self._build_queue_group())
+            outer = QHBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(14)
+            left_col = QVBoxLayout()
+            left_col.setContentsMargins(0, 0, 0, 0)
+            left_col.setSpacing(14)
+            left_col.addWidget(self._build_instrument_group())
+            if self.show_review:
+                left_col.addWidget(self._build_queue_group())
+            outer.addLayout(left_col, 1)
+            self._status_panel = InstrumentStatusPanel()
+            self._status_panel.log_message.connect(self.instrument_status_label.setText)
+            outer.addWidget(self._status_panel)
+        else:
+            root = QVBoxLayout(self)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(14)
+            if self.show_review:
+                root.addWidget(self._build_queue_group())
 
         if self.show_instruments:
             from PySide6.QtCore import QTimer
@@ -670,7 +777,7 @@ class ResultsPage(DataAwarePage):
         controls.addWidget(self.link_instrument_button)
         layout.addLayout(controls)
 
-        self.instrument_captures_table = QTableWidget(0, 8)
+        self.instrument_captures_table = QTableWidget(0, 6)
         self.instrument_captures_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.instrument_captures_table.setSelectionMode(QTableWidget.SingleSelection)
         self.instrument_captures_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -683,8 +790,6 @@ class ResultsPage(DataAwarePage):
         capture_header.setSectionResizeMode(3, QHeaderView.Fixed)
         capture_header.setSectionResizeMode(4, QHeaderView.Fixed)
         capture_header.setSectionResizeMode(5, QHeaderView.Fixed)
-        capture_header.setSectionResizeMode(6, QHeaderView.Fixed)
-        capture_header.setSectionResizeMode(7, QHeaderView.Fixed)
         layout.addWidget(self.instrument_captures_table)
 
         self.instrument_observations_table = QTableWidget(0, 5)
@@ -759,7 +864,13 @@ class ResultsPage(DataAwarePage):
         layout.addWidget(self.orders_table, 1)
         return self.queue_group
 
+    def auto_start(self) -> None:
+        if hasattr(self, "_status_panel"):
+            self._status_panel.auto_start()
+
     def retranslate_ui(self) -> None:
+        if hasattr(self, "_status_panel"):
+            self._status_panel.retranslate_ui()
         if self.show_instruments:
             self.instrument_group.setTitle(tr("Instrument Results"))
             self.instrument_summary_label.setText(
@@ -772,7 +883,7 @@ class ResultsPage(DataAwarePage):
             self.save_instrument_mapping_button.setText(tr("Save Mapping"))
             self.remove_instrument_mapping_button.setText(tr("Remove Mapping"))
             self.instrument_captures_table.setHorizontalHeaderLabels(
-                [tr("Received"), tr("Sample"), tr("Patient"), tr("Capture"), tr("Device"), tr("Preview"), tr("Profile"), tr("Status")]
+                [tr("Received"), tr("Sample"), tr("Patient"), tr("Device"), tr("Profile"), tr("Status")]
             )
             self.instrument_observations_table.setHorizontalHeaderLabels(
                 [tr("Code"), tr("Test"), tr("Result"), tr("Unit"), tr("Status")]
@@ -801,6 +912,8 @@ class ResultsPage(DataAwarePage):
             self._refresh_instrument_profile_choices()
             self._refresh_instrument_order_choices()
             self.refresh_instrument_captures()
+            if hasattr(self, "_status_panel"):
+                self._status_panel.refresh_status()
         if self.show_review:
             self._refresh_table()
 
@@ -867,6 +980,7 @@ class ResultsPage(DataAwarePage):
             and (not profile_id or str(c.get("profile_id") or "") == profile_id)
         ]
         self.instrument_result = None
+        self._fetch_profile_semiquant_maps()
         self._refresh_instrument_tables()
         linked_count = sum(
             1 for c in self.instrument_captures
@@ -1350,13 +1464,11 @@ class ResultsPage(DataAwarePage):
         self.instrument_captures_table.blockSignals(True)
         self.instrument_captures_table.clearContents()
         self.instrument_captures_table.setRowCount(len(self.instrument_captures))
-        self.instrument_captures_table.setColumnWidth(0, 135)
+        self.instrument_captures_table.setColumnWidth(0, 160)
         self.instrument_captures_table.setColumnWidth(1, 105)
-        self.instrument_captures_table.setColumnWidth(3, 125)
-        self.instrument_captures_table.setColumnWidth(4, 90)
-        self.instrument_captures_table.setColumnWidth(5, 130)
-        self.instrument_captures_table.setColumnWidth(6, 120)
-        self.instrument_captures_table.setColumnWidth(7, 160)
+        self.instrument_captures_table.setColumnWidth(3, 90)
+        self.instrument_captures_table.setColumnWidth(4, 120)
+        self.instrument_captures_table.setColumnWidth(5, 160)
         for row_index, capture in enumerate(self.instrument_captures):
             capture_id = str(capture.get("id") or "")
             link_info = linked_map.get(capture_id)
@@ -1370,11 +1482,9 @@ class ResultsPage(DataAwarePage):
             self._set_instrument_capture_item(row_index, 0, self._format_capture_datetime(str(capture.get("received_at") or "")), capture, linked=is_linked)
             self._set_instrument_capture_item(row_index, 1, self._capture_sample_id(capture), capture, linked=is_linked)
             self._set_instrument_capture_item(row_index, 2, self._capture_patient_name(capture), capture, linked=is_linked)
-            self._set_instrument_capture_item(row_index, 3, str(capture.get("id") or ""), capture, linked=is_linked)
-            self._set_instrument_capture_item(row_index, 4, str(capture.get("device_id") or ""), capture, linked=is_linked)
-            self._set_instrument_capture_item(row_index, 5, self._capture_preview(capture), capture, linked=is_linked)
-            self._set_instrument_capture_item(row_index, 6, str(capture.get("profile_id") or ""), capture, linked=is_linked)
-            self._set_instrument_capture_item(row_index, 7, status_text, capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 3, str(capture.get("device_id") or ""), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 4, str(capture.get("profile_id") or ""), capture, linked=is_linked)
+            self._set_instrument_capture_item(row_index, 5, status_text, capture, linked=is_linked)
         self.instrument_captures_table.blockSignals(False)
         if self.instrument_captures and self.instrument_captures_table.currentRow() < 0:
             self.instrument_captures_table.selectRow(0)
@@ -1404,7 +1514,7 @@ class ResultsPage(DataAwarePage):
             status = mapping.test_name if mapping is not None else str(obs.get("result_status") or "")
             self._set_observation_item(row_index, 0, code)
             self._set_observation_item(row_index, 1, str(obs.get("instrument_test_name") or obs.get("test_name") or obs.get("name") or ""))
-            self._set_observation_item(row_index, 2, self._instrument_observation_value(obs, "text"))
+            self._set_observation_item(row_index, 2, self._display_observation_value(obs, code, profile_id))
             self._set_observation_item(row_index, 3, str(obs.get("units_normalized") or obs.get("units_raw") or ""))
             self._set_observation_item(row_index, 4, status)
 
@@ -1599,6 +1709,11 @@ class ResultsPage(DataAwarePage):
     def _capture_patient_name(cls, capture: dict[str, object]) -> str:
         message = cls._capture_message(capture)
         value = message.get("patient_name") or message.get("patient") or ""
+        if not value:
+            # File-drop profiles (e.g. CM250) carry the patient name in metadata.
+            metadata = message.get("metadata")
+            if isinstance(metadata, dict):
+                value = metadata.get("patient_name") or metadata.get("patient") or ""
         if isinstance(value, dict):
             family = str(value.get("family") or value.get("last") or "").strip()
             given = str(value.get("given") or value.get("first") or "").strip()
@@ -1686,6 +1801,63 @@ class ResultsPage(DataAwarePage):
                 s = str(value).strip()
                 return s.split("^")[0].strip() if "^" in s else s
         return ""
+
+    def _fetch_profile_semiquant_maps(self) -> None:
+        try:
+            data = self._instrument_request_json("/api/v1/profiles")
+        except Exception:
+            return
+        result: dict[str, dict[str, dict[str, str]]] = {}
+        for profile in (data.get("profiles") or [] if isinstance(data, dict) else []):
+            pid = str(profile.get("id") or "")
+            if not pid:
+                continue
+            code_map: dict[str, dict[str, str]] = {}
+            mapping = profile.get("mapping") or {}
+            for tm in (mapping.get("test_mappings") or []):
+                sq = tm.get("semiquant_map")
+                if not sq or not isinstance(sq, dict):
+                    continue
+                pattern = str(tm.get("pattern") or "").strip().upper()
+                if not pattern:
+                    continue
+                code_map[pattern] = {k: str(v.get("display") or "") for k, v in sq.items() if isinstance(v, dict)}
+            if code_map:
+                result[pid] = code_map
+        self._profile_semiquant_maps = result
+
+    @staticmethod
+    def _extract_qualifier(raw: str) -> str:
+        tokens = (raw or "").split()
+        if not tokens:
+            return ""
+        q = tokens[0]
+        if q in ("-", "+") and len(tokens) > 1:
+            nxt = tokens[1]
+            if nxt and not (nxt[0].isdigit() or nxt[0] == "."):
+                q += nxt
+        return q
+
+    @staticmethod
+    def _is_raw_machine_value(raw: str) -> bool:
+        q = ResultsPage._extract_qualifier(raw)
+        if not q:
+            return False
+        return q.startswith("-") or q.startswith("+") or q.endswith("+")
+
+    def _display_observation_value(self, obs: dict[str, object], code: str, profile_id: str) -> str:
+        text = self._instrument_observation_value(obs, "text")
+        if not self._is_raw_machine_value(text):
+            return text
+        code_map = (self._profile_semiquant_maps.get(profile_id) or {})
+        sq = code_map.get(code.upper()) or {}
+        if not sq:
+            return text
+        q = self._extract_qualifier(text)
+        for key in sorted(sq.keys(), key=len, reverse=True):
+            if q.lower().startswith(key.lower()):
+                return sq[key]
+        return text
 
     @classmethod
     def _observation_raw_code(cls, obs: dict[str, object]) -> str:
@@ -1800,28 +1972,26 @@ class ResultsPage(DataAwarePage):
         return (
             "QPushButton {"
             "background-color: #bd93f9;"
-            "color: #14171c;"
-            "border: 1px solid #bd93f9;"
+            "color: #1a1a1a;"
+            "border: none;"
             "border-radius: 7px;"
             "padding: 2px 6px;"
-            "font-weight: 600;"
+            "font-weight: 800;"
             "font-size: 10px;"
             "min-height: 22px;"
             "max-height: 26px;"
             "min-width: 72px;"
             "}"
             "QPushButton:hover {"
-            "background-color: #caa8fb;"
-            "border-color: #caa8fb;"
+            "background-color: #caa9fa;"
             "}"
             "QPushButton:pressed {"
-            "background-color: #a97cf2;"
-            "border-color: #a97cf2;"
+            "background-color: #a77de6;"
             "}"
             "QPushButton:disabled {"
-            "background-color: #39424d;"
-            "border-color: #39424d;"
-            "color: #98a0a8;"
+            "background-color: #252930;"
+            "border: none;"
+            "color: #4a5568;"
             "}"
         )
 
@@ -1993,6 +2163,22 @@ class ResultsPage(DataAwarePage):
             and not int((order.report_outdated if order is not None else 0) or 0)
         )
         preview_with_layout = {**self.database.get_report_layout_settings(), **preview}
+
+        def _reset_fetcher() -> dict[str, object] | None:
+            try:
+                self.report_service.delete_saved_report(order_id)
+            except Exception:
+                pass
+            approvals = self._approved_versions()
+            approvals.pop(order_id, None)
+            ui_state = self.database.get_ui_state()
+            ui_state[self.APPROVALS_KEY] = {str(k): v for k, v in approvals.items()}
+            self.database.save_ui_state(ui_state)
+            live = self.report_service.get_live_report_preview(order_id)
+            if live is None:
+                return None
+            return {**self.database.get_report_layout_settings(), **live}
+
         dialog = ReportPreviewDialog(
             preview_with_layout,
             self._build_report_html,
@@ -2002,11 +2188,16 @@ class ResultsPage(DataAwarePage):
             selected_header=selected_header,
             footer_options=self._footer_options(),
             selected_footer=selected_footer,
+            reset_fetcher=_reset_fetcher,
             parent=self,
         )
         dialog.exec()
         self._save_selected_header_for_order(order_id, dialog.selected_header)
         self._save_selected_footer_for_order(order_id, dialog.selected_footer)
+        if dialog.was_reset and not dialog.approved_clicked:
+            self.refresh_on_show()
+            self.notify_data_changed()
+            return
         if dialog.approved_clicked:
             self.approve_report(order_id, preview_override=dialog.approved_preview, export_pdf=True)
             return

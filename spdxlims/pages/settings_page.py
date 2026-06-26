@@ -62,20 +62,20 @@ class AccordionSection(QWidget):
             QPushButton {
                 text-align: left;
                 padding: 9px 14px;
-                border: 1px solid #243244;
+                border: 1px solid rgba(255,255,255,0.08);
                 border-radius: 10px;
-                background-color: #111B27;
-                color: #F4F7FB;
+                background-color: #20242b;
+                color: #c3ccdf;
                 font-weight: 700;
             }
             QPushButton:hover {
-                background-color: #162132;
-                border-color: #30415A;
+                background-color: #252930;
+                border-color: rgba(255,255,255,0.12);
             }
             QPushButton:checked {
-                background-color: #5B2AA8;
-                border-color: #9B6CF3;
-                color: #FFFFFF;
+                background-color: #392c4b;
+                border-color: #bd93f9;
+                color: #c3ccdf;
             }
             """
         )
@@ -329,10 +329,10 @@ class SettingsPage(DataAwarePage):
         self.whatsapp_client_message.setFixedHeight(90)
         self.backup_enabled = QCheckBox()
         self.backup_destination = QLineEdit()
-        self.backup_destination.setPlaceholderText(r"D:\SPDXLIMS Backups or \\server\share\SPDXLIMS")
+        self.backup_destination.setPlaceholderText(r"D:\SPDXLIMS Backups  o  \\server\share\SPDXLIMS")
         self.backup_destination_row, self.backup_destination_browse = self._folder_picker_row(self.backup_destination)
         self.backup_schedule = QLineEdit()
-        self.backup_schedule.setPlaceholderText("Daily at 8:00 PM")
+        self.backup_schedule.setPlaceholderText(tr("Daily at 8:00 PM"))
         self.backup_retention_days = QSpinBox()
         self.backup_retention_days.setRange(1, 3650)
         self.backup_retention_days.setValue(30)
@@ -340,7 +340,7 @@ class SettingsPage(DataAwarePage):
         self.backup_include_assets = QCheckBox()
         self.backup_include_instrument_profiles = QCheckBox()
         self.backup_cloud_sync_note = QLineEdit()
-        self.backup_cloud_sync_note.setPlaceholderText("Optional cloud/offsite sync notes")
+        self.backup_cloud_sync_note.setPlaceholderText(tr("Optional cloud/offsite sync notes"))
         self.backup_restore_drill_date = QLineEdit()
         self.backup_restore_drill_date.setPlaceholderText("YYYY-MM-DD")
         self.backup_status = QLabel()
@@ -872,6 +872,8 @@ class SettingsPage(DataAwarePage):
         self.save_backup_config_button.setText(tr("Save Backup Config"))
         self.refresh_backup_button.setText(tr("Refresh Backup Status"))
         self.run_backup_now_button.setText(tr("Run Backup Now"))
+        self.backup_schedule.setPlaceholderText(tr("Daily at 8:00 PM"))
+        self.backup_cloud_sync_note.setPlaceholderText(tr("Optional cloud/offsite sync notes"))
         self.save_button.setText(tr("Save Settings"))
 
     def load_settings(self, *, force_server_refresh: bool = False) -> None:

@@ -52,7 +52,7 @@ class TestsMixin:
     def get_test_detail(self, test_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT t.id, t.code, t.name, tc.name AS category_name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.result_multiplier, t.is_active FROM tests t LEFT JOIN test_categories tc ON tc.id = t.category_id WHERE t.id = ?",
+                "SELECT t.id, t.code, t.name, tc.name AS category_name, t.specimen_type, t.method, t.result_kind, t.select_options, t.default_result_value, t.price, t.result_multiplier, t.formula, t.is_active FROM tests t LEFT JOIN test_categories tc ON tc.id = t.category_id WHERE t.id = ?",
                 (test_id,),
             ).fetchone()
             if row is None:
@@ -75,7 +75,7 @@ class TestsMixin:
         with self.connect() as connection:
             category_id = self._get_or_create_category(connection, payload.get("category_name", ""))
             cursor = connection.execute(
-                "INSERT INTO tests (code, name, category_id, specimen_type, method, result_kind, select_options, default_result_value, price, result_multiplier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tests (code, name, category_id, specimen_type, method, result_kind, select_options, default_result_value, price, result_multiplier, formula) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     payload["code"].strip(),
                     payload["name"].strip(),
@@ -87,6 +87,7 @@ class TestsMixin:
                     self._normalize_optional_text(payload.get("default_result_value")),
                     float(payload.get("price") or 0),
                     float(payload["result_multiplier"]) if payload.get("result_multiplier") else None,
+                    str(payload["formula"]).strip() or None if payload.get("formula") else None,
                 ),
             )
             test_id = int(cursor.lastrowid)
@@ -96,7 +97,7 @@ class TestsMixin:
         with self.connect() as connection:
             category_id = self._get_or_create_category(connection, payload.get("category_name", ""))
             connection.execute(
-                "UPDATE tests SET code = ?, name = ?, category_id = ?, specimen_type = ?, method = ?, result_kind = ?, select_options = ?, default_result_value = ?, result_multiplier = ? WHERE id = ?",
+                "UPDATE tests SET code = ?, name = ?, category_id = ?, specimen_type = ?, method = ?, result_kind = ?, select_options = ?, default_result_value = ?, result_multiplier = ?, formula = ? WHERE id = ?",
                 (
                     payload["code"].strip(),
                     payload["name"].strip(),
@@ -107,6 +108,7 @@ class TestsMixin:
                     self._serialize_select_options(payload.get("select_options")),
                     self._normalize_optional_text(payload.get("default_result_value")),
                     float(payload["result_multiplier"]) if payload.get("result_multiplier") else None,
+                    str(payload["formula"]).strip() or None if payload.get("formula") else None,
                     test_id,
                 ),
             )

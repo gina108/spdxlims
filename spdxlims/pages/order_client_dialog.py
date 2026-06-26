@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from spdxlims.auto_invoicing import FREQUENCY_OPTIONS
 from spdxlims.database import Database
 from spdxlims.i18n import tr
 from spdxlims.sat_catalogs import REGIMEN_FISCAL_OPTIONS, USO_CFDI_OPTIONS
@@ -27,7 +29,7 @@ class ClientDialog(QDialog):
         self._editing = client_id is not None
         self.setWindowTitle(tr("Edit Client") if self._editing else tr("New Client"))
         self.setModal(True)
-        self.resize(440, 360)
+        self.resize(440, 440)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -46,6 +48,13 @@ class ClientDialog(QDialog):
         for code, label in USO_CFDI_OPTIONS:
             self.cfdi_use.addItem(label, code)
 
+        self.auto_invoice_enabled = QCheckBox(tr("Automatically create invoices"))
+        self.auto_invoice_frequency = QComboBox()
+        for code, label in FREQUENCY_OPTIONS:
+            self.auto_invoice_frequency.addItem(tr(label), code)
+        self.auto_invoice_enabled.toggled.connect(self.auto_invoice_frequency.setEnabled)
+        self.auto_invoice_frequency.setEnabled(False)
+
         form.addRow(tr("Client"), self.name)
         form.addRow(tr("Phone"), self.phone)
         form.addRow(tr("Email"), self.email)
@@ -53,6 +62,8 @@ class ClientDialog(QDialog):
         form.addRow(tr("Fiscal Regime"), self.fiscal_regime)
         form.addRow(tr("Postal Code"), self.postal_code)
         form.addRow(tr("CFDI Use"), self.cfdi_use)
+        form.addRow("", self.auto_invoice_enabled)
+        form.addRow(tr("Invoice Frequency"), self.auto_invoice_frequency)
         layout.addLayout(form)
 
         buttons = QHBoxLayout()
@@ -85,6 +96,9 @@ class ClientDialog(QDialog):
         self.postal_code.setText(client.postal_code or '')
         cfdi_index = self.cfdi_use.findData(client.cfdi_use or '')
         self.cfdi_use.setCurrentIndex(cfdi_index if cfdi_index >= 0 else 0)
+        self.auto_invoice_enabled.setChecked(bool(client.auto_invoice_enabled))
+        frequency_index = self.auto_invoice_frequency.findData(client.auto_invoice_frequency or '')
+        self.auto_invoice_frequency.setCurrentIndex(frequency_index if frequency_index >= 0 else 0)
         self.archive_client_button.setText(tr("Unarchive Client") if not client.is_active else tr("Archive Client"))
 
     def toggle_client_archive(self) -> None:
@@ -115,6 +129,8 @@ class ClientDialog(QDialog):
                 "fiscal_regime": self.fiscal_regime.currentData(),
                 "postal_code": self.postal_code.text(),
                 "cfdi_use": self.cfdi_use.currentData(),
+                "auto_invoice_enabled": self.auto_invoice_enabled.isChecked(),
+                "auto_invoice_frequency": self.auto_invoice_frequency.currentData() if self.auto_invoice_enabled.isChecked() else None,
             }
             if self._editing and self.client_id is not None:
                 self.database.update_client(self.client_id, payload)

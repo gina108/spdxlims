@@ -42,6 +42,7 @@ class ResultService(ServiceBase):
                     reference_text=item.get('reference_text'),
                     comments=item.get('comments'),
                     test_status=str(item.get('test_status') or 'pending'),
+                    formula=item.get('formula'),
                 )
             )
         return entries

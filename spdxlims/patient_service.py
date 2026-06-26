@@ -41,7 +41,10 @@ class PatientService(ServiceBase):
         if self._is_local():
             self.database.update_patient(int(patient_id), payload)
             return
-        self.deployment_service.request_json("PUT", f"/api/patients/{patient_id}", self._to_remote_payload(payload))
+        existing = self.deployment_service.request_json("GET", f"/api/patients/{patient_id}", allow_404=True)
+        body = self._to_remote_payload(payload)
+        body["is_active"] = bool((existing or {}).get("is_active", True))
+        self.deployment_service.request_json("PUT", f"/api/patients/{patient_id}", body)
 
     def archive_patient(self, patient_id: int | str) -> None:
         if self._is_local():

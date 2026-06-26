@@ -96,6 +96,7 @@ class TestService(ServiceBase):
             'result_kind': str(payload.get('result_kind') or 'text'),
             'select_options': [str(option).strip() for option in (payload.get('select_options') or []) if str(option).strip()],
             'default_result_value': str(payload.get('default_result_value') or '').strip(),
+            'formula': str(payload.get('formula') or '').strip(),
             'price': float(payload.get('price') or 0),
             'reference_ranges': [
                 {

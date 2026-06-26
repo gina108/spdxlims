@@ -184,6 +184,16 @@ class OrdersMixin:
                 "UPDATE orders SET accession_id = ?, sample_id = ?, patient_id = ?, doctor_id = ?, client_id = ?, status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 ((accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None, order_id),
             )
+            # Remove any existing report — it references order_tests rows and must be
+            # cleared before we delete/replace those rows, otherwise the FK from
+            # report_items → order_tests fires.  The report can be regenerated after
+            # the order is saved.
+            report_row = connection.execute("SELECT id FROM reports WHERE order_id = ?", (order_id,)).fetchone()
+            if report_row is not None:
+                report_id = int(report_row["id"])
+                connection.execute("DELETE FROM report_items WHERE report_id = ?", (report_id,))
+                connection.execute("DELETE FROM report_outsourced_rows WHERE report_id = ?", (report_id,))
+                connection.execute("DELETE FROM reports WHERE id = ?", (report_id,))
             heading_test_id = self._ensure_panel_heading_test(connection)
             comment_test_id = self._ensure_panel_comment_test(connection)
             structural_ids = (heading_test_id, comment_test_id)
@@ -242,17 +252,25 @@ class OrdersMixin:
                             (order_id, test_id, outsourced, source, display_name, index),
                         )
 
+    def set_order_archived(self, order_id: int, archived: bool) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE orders SET is_archived = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (1 if archived else 0, order_id),
+            )
+
     def list_recent_orders(self) -> list[OrderSummaryRecord]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, o.status, o.created_at, SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count, CASE WHEN COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) > 0 AND COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) = COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 AND COALESCE(NULLIF(TRIM(r.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL THEN 1 END) THEN 1 ELSE 0 END AS all_results_entered FROM orders o INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id LEFT JOIN order_tests ot ON ot.order_id = o.id LEFT JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE COALESCE(o.is_preallocated, 0) = 0 GROUP BY o.id, o.order_number, patient_name, d.full_name, o.status, o.created_at ORDER BY o.created_at DESC, o.id DESC LIMIT 25").fetchall()
+            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, o.status, o.created_at, SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count, CASE WHEN COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) > 0 AND COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) = COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 AND COALESCE(NULLIF(TRIM(r.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL THEN 1 END) THEN 1 ELSE 0 END AS all_results_entered FROM orders o INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id LEFT JOIN order_tests ot ON ot.order_id = o.id LEFT JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE COALESCE(o.is_preallocated, 0) = 0 AND COALESCE(o.is_archived, 0) = 0 GROUP BY o.id, o.order_number, patient_name, d.full_name, o.status, o.created_at ORDER BY o.created_at DESC, o.id DESC LIMIT 25").fetchall()
         return [OrderSummaryRecord(**dict(row)) for row in rows]
 
-    def search_orders(self, search_text: str = "") -> list[OrderBrowserRecord]:
+    def search_orders(self, search_text: str = "", include_archived: bool = False) -> list[OrderBrowserRecord]:
         normalized = search_text.strip().lower()
         like_value = f"%{normalized}%"
+        archived_clause = "" if include_archived else "AND COALESCE(o.is_archived, 0) = 0"
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT o.id,
                        o.order_number,
                        COALESCE(o.ordered_at, o.created_at) AS order_date,
@@ -263,6 +281,7 @@ class OrdersMixin:
                        c.name AS client_name,
                        d.full_name AS doctor_name,
                        o.status,
+                       COALESCE(o.is_archived, 0) AS is_archived,
                        SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count
                 FROM orders o
                 INNER JOIN patients p ON p.id = o.patient_id
@@ -271,6 +290,7 @@ class OrdersMixin:
                 LEFT JOIN order_tests ot ON ot.order_id = o.id
                 LEFT JOIN tests t ON t.id = ot.test_id
                 WHERE COALESCE(o.is_preallocated, 0) = 0
+                  {archived_clause}
                   AND (
                       ? = '' OR
                       LOWER(COALESCE(o.order_number, '')) LIKE ? OR
@@ -280,7 +300,7 @@ class OrdersMixin:
                       )) LIKE ? OR
                       LOWER(COALESCE(c.name, '')) LIKE ?
                   )
-                GROUP BY o.id, o.order_number, order_date, patient_name, c.name, d.full_name, o.status
+                GROUP BY o.id, o.order_number, order_date, patient_name, c.name, d.full_name, o.status, o.is_archived
                 ORDER BY COALESCE(o.ordered_at, o.created_at) DESC, o.id DESC
                 LIMIT 250
                 """,
@@ -328,6 +348,7 @@ class OrdersMixin:
                 LEFT JOIN tests t ON t.id = ot.test_id
                 LEFT JOIN results rst ON rst.order_test_id = ot.id
                 WHERE COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
                 GROUP BY o.id, o.order_number, order_date, patient_name, p.phone, d.full_name, c.name, c.phone, r.report_version, r.finalized_at, p.updated_at, o.updated_at
                 ORDER BY COALESCE(o.ordered_at, o.created_at) DESC, o.id DESC
                 LIMIT 100
@@ -350,6 +371,7 @@ class OrdersMixin:
                 INNER JOIN patients p ON p.id = o.patient_id
                 INNER JOIN order_tests ot ON ot.order_id = o.id
                 WHERE COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
                   AND COALESCE(ot.is_outsourced, 0) = 1
                 ORDER BY COALESCE(o.ordered_at, o.created_at) DESC, o.id DESC
                 """
@@ -374,13 +396,14 @@ class OrdersMixin:
             ).fetchall()
         return [str(row["panel_label"]) for row in rows]
 
-    def save_outsourced_panel_table(
+    def append_outsourced_panel_extraction(
         self,
         order_id: int,
         panel_label: str,
         source_pdf_path: str,
+        page_label: str,
         rows: list[list[object]],
-    ) -> None:
+    ) -> int:
         normalized_label = panel_label.strip()
         normalized_source = source_pdf_path.strip()
         if not normalized_label:
@@ -390,11 +413,7 @@ class OrdersMixin:
         normalized_rows = self._normalize_outsourced_table_rows(rows)
         with self.connect() as connection:
             existing = connection.execute(
-                """
-                SELECT id
-                FROM outsourced_panel_tables
-                WHERE order_id = ? AND panel_label = ?
-                """,
+                "SELECT id FROM outsourced_panel_tables WHERE order_id = ? AND panel_label = ?",
                 (order_id, normalized_label),
             ).fetchone()
             if existing is None:
@@ -410,26 +429,67 @@ class OrdersMixin:
             else:
                 table_id = int(existing["id"])
                 connection.execute(
-                    """
-                    UPDATE outsourced_panel_tables
-                    SET source_pdf_path = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (normalized_source, table_id),
-                )
-                connection.execute(
-                    "DELETE FROM outsourced_panel_rows WHERE outsourced_panel_table_id = ?",
+                    "UPDATE outsourced_panel_tables SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (table_id,),
                 )
+            ext_cursor = connection.execute(
+                """
+                INSERT INTO outsourced_panel_extractions (
+                    outsourced_panel_table_id, source_pdf_path, page_label, row_count
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (table_id, normalized_source, str(page_label).strip(), len(normalized_rows)),
+            )
+            extraction_id = int(ext_cursor.lastrowid)
             for row_index, row in enumerate(normalized_rows):
                 connection.execute(
                     """
                     INSERT INTO outsourced_panel_rows (
-                        outsourced_panel_table_id, row_index, col_1, col_2, col_3, col_4, col_5
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        outsourced_panel_table_id, extraction_id, row_index,
+                        col_1, col_2, col_3, col_4, col_5
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (table_id, row_index, row[0], row[1], row[2], row[3], row[4]),
+                    (table_id, extraction_id, row_index, row[0], row[1], row[2], row[3], row[4]),
                 )
+        return extraction_id
+
+    def list_outsourced_panel_extractions(
+        self, order_id: int, panel_label: str
+    ) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT ope.id, ope.source_pdf_path, ope.page_label,
+                       ope.row_count, ope.extracted_at
+                FROM outsourced_panel_extractions ope
+                INNER JOIN outsourced_panel_tables opt
+                        ON opt.id = ope.outsourced_panel_table_id
+                WHERE opt.order_id = ? AND opt.panel_label = ?
+                ORDER BY ope.extracted_at ASC, ope.id ASC
+                """,
+                (order_id, panel_label.strip()),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_outsourced_panel_extraction(self, extraction_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM outsourced_panel_rows WHERE extraction_id = ?",
+                (extraction_id,),
+            )
+            connection.execute(
+                "DELETE FROM outsourced_panel_extractions WHERE id = ?",
+                (extraction_id,),
+            )
+
+    def save_outsourced_panel_table(
+        self,
+        order_id: int,
+        panel_label: str,
+        source_pdf_path: str,
+        rows: list[list[object]],
+    ) -> None:
+        self.append_outsourced_panel_extraction(order_id, panel_label, source_pdf_path, "", rows)
 
     def get_outsourced_panel_preview_sections(self, order_id: int) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -498,7 +558,7 @@ class OrdersMixin:
 
     def list_result_order_choices(self) -> list[tuple[int, str]]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count FROM orders o INNER JOIN patients p ON p.id = o.patient_id INNER JOIN order_tests ot ON ot.order_id = o.id INNER JOIN tests t ON t.id = ot.test_id WHERE o.status IN ('draft', 'in_progress') AND COALESCE(o.is_preallocated, 0) = 0 GROUP BY o.id, o.order_number, patient_name ORDER BY o.created_at DESC, o.id DESC").fetchall()
+            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count FROM orders o INNER JOIN patients p ON p.id = o.patient_id INNER JOIN order_tests ot ON ot.order_id = o.id INNER JOIN tests t ON t.id = ot.test_id WHERE o.status IN ('draft', 'in_progress') AND COALESCE(o.is_preallocated, 0) = 0 AND COALESCE(o.is_archived, 0) = 0 GROUP BY o.id, o.order_number, patient_name ORDER BY o.created_at DESC, o.id DESC").fetchall()
         return [(row["id"], f'{row["order_number"]} - {row["patient_name"]} ({row["item_count"]} tests)') for row in rows]
 
     def list_report_order_choices(self) -> list[tuple[int, str]]:
@@ -516,6 +576,7 @@ class OrdersMixin:
                 INNER JOIN tests t ON t.id = ot.test_id
                 WHERE o.status IN ('draft', 'in_progress', 'finalized')
                   AND COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
                 GROUP BY o.id, o.order_number, o.status, patient_name
                 ORDER BY o.created_at DESC, o.id DESC
                 """
@@ -564,6 +625,7 @@ class OrdersMixin:
                 INNER JOIN tests t ON t.id = ot.test_id
                 WHERE o.status IN ('draft', 'in_progress', 'finalized')
                   AND COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
                   AND (? IS NULL OR o.client_id = ?)
                   AND (? IS NULL OR EXISTS (
                       SELECT 1
@@ -596,7 +658,7 @@ class OrdersMixin:
 
     def get_order_result_entries(self, order_id: int) -> list[ResultEntryRecord]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT ot.id AS order_test_id, o.id AS order_id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, p.sex AS patient_sex, p.date_of_birth, p.age_value, p.age_unit, t.id AS test_id, COALESCE(ot.display_name, t.name) AS test_name, t.specimen_type, CASE WHEN t.code = '__PANEL_HEADING__' THEN 'heading' WHEN t.code = '__PANEL_COMMENT__' THEN 'comment' ELSE 'test' END AS item_type, t.result_kind, t.select_options, t.default_result_value, t.result_multiplier, r.result_value, r.unit, COALESCE(r.lower_value_text, CAST(r.lower_value AS TEXT)) AS lower_value, COALESCE(r.upper_value_text, CAST(r.upper_value AS TEXT)) AS upper_value, r.flag, r.reference_text, r.comments, ot.status AS test_status, COALESCE(ot.is_outsourced, 0) AS is_outsourced, ot.source_label FROM order_tests ot INNER JOIN orders o ON o.id = ot.order_id INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id INNER JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE o.id = ? ORDER BY ot.sort_order, ot.id", (order_id,)).fetchall()
+            rows = connection.execute("SELECT ot.id AS order_test_id, o.id AS order_id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, p.sex AS patient_sex, p.date_of_birth, p.age_value, p.age_unit, t.id AS test_id, COALESCE(ot.display_name, t.name) AS test_name, t.specimen_type, CASE WHEN t.code = '__PANEL_HEADING__' THEN 'heading' WHEN t.code = '__PANEL_COMMENT__' THEN 'comment' ELSE 'test' END AS item_type, t.result_kind, t.select_options, t.default_result_value, t.result_multiplier, t.formula, r.result_value, r.unit, COALESCE(r.lower_value_text, CAST(r.lower_value AS TEXT)) AS lower_value, COALESCE(r.upper_value_text, CAST(r.upper_value AS TEXT)) AS upper_value, r.flag, r.reference_text, r.comments, ot.status AS test_status, COALESCE(ot.is_outsourced, 0) AS is_outsourced, ot.source_label FROM order_tests ot INNER JOIN orders o ON o.id = ot.order_id INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id INNER JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE o.id = ? ORDER BY ot.sort_order, ot.id", (order_id,)).fetchall()
             records: list[ResultEntryRecord] = []
             for row in rows:
                 data = dict(row)
@@ -643,6 +705,7 @@ class OrdersMixin:
                 INNER JOIN tests t ON t.id = ot.test_id
                 LEFT JOIN results r ON r.order_test_id = ot.id
                 WHERE t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                  AND COALESCE(o.is_archived, 0) = 0
                   AND (? IS NULL OR o.client_id = ?)
                   AND (? = '' OR SUBSTR(COALESCE(o.ordered_at, o.created_at), 1, 10) >= ?)
                   AND (? = '' OR SUBSTR(COALESCE(o.ordered_at, o.created_at), 1, 10) <= ?)

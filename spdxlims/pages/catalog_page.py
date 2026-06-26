@@ -90,6 +90,8 @@ class TestDialog(QDialog):
         self.default_result_value = QLineEdit()
         self.result_multiplier = QLineEdit()
         self.result_multiplier.setPlaceholderText(tr("e.g. 1000"))
+        self.formula = QLineEdit()
+        self.formula.setPlaceholderText(tr("e.g. [CHOLTOTAL] - [HDL] - ([TRIG] / 5)"))
 
         form.addRow(tr("Code"), self.test_code)
         form.addRow(tr("Name"), self.test_name)
@@ -101,6 +103,8 @@ class TestDialog(QDialog):
         form.addRow(self.default_result_label, self.default_result_value)
         self.result_multiplier_label = QLabel(tr("Result Multiplier"))
         form.addRow(self.result_multiplier_label, self.result_multiplier)
+        self.formula_label = QLabel(tr("Derived Formula"))
+        form.addRow(self.formula_label, self.formula)
         content_layout.addLayout(form)
 
         range_group = QGroupBox(tr("Reference Ranges"))
@@ -199,6 +203,7 @@ class TestDialog(QDialog):
         self.default_result_value.setText(detail.get("default_result_value") or "")
         multiplier = detail.get("result_multiplier")
         self.result_multiplier.setText(str(multiplier) if multiplier is not None else "")
+        self.formula.setText(detail.get("formula") or "")
         self._update_select_fields_visibility()
         self.pending_ranges = [dict(reference) for reference in detail.get("reference_ranges", [])]
         self._refresh_ranges_table()
@@ -326,6 +331,7 @@ class TestDialog(QDialog):
             "select_options": select_options,
             "default_result_value": default_result_value,
             "result_multiplier": result_multiplier,
+            "formula": self.formula.text().strip() if result_kind == "numeric" else None,
         }
 
         try:
@@ -352,6 +358,8 @@ class TestDialog(QDialog):
         is_numeric = self.result_kind.currentData() == "numeric"
         self.result_multiplier_label.setVisible(is_numeric)
         self.result_multiplier.setVisible(is_numeric)
+        self.formula_label.setVisible(is_numeric)
+        self.formula.setVisible(is_numeric)
 
     def _load_equipment_choices(self) -> None:
         current_value = self.category_name.currentText().strip()

@@ -56,10 +56,18 @@ class OrderService(ServiceBase):
             raise RuntimeError("Server returned an empty order number.")
         return value
 
-    def search_orders(self, search_text: str = "") -> list[OrderBrowserRecord]:
+    def set_order_archived(self, order_id: int, archived: bool) -> None:
         if self._is_local():
-            return self.database.search_orders(search_text)
-        payload = self.deployment_service.request_json("GET", f"/api/orders/search?search={parse.quote(search_text)}")
+            self.database.set_order_archived(order_id, archived)
+            return
+        action = "archive" if archived else "unarchive"
+        self.deployment_service.request_json("POST", f"/api/orders/{order_id}/{action}", {})
+
+    def search_orders(self, search_text: str = "", include_archived: bool = False) -> list[OrderBrowserRecord]:
+        if self._is_local():
+            return self.database.search_orders(search_text, include_archived=include_archived)
+        params = parse.urlencode({"search": search_text, "include_archived": "true" if include_archived else "false"})
+        payload = self.deployment_service.request_json("GET", f"/api/orders/search?{params}")
         if not isinstance(payload, list):
             return []
         return [
@@ -72,6 +80,7 @@ class OrderService(ServiceBase):
                 doctor_name=item.get("doctor_name"),
                 status=str(item.get("status") or ""),
                 item_count=int(item.get("item_count") or 0),
+                is_archived=int(bool(item.get("is_archived", False))),
             )
             for item in payload if isinstance(item, dict)
         ]

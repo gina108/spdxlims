@@ -207,6 +207,7 @@ class SettingsMixin:
             "show_order_number_text": "1" if bool(default_prefs.get("show_order_number_text")) else "0",
             "show_datetime": "1" if bool(default_prefs.get("show_datetime")) else "0",
             "printer": str(default_prefs.get("printer") or "niimbot:B1"),
+            "density": str(default_prefs.get("density") or "4"),
         }
         if client_id is not None:
             client_map = stored.get("clients")
@@ -277,6 +278,7 @@ class SettingsMixin:
         show_order_number_text: bool | None = None,
         show_datetime: bool | None = None,
         printer: str | None = None,
+        density: str | None = None,
     ) -> None:
         ui_state = self.get_ui_state()
         stored = ui_state.get("label_print_defaults")
@@ -306,6 +308,8 @@ class SettingsMixin:
                 default_prefs["show_datetime"] = bool(show_datetime)
             if printer is not None:
                 default_prefs["printer"] = printer
+            if density is not None:
+                default_prefs["density"] = density
             stored["default"] = default_prefs
         else:
             client_map = stored.get("clients")

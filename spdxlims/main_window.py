@@ -36,7 +36,6 @@ from spdxlims.pages.administrative_page import AdministrativePage
 from spdxlims.pages.clients_page import ClientsPage
 from spdxlims.pages.doctors_page import DoctorsPage
 from spdxlims.pages.instrument_connectivity_page import InstrumentConnectivityPage
-from spdxlims.pages.instrument_mapping_page import InstrumentMappingPage
 from spdxlims.pages.orders_browser_page import OrdersBrowserPage
 from spdxlims.pages.orders_page import OrdersPage
 from spdxlims.pages.panels_page import PanelsPage
@@ -152,7 +151,6 @@ class MainWindow(QMainWindow):
             ("tests", lambda: TestsPage(database, deployment_service)),
             ("panels", lambda: PanelsPage(database, deployment_service)),
             ("instrument_connectivity", lambda: InstrumentConnectivityPage()),
-            ("instrument_mappings", lambda: InstrumentMappingPage(database)),
             ("orders", lambda: OrdersPage(database, deployment_service)),
             ("orders_browser", lambda: OrdersBrowserPage(database, deployment_service)),
             ("instrument_results", lambda: InstrumentResultsPage(database, deployment_service)),
@@ -181,7 +179,6 @@ class MainWindow(QMainWindow):
             ("clients", "clients", "Clients", ("data",)),
             ("patients_data", "patients", "Patients", ("data",)),
             ("instrument_connectivity", "instrument_connectivity", "Instrument Connectivity", ("equipment",)),
-            ("instrument_mappings", "instrument_mappings", "Instrument Mappings", ("data",)),
         ]
         self.reload_addons(initial_load=True)
 
@@ -308,13 +305,13 @@ class MainWindow(QMainWindow):
                 self.page_builders["admin_invoices"] = lambda: AdministrativePage(self.database, section_mode="collections")
                 self.page_builders["admin_inventory"] = lambda: AdministrativePage(self.database, section_mode="inventory")
                 self.page_builders["admin_reports"] = lambda: ReportsPage(self.database, self.deployment_service)
-                self.nav_entries.append(("admin_prices", "admin_prices", "Prices", ("administrative",)))
+                self.nav_entries.append(("admin_reports", "admin_reports", "Reportes", ("administrative",)))
+                self.nav_entries.append(("admin_inventory", "admin_inventory", "Inventario", ("administrative",)))
+                self.nav_entries.append(("admin_prices", "admin_prices", "Precios", ("administrative",)))
                 self.nav_entries.append(("admin_invoices", "admin_invoices", "Cobranza de clientes", ("administrative",)))
-                self.nav_entries.append(("admin_inventory", "admin_inventory", "Inventory", ("administrative",)))
-                self.nav_entries.append(("admin_reports", "admin_reports", "Reports", ("administrative",)))
                 continue
             page_key = f"addon:{addon_id}"
-            if addon_id in {"equipment_manager", "pdf_table_extractor"} or addon.is_installed:
+            if addon_id in {"equipment_manager", "pdf_table_extractor", "facturas"} or addon.is_installed:
                 self.page_builders[page_key] = (
                     lambda current_addon_id=addon_id: self.addon_manager.build_page(
                         current_addon_id,
@@ -335,17 +332,18 @@ class MainWindow(QMainWindow):
                     workspace = "invoices"
                 elif addon.manifest.addon_id == "pdf_table_extractor":
                     workspace = "pdf_tables"
+                workspaces = ("invoices", "administrative") if addon.manifest.addon_id == "facturas" else (workspace,)
                 self.nav_entries.append(
                     (
                         f"addon:{addon.manifest.addon_id}:{nav_entry.entry_id}",
                         page_key,
                         nav_entry.nav_label,
-                        (workspace,),
+                        workspaces,
                     )
                 )
-        self.workspace_targets["administrative"] = self._find_nav_page_key("Prices", "administrative")
+        self.workspace_targets["administrative"] = self._find_nav_page_key("Reportes", "administrative")
         self.workspace_targets["equipment"] = self._find_nav_page_key("Equipment", "equipment")
-        self.workspace_targets["invoices"] = self._find_nav_page_key("Facturas", "invoices")
+        self.workspace_targets["invoices"] = self._find_nav_page_key("PORTAL", "invoices")
         self.workspace_targets["pdf_tables"] = self._find_nav_page_key("PDF Tables", "pdf_tables")
 
         addons_page = self.pages.get("addons")
@@ -482,10 +480,6 @@ class MainWindow(QMainWindow):
             "Instrument Results": "Resultados de Instrumentos",
             "Results Review": "Revisión de Resultados",
             "Settings": "Configuración",
-            "Prices": "Administración",
-            "Inventory": "Datos",
-            "Reports": "PDF",
-            "Cobranza de clientes": "Facturas",
         }
         if key in labels:
             return labels[key]
@@ -496,17 +490,23 @@ class MainWindow(QMainWindow):
 
     def _nav_icon(self, entry_id: str, target_page_key: str) -> QIcon:
         icon_map = {
-            "orders": QStyle.SP_FileDialogNewFolder,
-            "instrument_results": QStyle.SP_ComputerIcon,
-            "results": QStyle.SP_FileDialogContentsView,
-            "settings": QStyle.SP_FileDialogDetailedView,
-            "admin_prices": QStyle.SP_DriveHDIcon,
-            "admin_inventory": QStyle.SP_DirIcon,
-            "admin_reports": QStyle.SP_FileIcon,
-            "admin_invoices": QStyle.SP_DialogApplyButton,
+            "orders": "orders.svg",
+            "instrument_results": "instrument_results.svg",
+            "results": "results.svg",
+            "settings": "settings.svg",
+            "admin_prices": "admin_prices.svg",
+            "admin_inventory": "admin_inventory.svg",
+            "admin_reports": "admin_reports.svg",
+            "admin_invoices": "admin_invoices.svg",
         }
+        icon_dir = Path(__file__).resolve().parent.parent / "assets" / "icons"
         key = target_page_key if target_page_key in icon_map else entry_id
-        return self.style().standardIcon(icon_map.get(key, QStyle.SP_FileIcon))
+        svg_name = icon_map.get(key)
+        if svg_name:
+            icon_path = icon_dir / svg_name
+            if icon_path.exists():
+                return QIcon(str(icon_path))
+        return self.style().standardIcon(QStyle.SP_FileIcon)
 
     def _current_page_key(self) -> str | None:
         return self.current_page_key
@@ -530,7 +530,7 @@ class MainWindow(QMainWindow):
             "data": "Datos",
             "administrative": "Admin",
             "equipment": "Equipo",
-            "invoices": "Facturas",
+            "invoices": "PORTAL",
             "pdf_tables": "PDF",
         }
         return labels[workspace_key]
@@ -541,7 +541,7 @@ class MainWindow(QMainWindow):
             "data": "DATA",
             "administrative": "ADMIN",
             "equipment": "EQP",
-            "invoices": "FACT",
+            "invoices": "PRTL",
             "pdf_tables": "PDF",
         }
         full = {
@@ -549,7 +549,7 @@ class MainWindow(QMainWindow):
             "data": "Datos",
             "administrative": "Administrativo",
             "equipment": "Equipo",
-            "invoices": "Facturas",
+            "invoices": "PORTAL",
             "pdf_tables": "PDF",
         }
         key = self.current_top_button
@@ -676,8 +676,8 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _autostart_instrument_connectivity(self) -> None:
-        self._ensure_page("instrument_connectivity")
-        page = self.pages.get("instrument_connectivity")
+        self._ensure_page("instrument_results")
+        page = self.pages.get("instrument_results")
         auto_start = getattr(page, "auto_start", None)
         if callable(auto_start):
             auto_start()

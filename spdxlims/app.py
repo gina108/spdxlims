@@ -3,11 +3,24 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+
+def _acquire_single_instance_lock() -> bool:
+    """Return True if this is the first running instance (lock acquired)."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        _handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\SPDXLIMS_SingleInstance")
+        return ctypes.windll.kernel32.GetLastError() != 183  # 183 = ERROR_ALREADY_EXISTS
+    except Exception:
+        return True
+
 from PySide6.QtCore import QEvent, QLocale, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette
-from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox, QSpinBox
+from PySide6.QtWidgets import QApplication, QComboBox, QDateEdit, QDateTimeEdit, QDoubleSpinBox, QMessageBox, QSpinBox, QTimeEdit
 
 from spdxlims.addons import AddonManager
+from spdxlims.auto_invoicing import run_auto_invoicing
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentConfig, DeploymentService
 from spdxlims.i18n import set_language, tr
@@ -19,7 +32,9 @@ class _App(QApplication):
     """QApplication subclass that prevents scroll wheel from changing combo/spin values."""
 
     def notify(self, obj, event):
-        if event.type() == QEvent.Type.Wheel and isinstance(obj, (QComboBox, QSpinBox)):
+        if event.type() == QEvent.Type.Wheel and isinstance(
+            obj, (QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QDateTimeEdit, QTimeEdit)
+        ):
             return False
         return super().notify(obj, event)
 
@@ -29,43 +44,44 @@ def _apply_dark_theme(app: QApplication) -> None:
     app.setFont(app_font)
 
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(24, 28, 34))
-    palette.setColor(QPalette.WindowText, QColor(232, 236, 241))
-    palette.setColor(QPalette.Base, QColor(18, 22, 27))
-    palette.setColor(QPalette.AlternateBase, QColor(31, 36, 44))
-    palette.setColor(QPalette.ToolTipBase, QColor(232, 236, 241))
-    palette.setColor(QPalette.ToolTipText, QColor(18, 22, 27))
-    palette.setColor(QPalette.Text, QColor(232, 236, 241))
-    palette.setColor(QPalette.Button, QColor(38, 44, 52))
-    palette.setColor(QPalette.ButtonText, QColor(232, 236, 241))
-    palette.setColor(QPalette.BrightText, QColor(255, 107, 107))
-    palette.setColor(QPalette.Link, QColor(189, 147, 249))
-    palette.setColor(QPalette.Highlight, QColor(189, 147, 249))
-    palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-    palette.setColor(QPalette.PlaceholderText, QColor(145, 152, 161))
+    palette.setColor(QPalette.Window, QColor(31, 35, 42))           # #1f232a
+    palette.setColor(QPalette.WindowText, QColor(195, 204, 223))    # #c3ccdf
+    palette.setColor(QPalette.Base, QColor(31, 35, 42))             # #1f232a
+    palette.setColor(QPalette.AlternateBase, QColor(32, 36, 43))    # #20242b
+    palette.setColor(QPalette.ToolTipBase, QColor(32, 36, 43))      # #20242b
+    palette.setColor(QPalette.ToolTipText, QColor(195, 204, 223))   # #c3ccdf
+    palette.setColor(QPalette.Text, QColor(195, 204, 223))          # #c3ccdf
+    palette.setColor(QPalette.Button, QColor(32, 36, 43))            # #20242b — neutral, QSS handles button purple
+    palette.setColor(QPalette.ButtonText, QColor(195, 204, 223))    # #c3ccdf
+    palette.setColor(QPalette.BrightText, QColor(255, 107, 107))    # #FF6B6B
+    palette.setColor(QPalette.Link, QColor(189, 147, 249))          # #bd93f9
+    palette.setColor(QPalette.Highlight, QColor(99, 75, 138))       # #634b8a — selection
+    palette.setColor(QPalette.HighlightedText, QColor(195, 204, 223))
+    palette.setColor(QPalette.PlaceholderText, QColor(139, 149, 170)) # #8b95aa
 
-    palette.setColor(QPalette.Disabled, QPalette.Text, QColor(120, 127, 136))
-    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(120, 127, 136))
-    palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(120, 127, 136))
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor(74, 86, 104))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(74, 86, 104))
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(74, 86, 104))
 
     app.setPalette(palette)
     app.setStyleSheet(
         """
         QWidget {
-            background-color: #181c22;
-            color: #e8ecf1;
+            background-color: #1f232a;
+            color: #c3ccdf;
+            font-family: "Segoe UI";
             font-size: 12pt;
         }
         QMainWindow, QDialog {
-            background-color: #181c22;
+            background-color: #1f232a;
         }
         QDialog {
-            border: 1px solid #465364;
+            border: 1px solid rgba(255,255,255,0.08);
             border-radius: 14px;
         }
         QGroupBox {
-            background-color: #1d2229;
-            border: 1px solid #3c4652;
+            background-color: #20242b;
+            border: 1px solid rgba(255,255,255,0.08);
             border-radius: 12px;
             margin-top: 14px;
             padding: 14px;
@@ -75,27 +91,27 @@ def _apply_dark_theme(app: QApplication) -> None:
             subcontrol-origin: margin;
             left: 12px;
             padding: 0 6px;
-            color: #f5f7fa;
+            color: #c3ccdf;
             font-size: 12pt;
         }
         QLineEdit, QTextEdit, QComboBox {
-            background-color: #101419;
-            border: 1px solid #3c4652;
-            border-radius: 8px;
-            padding: 6px 8px;
-            color: #e8ecf1;
-            font-size: 12pt;
+            background-color: #1f232a;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 7px;
+            padding: 6px 10px;
+            color: #c3ccdf;
+            font-size: 11pt;
             selection-background-color: #bd93f9;
-            selection-color: #ffffff;
+            selection-color: #1a1a1a;
         }
         QListWidget, QTableWidget {
-            background-color: #181c22;
+            background-color: #1f232a;
             border: none;
             border-radius: 10px;
-            color: #e8ecf1;
+            color: #c3ccdf;
             font-size: 12pt;
             selection-background-color: transparent;
-            selection-color: #ffffff;
+            selection-color: #c3ccdf;
         }
         QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QListWidget:focus, QTableWidget:focus {
             border: 1px solid #bd93f9;
@@ -108,11 +124,11 @@ def _apply_dark_theme(app: QApplication) -> None:
             width: 22px;
         }
         QComboBox QAbstractItemView, QListWidget, QTableWidget {
-            background-color: #101419;
-            alternate-background-color: #1a2028;
+            background-color: #20242b;
+            alternate-background-color: #252930;
             gridline-color: transparent;
-            selection-background-color: #bd93f9;
-            selection-color: #ffffff;
+            selection-background-color: #392c4b;
+            selection-color: #c3ccdf;
             outline: 0;
         }
         QComboBox QAbstractItemView::item,
@@ -125,8 +141,8 @@ def _apply_dark_theme(app: QApplication) -> None:
         }
         QComboBox QAbstractItemView::item:selected,
         QListWidget::item:selected {
-            background-color: #bd93f9;
-            color: #14171c;
+            background-color: #392c4b;
+            color: #c3ccdf;
             border: none;
             border-radius: 0px;
         }
@@ -134,128 +150,70 @@ def _apply_dark_theme(app: QApplication) -> None:
             alternate-background-color: transparent;
         }
         QTableWidget::item {
-            background-color: #1f2630;
-            border-top: 2px solid #181c22;
-            border-bottom: 2px solid #181c22;
+            background-color: #20242b;
+            border-top: 2px solid #1f232a;
+            border-bottom: 2px solid #1f232a;
             padding: 8px 10px;
         }
         QTableWidget::item:selected {
-            background-color: #bd93f9;
-            color: #14171c;
+            background-color: #634b8a;
+            color: #c3ccdf;
         }
         QTableCornerButton::section, QHeaderView::section {
-            background-color: #232a33;
-            color: #eef2f6;
+            background-color: #252930;
+            color: #8b95aa;
             padding: 7px 6px;
             border: none;
-            border-bottom: 1px solid #3c4652;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
             font-size: 12pt;
         }
         QToolTip {
-            background-color: #232a33;
-            color: #eef2f6;
-            border: 1px solid #465160;
+            background-color: #20242b;
+            color: #c3ccdf;
+            border: 1px solid rgba(255,255,255,0.08);
             padding: 4px 6px;
         }
         QPushButton {
-            background-color: #bd93f9;
-            color: #14171c;
-            border: 1px solid #bd93f9;
-            border-radius: 8px;
-            padding: 7px 10px;
+            background: #392c4b;
+            color: #c3ccdf;
+            border: 1px solid #392c4b;
+            border-radius: 7px;
+            padding: 6px 10px;
             font-size: 10pt;
-            font-weight: 600;
+            font-weight: 700;
         }
-        QPushButton:hover {
-            background-color: #caa8fb;
-            border-color: #caa8fb;
-        }
-        QPushButton:pressed {
-            background-color: #a97cf2;
-            border-color: #a97cf2;
-        }
+        QPushButton:hover { background: #43365a; }
+        QPushButton:pressed { background: #342744; }
         QPushButton:disabled {
-            background-color: #39424d;
-            border-color: #39424d;
-            color: #98a0a8;
-        }
-        QPushButton[text^="Clear"],
-        QPushButton[text^="Cancel"],
-        QPushButton[text^="Close"],
-        QPushButton[text^="Browse"],
-        QPushButton[text^="Remove"],
-        QPushButton[text^="Edit Selected"] {
-            background-color: #232a33;
-            border: 1px solid #465160;
-            color: #e8ecf1;
+            background: #252930;
+            border-color: rgba(255,255,255,0.06);
+            color: #4a5568;
         }
         QDialog QGroupBox {
-            background-color: #1b2128;
-            border: 1px solid #465364;
+            background-color: #20242b;
+            border: 1px solid rgba(255,255,255,0.08);
             border-radius: 12px;
             margin-top: 16px;
             padding: 16px;
         }
-        QDialog QLabel {
-            color: #dfe5ec;
-        }
+        QDialog QLabel { color: #c3ccdf; }
         QDialog QLineEdit,
         QDialog QTextEdit,
         QDialog QComboBox,
         QDialog QListWidget,
         QDialog QTableWidget {
-            background-color: #0f1318;
-            border: 1px solid #4a5667;
+            background-color: #1f232a;
+            border: 1px solid rgba(255,255,255,0.12);
         }
-        QDialog QPushButton {
-            min-height: 18px;
-        }
-        QDialog QPushButton[text^="Cancel"],
-        QDialog QPushButton[text^="Close"],
-        QDialog QPushButton[text^="Browse"],
-        QDialog QPushButton[text^="Remove"],
-        QDialog QPushButton[text^="Edit Selected"] {
-            background-color: #262e39;
-            border-color: #556274;
-        }
-        QPushButton[text^="Clear"]:hover,
-        QPushButton[text^="Cancel"]:hover,
-        QPushButton[text^="Close"]:hover,
-        QPushButton[text^="Browse"]:hover,
-        QPushButton[text^="Remove"]:hover,
-        QPushButton[text^="Edit Selected"]:hover {
-            background-color: #2b3340;
-            border-color: #5a6677;
-        }
-        QListWidget {
-            padding: 6px;
-        }
-        QWidget#navSidebar {
-            background-color: #181c22;
-            border: none;
-        }
-        QListWidget#navDrawer {
-            background-color: #181c22;
-            font-family: "Segoe UI";
-            font-size: 12pt;
-            font-weight: 600;
-            letter-spacing: 0px;
-            padding: 2px;
-            border: none;
-            outline: 0;
-        }
-        QListWidget#navDrawer:focus {
-            border: none;
-            outline: 0;
-        }
+        QDialog QPushButton { min-height: 18px; }
         QScrollArea {
             border: none;
             background: transparent;
         }
         QStatusBar {
-            background-color: #1f242c;
-            color: #d9dee4;
-            border-top: 1px solid #39424d;
+            background-color: #191d24;
+            color: #8b95aa;
+            border-top: 1px solid rgba(255,255,255,0.06);
         }
         QWidget#recentOrdersGroup {
             background-color: transparent;
@@ -267,20 +225,20 @@ def _apply_dark_theme(app: QApplication) -> None:
             padding: 4px;
         }
         QTableWidget#recentOrdersTable::item {
-            background-color: #202833;
-            border-top: 3px solid #171b21;
-            border-bottom: 3px solid #171b21;
+            background-color: #20242b;
+            border-top: 3px solid #1f232a;
+            border-bottom: 3px solid #1f232a;
             padding: 9px 12px;
         }
         QTableWidget#recentOrdersTable::item:selected {
-            background-color: #bd93f9;
-            color: #14171c;
+            background-color: #634b8a;
+            color: #c3ccdf;
         }
         QGroupBox#recentPatientsGroup,
         QGroupBox#catalogTestsGroup,
         QGroupBox#catalogPanelsGroup {
-            background-color: #171b21;
-            border: 1px solid #465364;
+            background-color: #20242b;
+            border: 1px solid rgba(255,255,255,0.08);
         }
         QTableWidget#recentPatientsTable,
         QTableWidget#catalogTestsTable,
@@ -292,36 +250,36 @@ def _apply_dark_theme(app: QApplication) -> None:
         QTableWidget#recentPatientsTable::item,
         QTableWidget#catalogTestsTable::item,
         QTableWidget#catalogPanelsTable::item {
-            background-color: #202833;
-            border-top: 3px solid #171b21;
-            border-bottom: 3px solid #171b21;
+            background-color: #20242b;
+            border-top: 3px solid #1f232a;
+            border-bottom: 3px solid #1f232a;
             padding: 9px 12px;
         }
         QTableWidget#recentPatientsTable::item:selected,
         QTableWidget#catalogTestsTable::item:selected,
         QTableWidget#catalogPanelsTable::item:selected {
-            background-color: #bd93f9;
-            color: #14171c;
+            background-color: #634b8a;
+            color: #c3ccdf;
         }
         QLabel {
             background: transparent;
             font-size: 12pt;
         }
         QLabel#workspaceLabel {
-            background-color: #202833;
-            color: #f5f7fa;
+            background-color: #252930;
+            color: #c3ccdf;
             font-size: 12pt;
             font-weight: 700;
             letter-spacing: 0.5px;
-            border: 1px solid #465364;
+            border: 1px solid rgba(255,255,255,0.08);
             border-radius: 12px;
             padding: 10px 12px;
             margin-top: 2px;
         }
         QPushButton#workspaceSelector {
-            background-color: #232a33;
-            color: #d9dee4;
-            border: 1px solid #465160;
+            background-color: #20242b;
+            color: #8b95aa;
+            border: 1px solid #20242b;
             border-radius: 10px;
             padding: 5px 0;
             font-size: 10pt;
@@ -329,14 +287,30 @@ def _apply_dark_theme(app: QApplication) -> None:
             min-width: 0;
         }
         QPushButton#workspaceSelector:hover {
-            background-color: #2b3340;
-            border-color: #5a6677;
-            color: #f5f7fa;
+            background-color: #252930;
+            color: #c3ccdf;
         }
         QPushButton#workspaceSelector:checked {
-            background-color: #bd93f9;
-            border-color: #bd93f9;
-            color: #14171c;
+            background-color: #392c4b;
+            border-color: #392c4b;
+            color: #c3ccdf;
+        }
+        QWidget#navSidebar {
+            background-color: #191d24;
+            border: none;
+        }
+        QListWidget#navDrawer {
+            background-color: #191d24;
+            font-family: "Segoe UI";
+            font-size: 12pt;
+            font-weight: 600;
+            padding: 2px;
+            border: none;
+            outline: 0;
+        }
+        QListWidget#navDrawer:focus {
+            border: none;
+            outline: 0;
         }
         """
     )
@@ -346,6 +320,10 @@ def _apply_dark_theme(app: QApplication) -> None:
 
 
 def main() -> int:
+    if not _acquire_single_instance_lock():
+        app = _App(sys.argv)
+        QMessageBox.information(None, "SPDXLIMS", "SPDXLIMS ya está en ejecución.")
+        return 0
     QLocale.setDefault(QLocale(QLocale.Language.Spanish, QLocale.Country.Mexico))
     app = _App(sys.argv)
     app.setApplicationName("SPDXLIMS")
@@ -363,6 +341,7 @@ def main() -> int:
 
     database = Database(data_dir / "spdxlims.db")
     database.initialize()
+    run_auto_invoicing(database)
     addon_manager = AddonManager(data_dir)
     deployment_service = DeploymentService(data_dir / "deployment.json")
     set_language(database.get_lab_settings().ui_language)

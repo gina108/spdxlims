@@ -63,7 +63,7 @@ class ClientsMixin:
     def create_client(self, payload: dict[str, Any]) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO clients (name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+                "INSERT INTO clients (name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
                 (
                     payload["name"].strip(),
                     str(payload.get("phone") or "").strip() or None,
@@ -72,6 +72,8 @@ class ClientsMixin:
                     str(payload.get("fiscal_regime") or "").strip() or None,
                     str(payload.get("postal_code") or "").strip() or None,
                     str(payload.get("cfdi_use") or "").strip() or None,
+                    1 if payload.get("auto_invoice_enabled") else 0,
+                    str(payload.get("auto_invoice_frequency") or "").strip() or None,
                 ),
             )
             return int(cursor.lastrowid)
@@ -79,7 +81,7 @@ class ClientsMixin:
     def update_client(self, client_id: int, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE clients SET name = ?, phone = ?, email = ?, tax_id = ?, fiscal_regime = ?, postal_code = ?, cfdi_use = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE clients SET name = ?, phone = ?, email = ?, tax_id = ?, fiscal_regime = ?, postal_code = ?, cfdi_use = ?, auto_invoice_enabled = ?, auto_invoice_frequency = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (
                     payload["name"].strip(),
                     str(payload.get("phone") or "").strip() or None,
@@ -88,6 +90,8 @@ class ClientsMixin:
                     str(payload.get("fiscal_regime") or "").strip() or None,
                     str(payload.get("postal_code") or "").strip() or None,
                     str(payload.get("cfdi_use") or "").strip() or None,
+                    1 if payload.get("auto_invoice_enabled") else 0,
+                    str(payload.get("auto_invoice_frequency") or "").strip() or None,
                     client_id,
                 ),
             )
@@ -102,5 +106,46 @@ class ClientsMixin:
 
     def get_client(self, client_id: int) -> ClientRecord | None:
         with self.connect() as connection:
-            row = connection.execute("SELECT id, name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active FROM clients WHERE id = ?", (client_id,)).fetchone()
+            row = connection.execute("SELECT id, name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency, auto_invoice_last_run FROM clients WHERE id = ?", (client_id,)).fetchone()
         return ClientRecord(**dict(row)) if row is not None else None
+
+    def list_auto_invoice_clients(self) -> list[dict[str, Any]]:
+        """Active clients with auto-invoicing enabled, for the scheduler."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, auto_invoice_frequency, auto_invoice_last_run
+                FROM clients
+                WHERE is_active = 1
+                  AND auto_invoice_enabled = 1
+                  AND auto_invoice_frequency IS NOT NULL
+                  AND auto_invoice_frequency != ''
+                ORDER BY id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_auto_invoice_run(self, client_id: int, run_date: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE clients SET auto_invoice_last_run = ? WHERE id = ?",
+                (run_date, int(client_id)),
+            )
+
+    def list_uninvoiced_order_ids_for_client(self, client_id: int) -> list[int]:
+        """Order ids for a client not yet covered by any invoice (single or grouped)."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.id
+                FROM orders o
+                WHERE o.client_id = ?
+                  AND COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
+                  AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.order_id = o.id)
+                  AND NOT EXISTS (SELECT 1 FROM invoice_order_links iol WHERE iol.order_id = o.id)
+                ORDER BY o.id
+                """,
+                (int(client_id),),
+            ).fetchall()
+        return [int(row["id"]) for row in rows]

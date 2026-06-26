@@ -86,6 +86,9 @@ class ClientRecord:
     postal_code: str | None
     cfdi_use: str | None
     is_active: int
+    auto_invoice_enabled: int = 0
+    auto_invoice_frequency: str | None = None
+    auto_invoice_last_run: str | None = None
 
 
 @dataclass(slots=True)
@@ -140,6 +143,7 @@ class PanelRecord:
     method: str | None
     is_active: int
     test_names: str | None
+    price: float = 0.0
 
 
 @dataclass(slots=True)
@@ -241,6 +245,7 @@ class OrderBrowserRecord:
     doctor_name: str | None
     status: str
     item_count: int
+    is_archived: int = 0
 
 
 @dataclass(slots=True)
@@ -318,6 +323,7 @@ class ResultEntryRecord:
     is_outsourced: int
     source_label: str | None
     result_multiplier: float | None = None
+    formula: str | None = None
 
 
 @dataclass(slots=True)
