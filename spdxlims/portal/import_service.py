@@ -74,28 +74,20 @@ class PortalImportService:
         return payload
 
     def _build_panel_order_items(self, lis_panel_ids: list[str]) -> list[dict[str, Any]]:
-        """Expand each linked LIS panel into its order items (headings, comments
-        and tests) sourced by the panel name -- the same shape the LIS uses when a
-        panel is added to an order (see OrdersPage.add_selected_panel)."""
+        """Expand each linked LIS panel into its *test* order items, sourced by the
+        panel name. Headings and comments are intentionally dropped: they all share
+        a single placeholder test_id, and order_tests is UNIQUE(order_id, test_id),
+        so emitting one per panel would collide -- the same reason the bulk import
+        path keeps only tests (see OrdersPage._order_import_items). A test may also
+        appear in more than one selected panel, so keep only its first occurrence
+        (panel grouping is preserved via each test's ``source`` label)."""
         panel_names = {str(panel.id): panel.name for panel in self._panels.list_panels(status_filter="all")}
         order_items: list[dict[str, Any]] = []
-        # A test may appear in more than one selected panel; the order_tests table
-        # is UNIQUE(order_id, test_id), so keep only the first occurrence of each
-        # test (sourced by the panel that introduced it).
         seen_test_ids: set[str] = set()
         for panel_id in lis_panel_ids:
             panel_name = panel_names.get(str(panel_id), "")
             for entry in self._orders.get_panel_order_items(panel_id):
-                item_type = str(entry.get("item_type") or "test")
-                if item_type in {"heading", "comment"}:
-                    order_items.append(
-                        {
-                            "item_type": item_type,
-                            "label": str(entry.get("heading_text") or entry.get("label") or ""),
-                            "source": panel_name,
-                            "is_outsourced": 0,
-                        }
-                    )
+                if str(entry.get("item_type") or "test") != "test":
                     continue
                 test_id = entry.get("test_id")
                 if test_id is None or str(test_id) in seen_test_ids:
