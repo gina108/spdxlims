@@ -21,8 +21,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -42,7 +40,6 @@ from spdxlims.portal.client import PendingOrder, PortalClient, PortalError
 from spdxlims.portal.import_service import PortalImportService
 from spdxlims.portal.result_service import PortalResultService
 from spdxlims.portal.settings import PortalSettings, PortalStore
-from spdxlims.provider_service import ProviderService
 
 _SEX_CHOICES = [("(sin especificar)", None), ("Femenino", "F"), ("Masculino", "M"), ("Otro", "O")]
 
@@ -183,203 +180,6 @@ class ImportOutcome:
         self.order_number = order_number
 
 
-class ClinicsDialog(QDialog):
-    """Create portal clinic logins and link each clinic to a LIS client."""
-
-    def __init__(
-        self,
-        client: PortalClient | None,
-        store: PortalStore,
-        providers: ProviderService,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Clínicas del portal")
-        self.setMinimumSize(700, 480)
-        self._client = client
-        self._store = store
-        self._providers = providers
-        self._clinics: list[dict] = []
-        self._client_choices: list[tuple[str, str]] = []
-
-        root = QVBoxLayout(self)
-        if client is None:
-            root.addWidget(QLabel("Configura la conexión del portal para administrar clínicas."))
-            close = QPushButton("Cerrar")
-            close.clicked.connect(self.reject)
-            row = QHBoxLayout()
-            row.addStretch(1)
-            row.addWidget(close)
-            root.addLayout(row)
-            return
-
-        root.addWidget(
-            QLabel(
-                "Accesos de las clínicas al portal. Vincula cada clínica a un cliente del LIS para "
-                "que sus pedidos importados queden registrados a nombre de ese cliente."
-            )
-        )
-
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Clínica", "Correo", "Estado", "Cliente del LIS"])
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(40)
-        self.table.setColumnWidth(0, 150)
-        self.table.setColumnWidth(1, 180)
-        self.table.setColumnWidth(2, 80)
-        root.addWidget(self.table, 1)
-
-        row_actions = QHBoxLayout()
-        self.toggle_button = QPushButton("Activar / Desactivar")
-        self.toggle_button.clicked.connect(self._toggle_active)
-        self.reset_button = QPushButton("Restablecer contraseña")
-        self.reset_button.clicked.connect(self._reset_password)
-        row_actions.addStretch(1)
-        row_actions.addWidget(self.toggle_button)
-        row_actions.addWidget(self.reset_button)
-        root.addLayout(row_actions)
-
-        create_box = QGroupBox("Crear acceso de clínica")
-        form = QFormLayout(create_box)
-        self.new_name = QLineEdit()
-        self.new_email = QLineEdit()
-        self.new_password = QLineEdit()
-        self.new_phone = QLineEdit()
-        form.addRow("Nombre", self.new_name)
-        form.addRow("Correo", self.new_email)
-        form.addRow("Contraseña", self.new_password)
-        form.addRow("Teléfono (opcional)", self.new_phone)
-        create_button = QPushButton("Crear clínica")
-        create_button.clicked.connect(self._create_clinic)
-        form.addRow(create_button)
-        root.addWidget(create_box)
-
-        close_row = QHBoxLayout()
-        close_button = QPushButton("Cerrar")
-        close_button.clicked.connect(self.accept)
-        close_row.addStretch(1)
-        close_row.addWidget(close_button)
-        root.addLayout(close_row)
-
-        self._reload()
-
-    def _reload(self) -> None:
-        try:
-            self._clinics = self._client.list_clinics()
-            self._client_choices = [
-                (str(record.id), record.name)
-                for record in self._providers.list_clients(status_filter="active")
-            ]
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Error", f"No se pudieron cargar las clínicas:\n{exc}")
-            return
-        self.table.setRowCount(len(self._clinics))
-        for row, clinic in enumerate(self._clinics):
-            clinic_id = clinic.get("id")
-            active = bool(clinic.get("is_active", 1))
-            self.table.setItem(row, 0, QTableWidgetItem(str(clinic.get("name") or "")))
-            self.table.setItem(row, 1, QTableWidgetItem(str(clinic.get("email") or "")))
-            self.table.setItem(row, 2, QTableWidgetItem("Activa" if active else "Inactiva"))
-            combo = QComboBox()
-            # Fill the whole cell and drop the themed purple border/outline.
-            combo.setStyleSheet(
-                "QComboBox { border: none; outline: none; background: transparent; padding: 0 8px; }"
-                "QComboBox:focus { border: none; outline: none; }"
-                "QComboBox::drop-down { border: none; width: 22px; }"
-            )
-            combo.addItem("— sin vincular —", "")
-            for value, label in self._client_choices:
-                combo.addItem(label, value)
-            combo.addItem("➕ Crear cliente nuevo…", "__new__")
-            saved = self._store.lis_client_id_for(clinic_id)
-            index = combo.findData(str(saved)) if saved is not None else 0
-            combo.setCurrentIndex(index if index >= 0 else 0)
-            combo.currentIndexChanged.connect(
-                lambda _i, c=combo, cid=clinic_id: self._on_map_changed(c, cid)
-            )
-            self.table.setCellWidget(row, 3, combo)
-
-    def _selected_clinic(self) -> dict | None:
-        row = self.table.currentRow()
-        if row < 0 or row >= len(self._clinics):
-            QMessageBox.information(self, "Selecciona una clínica", "Elige una clínica de la lista.")
-            return None
-        return self._clinics[row]
-
-    def _on_map_changed(self, combo: QComboBox, clinic_id: object) -> None:
-        data = combo.currentData()
-        if data == "__new__":
-            from spdxlims.pages.clients_page import ServerClientDialog
-
-            dialog = ServerClientDialog(self._providers, self)
-            if dialog.exec() == QDialog.Accepted and dialog.client_id is not None:
-                self._store.record_clinic_link(clinic_id, dialog.client_id)
-            self._reload()  # rebuild with the new client list and saved selection
-            return
-        self._store.record_clinic_link(clinic_id, data or "")
-
-    def _create_clinic(self) -> None:
-        name = self.new_name.text().strip()
-        email = self.new_email.text().strip()
-        password = self.new_password.text()
-        if not name or not email or not password:
-            QMessageBox.warning(self, "Datos incompletos", "Nombre, correo y contraseña son obligatorios.")
-            return
-        if len(password) < 6:
-            QMessageBox.warning(self, "Contraseña corta", "La contraseña debe tener al menos 6 caracteres.")
-            return
-        try:
-            self._client.create_clinic(
-                name=name, email=email, password=password, phone=self.new_phone.text().strip() or None
-            )
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Error al crear", str(exc))
-            return
-        for field in (self.new_name, self.new_email, self.new_password, self.new_phone):
-            field.clear()
-        QMessageBox.information(self, "Clínica creada", f"Se creó el acceso para {name}.")
-        self._reload()
-
-    def _reset_password(self) -> None:
-        clinic = self._selected_clinic()
-        if clinic is None:
-            return
-        new_password, ok = QInputDialog.getText(
-            self,
-            "Restablecer contraseña",
-            f"Nueva contraseña para {clinic.get('name')}:",
-            QLineEdit.Normal,
-            "",
-        )
-        if not ok:
-            return
-        if len(new_password) < 6:
-            QMessageBox.warning(self, "Contraseña corta", "La contraseña debe tener al menos 6 caracteres.")
-            return
-        try:
-            self._client.update_clinic(int(clinic["id"]), password=new_password)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Error", str(exc))
-            return
-        QMessageBox.information(self, "Listo", "La contraseña se actualizó.")
-
-    def _toggle_active(self) -> None:
-        clinic = self._selected_clinic()
-        if clinic is None:
-            return
-        new_state = 0 if bool(clinic.get("is_active", 1)) else 1
-        try:
-            self._client.update_clinic(int(clinic["id"]), is_active=new_state)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Error", str(exc))
-            return
-        self._reload()
-
-
 class PortalPage(DataAwarePage):
     # Emitted from the background poll worker with the fetch/import outcome so the
     # UI thread can update the table and labels (see _bg_poll / _apply_poll_result).
@@ -390,7 +190,6 @@ class PortalPage(DataAwarePage):
         self.store = PortalStore(data_dir)
         self.import_service = PortalImportService(database, deployment_service)
         self._results = PortalResultService(self.store)
-        self._providers = ProviderService(database, deployment_service)
         self._pending: list[PendingOrder] = []
         self._portal_test_labels: dict[int, str] = {}
 
@@ -405,12 +204,8 @@ class PortalPage(DataAwarePage):
         self.refresh_button.clicked.connect(self.refresh_on_show)
         self.open_button = QPushButton("Abrir en navegador")
         self.open_button.clicked.connect(self._open_in_browser)
-        self.clinics_button = QPushButton("Clínicas")
-        self.clinics_button.setToolTip("Crear accesos de clínicas y vincularlas a un cliente del LIS.")
-        self.clinics_button.clicked.connect(self._open_clinics)
         header.addWidget(title)
         header.addWidget(self.connection_label, 1)
-        header.addWidget(self.clinics_button)
         header.addWidget(self.open_button)
         header.addWidget(self.refresh_button)
         root.addLayout(header)
@@ -541,10 +336,6 @@ class PortalPage(DataAwarePage):
             QMessageBox.information(self, "Sin URL", "Configura primero la URL base del portal.")
             return
         QDesktopServices.openUrl(QUrl(settings.base_url.strip()))
-
-    def _open_clinics(self) -> None:
-        dialog = ClinicsDialog(self._client(), self.store, self._providers, self)
-        dialog.exec()
 
     # -- network actions ---------------------------------------------------
     def _test_connection(self) -> None:

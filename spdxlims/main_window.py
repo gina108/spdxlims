@@ -34,6 +34,7 @@ from spdxlims.pages.addons_page import AddonsPage
 from spdxlims.pages.addon_placeholder_page import AddonPlaceholderPage
 from spdxlims.pages.administrative_page import AdministrativePage
 from spdxlims.pages.clients_page import ClientsPage
+from spdxlims.pages.clinics_page import ClinicsPage
 from spdxlims.pages.doctors_page import DoctorsPage
 from spdxlims.pages.instrument_connectivity_page import InstrumentConnectivityPage
 from spdxlims.pages.orders_browser_page import OrdersBrowserPage
@@ -153,6 +154,7 @@ class MainWindow(QMainWindow):
             ("panels", lambda: PanelsPage(database, deployment_service)),
             ("instrument_connectivity", lambda: InstrumentConnectivityPage()),
             ("portal_catalog", lambda: PortalCatalogPage(addon_manager.data_dir, database, deployment_service)),
+            ("portal_clinics", lambda: ClinicsPage(addon_manager.data_dir, database, deployment_service)),
             ("orders", lambda: OrdersPage(database, deployment_service)),
             ("orders_browser", lambda: OrdersBrowserPage(database, deployment_service)),
             ("instrument_results", lambda: InstrumentResultsPage(database, deployment_service)),
@@ -182,6 +184,7 @@ class MainWindow(QMainWindow):
             ("patients_data", "patients", "Patients", ("data",)),
             ("instrument_connectivity", "instrument_connectivity", "Instrument Connectivity", ("equipment",)),
             ("portal_catalog", "portal_catalog", "Catálogo del portal", ("invoices",)),
+            ("portal_clinics", "portal_clinics", "Clínicas", ("invoices",)),
         ]
         self.reload_addons(initial_load=True)
 
