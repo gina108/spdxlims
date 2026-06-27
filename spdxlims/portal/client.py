@@ -53,6 +53,9 @@ class PortalClient:
     def _request(self, method: str, path: str, json_body: dict[str, Any] | None = None) -> Any:
         headers = {
             "Accept": "application/json",
+            # Cloudflare bans the default "Python-urllib/x" UA (error 1010), so
+            # send an explicit app User-Agent that reaches the Worker.
+            "User-Agent": "SPDXLIMS-Portal/1.0",
             "Authorization": f"Bearer {self._secret}",
         }
         data: bytes | None = None
