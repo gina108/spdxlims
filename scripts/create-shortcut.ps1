@@ -12,12 +12,17 @@ if (-not (Test-Path $Python)) {
     exit 1
 }
 
+$Icon     = Join-Path $AppDir "assets\SDX.ico"
+
 $shell    = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($Link)
 $shortcut.TargetPath       = $Python
 $shortcut.Arguments        = "`"$Script`""
 $shortcut.WorkingDirectory = $AppDir
 $shortcut.Description      = "SPDXLIMS Laboratory Information System"
+if (Test-Path $Icon) {
+    $shortcut.IconLocation = $Icon
+}
 $shortcut.Save()
 
 Write-Host "Shortcut created: $Link" -ForegroundColor Green

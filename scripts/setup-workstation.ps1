@@ -103,6 +103,7 @@ Write-Step "Creating desktop shortcuts..."
 $desktop   = [Environment]::GetFolderPath("Desktop")
 $appPy     = Join-Path $InstallDir "app.py"
 $updatePs1 = Join-Path $InstallDir "scripts\update-workstation.ps1"
+$appIcon   = Join-Path $InstallDir "assets\SDX.ico"
 $shell     = New-Object -ComObject WScript.Shell
 
 $appLink = $shell.CreateShortcut((Join-Path $desktop "SPDXLIMS.lnk"))
@@ -110,6 +111,9 @@ $appLink.TargetPath       = $pythonwExe
 $appLink.Arguments        = "`"$appPy`""
 $appLink.WorkingDirectory = $InstallDir
 $appLink.Description      = "SPDXLIMS Laboratory Information System"
+if (Test-Path $appIcon) {
+    $appLink.IconLocation = $appIcon
+}
 $appLink.Save()
 
 $updateLink = $shell.CreateShortcut((Join-Path $desktop "Update SPDXLIMS.lnk"))
