@@ -16,6 +16,7 @@ class PortalSettings:
     base_url: str = ""
     shared_secret: str = ""
     poll_interval_seconds: int = 60
+    auto_import: bool = False
 
     def is_configured(self) -> bool:
         return bool(self.base_url.strip()) and bool(self.shared_secret.strip())
@@ -39,6 +40,7 @@ class PortalStore:
             base_url=str(data.get("base_url") or ""),
             shared_secret=str(data.get("shared_secret") or ""),
             poll_interval_seconds=int(data.get("poll_interval_seconds") or 60),
+            auto_import=bool(data.get("auto_import", False)),
         )
 
     def save_settings(self, settings: PortalSettings) -> None:

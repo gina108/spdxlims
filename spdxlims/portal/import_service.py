@@ -11,6 +11,7 @@ from typing import Any
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentService
 from spdxlims.order_service import OrderService
+from spdxlims.panel_service import PanelService
 from spdxlims.patient_service import PatientService
 from spdxlims.portal.client import PendingOrder
 
@@ -38,10 +39,11 @@ class PortalImportService:
     def __post_init__(self) -> None:
         self._patients = PatientService(self.database, self.deployment_service)
         self._orders = OrderService(self.database, self.deployment_service)
+        self._panels = PanelService(self.database, self.deployment_service)
 
-    def list_test_choices(self) -> list[tuple[str, str]]:
-        """LIS test choices as (id_str, label) for the mapping UI."""
-        choices = self._orders.list_test_choices()
+    def list_panel_choices(self) -> list[tuple[str, str]]:
+        """LIS panel choices as (id_str, label) for the mapping UI."""
+        choices = self._panels.list_panel_choices()
         return [(str(value), str(label)) for value, label in choices]
 
     @staticmethod
@@ -71,25 +73,68 @@ class PortalImportService:
             payload["age_unit"] = "years"
         return payload
 
+    def _build_panel_order_items(self, lis_panel_ids: list[str]) -> list[dict[str, Any]]:
+        """Expand each linked LIS panel into its order items (headings, comments
+        and tests) sourced by the panel name -- the same shape the LIS uses when a
+        panel is added to an order (see OrdersPage.add_selected_panel)."""
+        panel_names = {str(panel.id): panel.name for panel in self._panels.list_panels(status_filter="all")}
+        order_items: list[dict[str, Any]] = []
+        # A test may appear in more than one selected panel; the order_tests table
+        # is UNIQUE(order_id, test_id), so keep only the first occurrence of each
+        # test (sourced by the panel that introduced it).
+        seen_test_ids: set[str] = set()
+        for panel_id in lis_panel_ids:
+            panel_name = panel_names.get(str(panel_id), "")
+            for entry in self._orders.get_panel_order_items(panel_id):
+                item_type = str(entry.get("item_type") or "test")
+                if item_type in {"heading", "comment"}:
+                    order_items.append(
+                        {
+                            "item_type": item_type,
+                            "label": str(entry.get("heading_text") or entry.get("label") or ""),
+                            "source": panel_name,
+                            "is_outsourced": 0,
+                        }
+                    )
+                    continue
+                test_id = entry.get("test_id")
+                if test_id is None or str(test_id) in seen_test_ids:
+                    continue
+                seen_test_ids.add(str(test_id))
+                order_items.append(
+                    {
+                        "item_type": "test",
+                        "test_id": test_id,
+                        "label": str(entry.get("label") or ""),
+                        "source": panel_name,
+                        "is_outsourced": 0,
+                    }
+                )
+        return order_items
+
     def import_order(
         self,
         order: PendingOrder,
         *,
         patient_payload: dict[str, Any],
-        lis_test_ids: list[str],
+        lis_panel_ids: list[str],
         notes: str,
     ) -> ImportResult:
-        if not lis_test_ids:
-            raise ValueError("Select at least one LIS test before importing.")
+        if not lis_panel_ids:
+            raise ValueError("Select at least one LIS panel before importing.")
+
+        order_items = self._build_panel_order_items(lis_panel_ids)
+        test_items = [item for item in order_items if item["item_type"] == "test"]
+        if not test_items:
+            raise ValueError("The selected panels do not contain any tests to import.")
 
         patient_id = self._patients.create_patient(patient_payload)
-        order_items = [{"test_id": tid, "item_type": "test", "source": "Portal"} for tid in lis_test_ids]
 
         if self._orders.uses_server_backend():
             created = self._orders.create_simple_order(
                 patient_id=str(patient_id),
-                test_ids=[str(tid) for tid in lis_test_ids],
-                items=order_items,
+                test_ids=[str(item["test_id"]) for item in test_items],
+                items=[{"test_id": item["test_id"], "source": item["source"]} for item in test_items],
                 accession_id=None,
                 sample_id=None,
                 status="registered",
@@ -97,6 +142,10 @@ class PortalImportService:
             )
             return ImportResult(order_id=created["id"], order_number=created["order_number"])
 
+        # Local (SQLite) orders use a different status vocabulary than the server
+        # API ('draft'/'in_progress'/'finalized'/'cancelled' vs the server's
+        # 'registered'/...), so a new local order starts as 'draft' -- the same
+        # status the normal OrdersPage uses when creating an order.
         new_id = self.database.create_order(
             order_number=None,
             accession_id=None,
@@ -104,8 +153,8 @@ class PortalImportService:
             patient_id=int(patient_id),
             doctor_id=None,
             client_id=None,
-            order_items=[{"test_id": int(tid), "item_type": "test", "source": "Portal"} for tid in lis_test_ids],
-            status="registered",
+            order_items=order_items,
+            status="draft",
             notes=notes,
         )
         edit = self.database.get_order_edit_record(int(new_id))

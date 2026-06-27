@@ -73,6 +73,17 @@ class PanelService(ServiceBase):
             for item in payload if isinstance(item, dict) and item.get('id') and item.get('label')
         ]
 
+    def list_panel_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
+        if self._is_local():
+            return self.database.list_panel_choices()
+        payload = self.deployment_service.request_json('GET', '/api/orders/panel-choices')
+        if not isinstance(payload, list):
+            return []
+        return [
+            (str(item.get('id') or ''), str(item.get('label') or ''))
+            for item in payload if isinstance(item, dict) and item.get('id') and item.get('label')
+        ]
+
     def _panel_payload(self, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> dict[str, Any]:
         return {
             'code': code.strip(),

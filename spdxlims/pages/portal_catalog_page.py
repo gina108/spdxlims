@@ -1,12 +1,12 @@
 """PORTAL catalog page — manage the client portal's test catalog from the LIS.
 
 Add tests to the portal (POST /lis/tests), edit them, and link each portal test
-to a LIS test. Links are stored in the SAME local PortalStore mapping the order
+to a LIS panel. Links are stored in the SAME local PortalStore mapping the order
 -import flow reads, so a link set here pre-fills future order imports.
 
 Talks to the portal directly via PortalClient (shared secret in PortalStore),
-matching spdxlims/pages/portal_page.py. LIS tests are read/created through
-TestService so it works in both local (SQLite) and server (API) modes.
+matching spdxlims/pages/portal_page.py. LIS panels are read/created through
+PanelService so it works in both local (SQLite) and server (API) modes.
 """
 from __future__ import annotations
 
@@ -38,11 +38,10 @@ from PySide6.QtWidgets import (
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentService
 from spdxlims.pages.base_page import DataAwarePage
+from spdxlims.panel_service import PanelService
 from spdxlims.portal.client import PortalClient, PortalError
 from spdxlims.portal.settings import PortalStore
-from spdxlims.test_service import TestService
 
-_RESULT_KINDS = [("Texto", "text"), ("Numérico", "numeric"), ("Selección", "select")]
 _CREATE_NEW = "__create_new__"
 
 
@@ -53,8 +52,8 @@ def _normalize(value: str) -> str:
 
 
 class AddPortalTestDialog(QDialog):
-    """Create a test on the portal, and either link it to an existing LIS test
-    or create a matching LIS test (create-in-both)."""
+    """Create a test on the portal, and either link it to an existing LIS panel
+    or create a matching LIS panel (create-in-both)."""
 
     def __init__(self, lis_choices: list[tuple[str, str]], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -69,24 +68,20 @@ class AddPortalTestDialog(QDialog):
         self.turnaround.setRange(0, 8760)
         self.turnaround.setSuffix(" h")
         self.turnaround.setSpecialValueText("(sin definir)")
-        self.result_kind = QComboBox()
-        for label, value in _RESULT_KINDS:
-            self.result_kind.addItem(label, value)
         self.lis_link = QComboBox()
-        self.lis_link.addItem("(crear examen nuevo en el LIS)", _CREATE_NEW)
-        for test_id, label in lis_choices:
-            self.lis_link.addItem(label, test_id)
-        self.lis_link.currentIndexChanged.connect(self._toggle_result_kind)
+        self.lis_link.addItem("(crear panel nuevo en el LIS)", _CREATE_NEW)
+        for panel_id, label in lis_choices:
+            self.lis_link.addItem(label, panel_id)
 
         form.addRow("Nombre", self.name)
         form.addRow("Categoría", self.category)
         form.addRow("Tiempo de entrega", self.turnaround)
-        form.addRow("Examen del LIS", self.lis_link)
-        form.addRow("Tipo de resultado (LIS)", self.result_kind)
+        form.addRow("Panel del LIS", self.lis_link)
         root.addLayout(form)
 
         hint = QLabel(
-            "Si eliges «crear examen nuevo en el LIS», se creará el examen en ambos catálogos y se vincularán."
+            "Si eliges «crear panel nuevo en el LIS», se creará un panel vacío con este nombre y se "
+            "vinculará; agrega sus exámenes después en la página de Paneles."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -99,10 +94,6 @@ class AddPortalTestDialog(QDialog):
         root.addWidget(buttons)
 
         self.accepted_data: dict[str, Any] | None = None
-        self._toggle_result_kind()
-
-    def _toggle_result_kind(self) -> None:
-        self.result_kind.setEnabled(self.lis_link.currentData() == _CREATE_NEW)
 
     def _on_accept(self) -> None:
         if not self.name.text().strip():
@@ -113,14 +104,13 @@ class AddPortalTestDialog(QDialog):
             "name": self.name.text().strip(),
             "category": self.category.text().strip(),
             "turnaround_hours": turnaround,
-            "lis_test_id": str(self.lis_link.currentData() or ""),
-            "result_kind": str(self.result_kind.currentData() or "text"),
+            "lis_panel_id": str(self.lis_link.currentData() or ""),
         }
         self.accept()
 
 
 class EditPortalTestDialog(QDialog):
-    """Edit a portal test's fields and its link to a LIS test."""
+    """Edit a portal test's fields and its link to a LIS panel."""
 
     def __init__(self, test: dict[str, Any], current_link: str, lis_choices: list[tuple[str, str]], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -141,9 +131,9 @@ class EditPortalTestDialog(QDialog):
         self.lis_link = QComboBox()
         self.lis_link.addItem("— sin vincular —", "")
         selected_index = 0
-        for test_id, label in lis_choices:
-            self.lis_link.addItem(label, test_id)
-            if test_id == current_link:
+        for panel_id, label in lis_choices:
+            self.lis_link.addItem(label, panel_id)
+            if panel_id == current_link:
                 selected_index = self.lis_link.count() - 1
         self.lis_link.setCurrentIndex(selected_index)
 
@@ -151,7 +141,7 @@ class EditPortalTestDialog(QDialog):
         form.addRow("Categoría", self.category)
         form.addRow("Tiempo de entrega", self.turnaround)
         form.addRow("", self.active)
-        form.addRow("Examen del LIS", self.lis_link)
+        form.addRow("Panel del LIS", self.lis_link)
         root.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -172,7 +162,7 @@ class EditPortalTestDialog(QDialog):
             "category": self.category.text().strip(),
             "turnaround_hours": self.turnaround.value() or None,
             "is_active": self.active.isChecked(),
-            "lis_test_id": str(self.lis_link.currentData() or ""),
+            "lis_panel_id": str(self.lis_link.currentData() or ""),
         }
         self.accept()
 
@@ -181,11 +171,11 @@ class PortalCatalogPage(DataAwarePage):
     def __init__(self, data_dir: Path, database: Database, deployment_service: DeploymentService) -> None:
         super().__init__()
         self.store = PortalStore(data_dir)
-        self.test_service = TestService(database, deployment_service)
+        self.panel_service = PanelService(database, deployment_service)
         self._portal_tests: list[dict[str, Any]] = []
         self._mapping: dict[str, str] = {}
-        self._lis_choices: list[tuple[str, str]] = []   # (id, "name (code)") active only
-        self._lis_label_by_id: dict[str, str] = {}      # all tests, for display
+        self._lis_choices: list[tuple[str, str]] = []   # (id, "code - name") active only
+        self._lis_label_by_id: dict[str, str] = {}      # all panels, for display
         self._lis_name_index: dict[str, str] = {}       # normalized name -> id, active only
         self.unlinked_only = False
 
@@ -229,7 +219,7 @@ class PortalCatalogPage(DataAwarePage):
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
-            ["Examen del portal", "Categoría", "Activo", "Examen del LIS vinculado", "Estado"]
+            ["Examen del portal", "Categoría", "Activo", "Panel del LIS vinculado", "Estado"]
         )
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
@@ -266,7 +256,7 @@ class PortalCatalogPage(DataAwarePage):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self._load_lis_tests()
+            self._load_lis_panels()
             self._portal_tests = client.tests()
             self._mapping = self.store.load_mapping()
         except PortalError as exc:
@@ -291,13 +281,13 @@ class PortalCatalogPage(DataAwarePage):
         self._set_enabled(True)
         self._refresh_table()
 
-    def _load_lis_tests(self) -> None:
-        records = self.test_service.list_tests(status_filter="all")
+    def _load_lis_panels(self) -> None:
+        records = self.panel_service.list_panels(status_filter="all")
         self._lis_choices = []
         self._lis_label_by_id = {}
         self._lis_name_index = {}
         for record in records:
-            label = f"{record.name} ({record.code})" if record.code else record.name
+            label = f"{record.code} - {record.name}" if record.code else record.name
             self._lis_label_by_id[str(record.id)] = label
             if record.is_active:
                 self._lis_choices.append((str(record.id), label))
@@ -366,7 +356,7 @@ class PortalCatalogPage(DataAwarePage):
         try:
             created = client.create_test(data["name"], data["category"] or None, data["turnaround_hours"])
             portal_id = int(created.get("id"))
-            lis_test_id = self._resolve_lis_link(portal_id, data)
+            lis_panel_id = self._resolve_lis_link(portal_id, data)
         except PortalError as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "Error del portal", str(exc))
@@ -382,30 +372,22 @@ class PortalCatalogPage(DataAwarePage):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        if lis_test_id:
-            self.store.update_mapping({str(portal_id): lis_test_id})
+        if lis_panel_id:
+            self.store.update_mapping({str(portal_id): lis_panel_id})
         self.notify_data_changed()
         self.refresh_on_show()
 
     def _resolve_lis_link(self, portal_id: int, data: dict[str, Any]) -> str:
-        """Return the LIS test id to link, creating the LIS test if requested."""
-        choice = data.get("lis_test_id") or ""
+        """Return the LIS panel id to link, creating an (empty) LIS panel if requested."""
+        choice = data.get("lis_panel_id") or ""
         if choice and choice != _CREATE_NEW:
             return choice
         if choice != _CREATE_NEW:
             return ""
         code = f"PRT-{portal_id}"
-        self.test_service.create_test(
-            {
-                "code": code,
-                "name": data["name"],
-                "category_name": data["category"],
-                "result_kind": data.get("result_kind") or "text",
-            },
-            [],
-        )
-        # create_test does not return the id; find it back by its unique code.
-        for record in self.test_service.list_tests(status_filter="all"):
+        self.panel_service.create_panel(code, data["name"], [])
+        # create_panel does not return the id; find it back by its unique code.
+        for record in self.panel_service.list_panels(status_filter="all"):
             if record.code == code:
                 return str(record.id)
         return ""
@@ -439,7 +421,7 @@ class PortalCatalogPage(DataAwarePage):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        new_link = data.get("lis_test_id") or ""
+        new_link = data.get("lis_panel_id") or ""
         if new_link:
             self.store.update_mapping({str(portal_id): new_link})
         elif current_link:

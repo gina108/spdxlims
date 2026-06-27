@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -58,7 +59,7 @@ class ImportOrderDialog(QDialog):
         self._order = order
         self._service = import_service
         self._store = store
-        self._test_choices = import_service.list_test_choices()
+        self._panel_choices = import_service.list_panel_choices()
         saved_mapping = store.load_mapping()
 
         root = QVBoxLayout(self)
@@ -80,16 +81,16 @@ class ImportOrderDialog(QDialog):
         form.addRow("Teléfono", self.phone)
         root.addWidget(patient_box)
 
-        # -- test mapping -------------------------------------------------
-        tests_box = QGroupBox("Exámenes del portal → exámenes del LIS")
+        # -- panel mapping ------------------------------------------------
+        tests_box = QGroupBox("Exámenes del portal → paneles del LIS")
         tests_layout = QFormLayout(tests_box)
         self._test_combos: list[QComboBox] = []
         if not order.tests:
             tests_layout.addRow(QLabel("(el pedido no incluye exámenes)"))
         for portal_test_id in order.tests:
             combo = QComboBox()
-            combo.addItem("— elegir examen —", "")
-            for value, label in self._test_choices:
+            combo.addItem("— elegir panel —", "")
+            for value, label in self._panel_choices:
                 combo.addItem(label, value)
             preselect = saved_mapping.get(str(portal_test_id))
             if preselect is not None:
@@ -125,16 +126,16 @@ class ImportOrderDialog(QDialog):
         if not self.first_name.text().strip() or not self.last_name.text().strip():
             QMessageBox.warning(self, "Datos incompletos", "Nombre y apellidos son obligatorios.")
             return
-        lis_test_ids: list[str] = []
+        lis_panel_ids: list[str] = []
         mapping_additions: dict[str, str] = {}
         for combo in self._test_combos:
             value = combo.currentData()
             if not value:
-                QMessageBox.warning(self, "Mapeo incompleto", "Asigna un examen del LIS a cada examen del portal.")
+                QMessageBox.warning(self, "Mapeo incompleto", "Asigna un panel del LIS a cada examen del portal.")
                 return
-            lis_test_ids.append(str(value))
+            lis_panel_ids.append(str(value))
             mapping_additions[str(combo.property("portal_test_id"))] = str(value)
-        if not lis_test_ids:
+        if not lis_panel_ids:
             QMessageBox.warning(self, "Sin exámenes", "El pedido no tiene exámenes para importar.")
             return
 
@@ -153,7 +154,7 @@ class ImportOrderDialog(QDialog):
             outcome = self._service.import_order(
                 self._order,
                 patient_payload=patient_payload,
-                lis_test_ids=lis_test_ids,
+                lis_panel_ids=lis_panel_ids,
                 notes=self.notes.text().strip(),
             )
         except Exception as exc:  # noqa: BLE001 - surface any import failure to the user
@@ -213,11 +214,25 @@ class PortalPage(DataAwarePage):
 
         actions = QHBoxLayout()
         self.status_label = QLabel("")
+        self.auto_import_check = QCheckBox("Importar automáticamente los pedidos ya mapeados")
+        self.auto_import_check.setToolTip(
+            "Importa sin intervención los pedidos cuyos exámenes ya están asociados a un panel del LIS.\n"
+            "Los pedidos con exámenes sin mapear se dejan para revisión manual."
+        )
+        self.auto_import_check.toggled.connect(self._on_auto_import_toggled)
         self.import_button = QPushButton("Importar pedido seleccionado")
         self.import_button.clicked.connect(self._import_selected)
         actions.addWidget(self.status_label, 1)
+        actions.addWidget(self.auto_import_check)
         actions.addWidget(self.import_button)
         root.addLayout(actions)
+
+        # Background poll: only runs while auto-import is enabled and the portal
+        # is configured. Each tick re-fetches pending orders and imports any that
+        # are fully mapped.
+        self._auto_importing = False
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self.refresh_on_show)
 
         self._load_settings_into_form()
         self.refresh_on_show()
@@ -254,19 +269,41 @@ class PortalPage(DataAwarePage):
         self.base_url_input.setText(settings.base_url)
         self.secret_input.setText(settings.shared_secret)
         self.interval_input.setValue(settings.poll_interval_seconds)
+        self.auto_import_check.blockSignals(True)
+        self.auto_import_check.setChecked(settings.auto_import)
+        self.auto_import_check.blockSignals(False)
         if not settings.is_configured():
             self.settings_box.setChecked(True)
+        self._sync_poll_timer()
 
     def _current_settings(self) -> PortalSettings:
         return PortalSettings(
             base_url=self.base_url_input.text().strip(),
             shared_secret=self.secret_input.text().strip(),
             poll_interval_seconds=int(self.interval_input.value()),
+            auto_import=self.auto_import_check.isChecked(),
         )
+
+    def _sync_poll_timer(self) -> None:
+        """Run the background poll only while auto-import is on and configured."""
+        settings = self.store.load_settings()
+        if settings.auto_import and settings.is_configured():
+            self._poll_timer.start(max(15, settings.poll_interval_seconds) * 1000)
+        else:
+            self._poll_timer.stop()
+
+    def _on_auto_import_toggled(self, checked: bool) -> None:
+        # Persist alongside the connection settings (don't lose URL/secret).
+        self.store.save_settings(self._current_settings())
+        self._sync_poll_timer()
+        if checked:
+            # Import anything already mapped right away instead of waiting a tick.
+            self.refresh_on_show()
 
     def _save_settings(self) -> None:
         self.store.save_settings(self._current_settings())
         QMessageBox.information(self, "Guardado", "La configuración del portal se guardó.")
+        self._sync_poll_timer()
         self.refresh_on_show()
 
     def _client(self) -> PortalClient | None:
@@ -336,6 +373,63 @@ class PortalPage(DataAwarePage):
             f"Pendientes: {health.get('pending_count', 0)}   "
             f"Última importación: {health.get('last_import_at') or 'nunca'}"
         )
+
+        if self.auto_import_check.isChecked():
+            self._auto_import_ready_orders(client)
+
+    def _auto_import_ready_orders(self, client: PortalClient) -> None:
+        """Import, without prompting, every pending order whose portal tests are
+        all already mapped to a LIS panel. Orders with any unmapped test (or no
+        patient name) are left untouched for manual review in the dialog."""
+        if self._auto_importing:
+            return
+        mapping = self.store.load_mapping()
+        ready = [
+            order
+            for order in self._pending
+            if order.tests
+            and order.patient_name.strip()
+            and all(str(test_id) in mapping for test_id in order.tests)
+        ]
+        if not ready:
+            return
+
+        self._auto_importing = True
+        imported = 0
+        failures = 0
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for order in ready:
+                lis_panel_ids = [mapping[str(test_id)] for test_id in order.tests]
+                try:
+                    outcome = self.import_service.import_order(
+                        order,
+                        patient_payload=self.import_service.build_patient_payload(order),
+                        lis_panel_ids=lis_panel_ids,
+                        notes=order.notes,
+                    )
+                except Exception:  # noqa: BLE001 - skip a bad order, keep going
+                    failures += 1
+                    continue
+                try:
+                    client.mark_imported([order.id], {order.id: outcome.order_id})
+                except PortalError:
+                    failures += 1  # created in LIS but not marked; will retry next poll
+                imported += 1
+        finally:
+            self._auto_importing = False
+            QApplication.restoreOverrideCursor()
+
+        if imported:
+            self.notify_data_changed()
+            try:
+                self._pending = client.pending_orders()
+            except PortalError:
+                pass
+            else:
+                self._populate_table()
+        suffix = f"   Con problemas: {failures} (revisa manualmente)." if failures else ""
+        self.status_label.setText(f"Importados automáticamente: {imported}.{suffix}")
 
     def _load_portal_test_labels(self, client: PortalClient) -> dict[int, str]:
         labels: dict[int, str] = {}
