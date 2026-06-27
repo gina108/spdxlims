@@ -1227,6 +1227,15 @@ class ResultsPage(DataAwarePage):
             if entry is None:
                 entry = entries_by_code.get(code)
             if entry is None:
+                # Fall back to the engine's profile mapping (e.g. CM250 "COL L" ->
+                # "CM250-COL"): match the mapped LIS test id against the order's own
+                # test codes. This lets file-drop analyzers whose codes are mapped
+                # only in the profile YAML import without a hand-saved per-code
+                # mapping in the Results page.
+                mapped_code = self._normalize_test_code(str(obs.get("mapped_lis_test_id") or ""))
+                if mapped_code and mapped_code != code:
+                    entry = entries_by_code.get(mapped_code)
+            if entry is None:
                 unmatched_codes.append(code or tr("unknown"))
                 continue
             result_value = self._instrument_observation_value(obs, entry.result_kind)
