@@ -244,3 +244,105 @@ def push_pending_order_to_engine(
                 raise RuntimeError(f"Engine returned {resp.status}")
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach engine: {exc}") from exc
+
+
+def broadcast_order_to_instruments(
+    database: Any,
+    order_items: list[dict[str, Any]],
+    *,
+    patient_id: str,
+    patient_name: str = "",
+    dob: str = "",
+    sex: str = "",
+    age_value: str = "",
+    age_unit: str = "a",
+    doctor_name: str = "",
+    order_number: str = "",
+) -> None:
+    """Push or broadcast a newly created order to every bidirectional-enabled
+    instrument profile. Per-instrument errors are swallowed so a failed broadcast
+    never blocks order creation.
+
+    ASTM analyzers and file-drop analyzers (e.g. CM250, which has
+    ``orders.write_on_push``) are routed through the Go engine's pending-orders
+    endpoint, which answers ASTM host queries and/or writes the order file
+    (.ANA). Other profiles get a direct HL7 ORM broadcast over TCP.
+
+    ``order_items`` is a list of ``{"item_type": ..., "test_id": ...}`` dicts.
+    ``database`` must expose ``list_instrument_order_match_configs`` and
+    ``list_instrument_result_mappings`` (the SQLite and server backends both do).
+    """
+    try:
+        configs = database.list_instrument_order_match_configs()
+        enabled = [c for c in configs if c.broadcast_enabled]
+        if not enabled:
+            return
+    except Exception:
+        _log.debug("Could not load instrument order-match configs", exc_info=True)
+        return
+
+    order_data: dict[str, Any] = {
+        "patient_id": str(patient_id),
+        "patient_name": patient_name,
+        "patient_dob": dob,
+        "patient_age_value": age_value,
+        "patient_age_unit": age_unit,
+        "patient_sex": sex,
+        "doctor_name": doctor_name,
+        "order_number": order_number,
+        "sample_id": order_number,
+        "accession_id": "",
+    }
+
+    for cfg in enabled:
+        try:
+            protocol = (cfg.broadcast_protocol or "hl7_orm").lower()
+            # File-drop analyzers (e.g. CM250) have no TCP transport; the Go engine
+            # writes their order file (.ANA) when a pending order is pushed, so route
+            # them through the same engine endpoint as ASTM.
+            writes_order_file = profile_writes_order_files(cfg.instrument_profile)
+            if protocol == "astm" or writes_order_file:
+                if not order_number:
+                    continue
+                mappings = database.list_instrument_result_mappings(
+                    instrument_profile=cfg.instrument_profile
+                )
+                code_by_test_id: dict[Any, tuple[str, str]] = {
+                    m.test_id: (m.raw_code, m.raw_name or m.test_name or m.raw_code)
+                    for m in mappings
+                }
+                tests = []
+                for item in order_items:
+                    if item.get("item_type") != "test":
+                        continue
+                    tid = item.get("test_id")
+                    if tid and tid in code_by_test_id:
+                        code, name = code_by_test_id[tid]
+                        tests.append({"test_code": code, "test_name": name})
+                push_pending_order_to_engine(
+                    sample_id=order_number,
+                    tests=tests,
+                    patient_id=str(patient_id) if bool(cfg.broadcast_patient_id) else "",
+                    patient_name=patient_name if bool(cfg.broadcast_patient_name) else "",
+                    dob=dob if bool(cfg.broadcast_dob) else "",
+                    sex=sex if bool(cfg.broadcast_sex) else "",
+                    doctor_name=doctor_name if bool(cfg.broadcast_doctor) else "",
+                    profile_id=cfg.instrument_profile,
+                )
+            else:
+                broadcast_order(
+                    cfg.instrument_profile,
+                    order_data,
+                    send_patient_id=bool(cfg.broadcast_patient_id),
+                    send_patient_name=bool(cfg.broadcast_patient_name),
+                    send_dob=bool(cfg.broadcast_dob),
+                    send_age=bool(cfg.broadcast_age),
+                    send_sex=bool(cfg.broadcast_sex),
+                    send_doctor=bool(cfg.broadcast_doctor),
+                    protocol=protocol,
+                    encoding=cfg.broadcast_encoding or "ascii",
+                )
+        except RuntimeError:
+            _log.debug("Broadcast to %s failed", cfg.instrument_profile, exc_info=True)
+        except Exception:
+            _log.debug("Unexpected error broadcasting to %s", cfg.instrument_profile, exc_info=True)

@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from spdxlims import instrument_broadcast
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentService
 from spdxlims.order_service import OrderService
@@ -134,6 +135,7 @@ class PortalImportService:
                 notes=notes,
                 client_id=str(lis_client_id) if lis_client_id not in (None, "") else None,
             )
+            self._broadcast_order(order, patient_id, str(created["order_number"]), order_items)
             return ImportResult(order_id=created["id"], order_number=created["order_number"])
 
         # Local (SQLite) orders use a different status vocabulary than the server
@@ -153,4 +155,31 @@ class PortalImportService:
         )
         edit = self.database.get_order_edit_record(int(new_id))
         order_number = edit.order_number if edit is not None else str(new_id)
+        self._broadcast_order(order, patient_id, str(order_number), order_items)
         return ImportResult(order_id=str(new_id), order_number=order_number)
+
+    def _broadcast_order(
+        self,
+        order: PendingOrder,
+        patient_id: str | int,
+        order_number: str,
+        order_items: list[dict[str, Any]],
+    ) -> None:
+        """Push the freshly imported order to any bidirectional-enabled instrument
+        so file-drop analyzers (e.g. CM250) get their .ANA order file written and
+        ASTM analyzers can answer host queries -- mirroring what the OrdersPage does
+        when an order is created by hand. Silent on error so a connectivity problem
+        never blocks the portal import."""
+        try:
+            instrument_broadcast.broadcast_order_to_instruments(
+                self.database,
+                order_items,
+                patient_id=str(patient_id),
+                patient_name=order.patient_name,
+                sex=self.gender_to_sex(order.patient_gender) or "",
+                age_value="" if order.patient_age is None else str(order.patient_age),
+                age_unit="a",
+                order_number=order_number,
+            )
+        except Exception:  # noqa: BLE001 - broadcast is best-effort
+            pass

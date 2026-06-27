@@ -1713,74 +1713,18 @@ class OrdersPage(DataAwarePage):
                 except Exception:
                     pass
 
-            order_data: dict[str, object] = {
-                "patient_id": str(patient_id),
-                "patient_name": patient_name,
-                "patient_dob": dob,
-                "patient_age_value": str(patient.age_value or "") if patient else "",
-                "patient_age_unit": str(patient.age_unit or "a") if patient else "a",
-                "patient_sex": sex,
-                "doctor_name": doctor_name,
-                "order_number": order_number,
-                "sample_id": order_number,
-                "accession_id": "",
-            }
-
-            for cfg in enabled:
-                try:
-                    protocol = (cfg.broadcast_protocol or "hl7_orm").lower()
-                    # File-drop analyzers (e.g. CM250) have no TCP transport; the Go
-                    # engine writes their order file (.ANA) when a pending order is
-                    # pushed, so route them through the same engine endpoint as ASTM.
-                    writes_order_file = instrument_broadcast.profile_writes_order_files(
-                        cfg.instrument_profile
-                    )
-                    if protocol == "astm" or writes_order_file:
-                        # Push pending order to the Go engine's in-memory store so it
-                        # can respond to ASTM Q record queries from the analyzer and/or
-                        # write an order file for file-drop analyzers.
-                        if not order_number:
-                            continue
-                        mappings = self.database.list_instrument_result_mappings(
-                            instrument_profile=cfg.instrument_profile
-                        )
-                        code_by_test_id: dict[int, tuple[str, str]] = {
-                            m.test_id: (m.raw_code, m.raw_name or m.test_name or m.raw_code)
-                            for m in mappings
-                        }
-                        tests = []
-                        for item in (self.selected_items if order_items is None else order_items):
-                            if item.get("item_type") != "test":
-                                continue
-                            tid = item.get("test_id")
-                            if tid and tid in code_by_test_id:
-                                code, name = code_by_test_id[tid]
-                                tests.append({"test_code": code, "test_name": name})
-                        instrument_broadcast.push_pending_order_to_engine(
-                            sample_id=order_number,
-                            tests=tests,
-                            patient_id=str(patient_id) if bool(cfg.broadcast_patient_id) else "",
-                            patient_name=patient_name if bool(cfg.broadcast_patient_name) else "",
-                            dob=dob if bool(cfg.broadcast_dob) else "",
-                            sex=sex if bool(cfg.broadcast_sex) else "",
-                            doctor_name=doctor_name if bool(cfg.broadcast_doctor) else "",
-                            profile_id=cfg.instrument_profile,
-                        )
-                    else:
-                        instrument_broadcast.broadcast_order(
-                            cfg.instrument_profile,
-                            order_data,
-                            send_patient_id=bool(cfg.broadcast_patient_id),
-                            send_patient_name=bool(cfg.broadcast_patient_name),
-                            send_dob=bool(cfg.broadcast_dob),
-                            send_age=bool(cfg.broadcast_age),
-                            send_sex=bool(cfg.broadcast_sex),
-                            send_doctor=bool(cfg.broadcast_doctor),
-                            protocol=protocol,
-                            encoding=cfg.broadcast_encoding or "ascii",
-                        )
-                except RuntimeError:
-                    pass
+            instrument_broadcast.broadcast_order_to_instruments(
+                self.database,
+                list(self.selected_items if order_items is None else order_items),
+                patient_id=str(patient_id),
+                patient_name=patient_name,
+                dob=dob,
+                sex=sex,
+                age_value=str(patient.age_value or "") if patient else "",
+                age_unit=str(patient.age_unit or "a") if patient else "a",
+                doctor_name=doctor_name,
+                order_number=order_number,
+            )
         except Exception:
             pass
 
