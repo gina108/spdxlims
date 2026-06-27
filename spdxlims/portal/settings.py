@@ -32,6 +32,7 @@ class PortalStore:
         self._mapping_path = self._dir / "test_mapping.json"
         self._links_path = self._dir / "imported_orders.json"
         self._pending_dir = self._dir / "pending_results"
+        self._clinic_map_path = self._dir / "clinic_mapping.json"
 
     # -- settings ----------------------------------------------------------
     def load_settings(self) -> PortalSettings:
@@ -66,6 +67,25 @@ class PortalStore:
                 mapping[str(portal_id)] = str(lis_id)
         self.save_mapping(mapping)
         return mapping
+
+    # -- clinic links (portal clinic id -> LIS client id) ------------------
+    def load_clinic_mapping(self) -> dict[str, str]:
+        """Returns {portal_clinic_id (str): lis_client_id (str)}."""
+        data = self._read_json(self._clinic_map_path)
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): str(v) for k, v in data.items() if v not in (None, "")}
+
+    def record_clinic_link(self, clinic_id: object, lis_client_id: object) -> None:
+        mapping = self.load_clinic_mapping()
+        if lis_client_id in (None, ""):
+            mapping.pop(str(clinic_id), None)
+        else:
+            mapping[str(clinic_id)] = str(lis_client_id)
+        self._write_json(self._clinic_map_path, mapping)
+
+    def lis_client_id_for(self, clinic_id: object) -> str | None:
+        return self.load_clinic_mapping().get(str(clinic_id))
 
     # -- import links (LIS order id -> portal order id) --------------------
     def record_import_link(self, lis_order_id: object, portal_order_id: int) -> None:

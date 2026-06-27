@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtWidgets import QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from spdxlims.i18n import tr
@@ -120,9 +122,16 @@ class PatientDialog(QDialog):
             QMessageBox.warning(self, tr("Missing Data"), tr("First name is required."))
             return
         age_value_text = self.age_value.text().strip()
-        if not self.date_of_birth.text().strip() and not age_value_text:
+        dob_text = self.date_of_birth.text().strip()
+        if not dob_text and not age_value_text:
             QMessageBox.warning(self, tr("Missing Data"), tr("Enter either date of birth or age."))
             return
+        if dob_text:
+            try:
+                datetime.strptime(dob_text, "%Y-%m-%d")
+            except ValueError:
+                QMessageBox.warning(self, tr("Invalid Date"), tr("Date of birth must be a valid date in YYYY-MM-DD format."))
+                return
         try:
             age_value = int(age_value_text) if age_value_text else None
         except ValueError:
@@ -133,7 +142,7 @@ class PatientDialog(QDialog):
             "last_name": self.last_name.text(),
             "middle_name": self.middle_name.text(),
             "sex": self.sex.currentData(),
-            "date_of_birth": self.date_of_birth.text(),
+            "date_of_birth": dob_text,
             "age_value": age_value,
             "age_unit": self.age_unit.currentData() if age_value is not None else None,
             "phone": self.phone.text(),

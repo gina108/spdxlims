@@ -162,6 +162,35 @@ class PortalClient:
         )
         return int((payload or {}).get("imported", 0)) if isinstance(payload, dict) else 0
 
+    def list_clinics(self) -> list[dict[str, Any]]:
+        """GET /lis/clinics -> portal clinic accounts (never includes password hashes)."""
+        payload = self._request("GET", "/lis/clinics")
+        items = (payload or {}).get("clinics", []) if isinstance(payload, dict) else []
+        return [item for item in items if isinstance(item, dict)]
+
+    def create_clinic(
+        self,
+        *,
+        name: str,
+        email: str,
+        password: str,
+        phone: str | None = None,
+        address: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /lis/clinics -> the created clinic (without the password hash)."""
+        body: dict[str, Any] = {"name": name, "email": email, "password": password}
+        if phone:
+            body["phone"] = phone
+        if address:
+            body["address"] = address
+        payload = self._request("POST", "/lis/clinics", body)
+        return (payload or {}).get("clinic", {}) if isinstance(payload, dict) else {}
+
+    def update_clinic(self, clinic_id: int, **fields: Any) -> dict[str, Any]:
+        """PATCH /lis/clinics/:id with any of name/phone/address/password/is_active."""
+        payload = self._request("PATCH", f"/lis/clinics/{int(clinic_id)}", fields)
+        return (payload or {}).get("clinic", {}) if isinstance(payload, dict) else {}
+
     def upload_result(self, order_id: int, pdf_bytes: bytes) -> dict[str, Any]:
         """POST /lis/results/upload. Stores the PDF and sets the order completed."""
         b64 = base64.b64encode(pdf_bytes).decode("ascii")

@@ -988,12 +988,16 @@ class ResultsMixin:
 
     @staticmethod
     def _resolve_age_days(date_of_birth: str | None, age_value: int | None, age_unit: str | None) -> int | None:
-        if date_of_birth:
+        # date_of_birth may come back as a non-string (e.g. an int year) for
+        # patients imported with a partial DOB, so coerce before parsing and
+        # fall through to age_value/age_unit when it isn't a usable date.
+        dob_text = str(date_of_birth).strip() if date_of_birth is not None else ""
+        if dob_text:
             try:
-                dob = datetime.strptime(date_of_birth, "%Y-%m-%d").date()
+                dob = datetime.strptime(dob_text, "%Y-%m-%d").date()
                 return max((date.today() - dob).days, 0)
             except ValueError:
-                return None
+                pass
         if age_value is None or not age_unit:
             return None
         if age_unit == "days":

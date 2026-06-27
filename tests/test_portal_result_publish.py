@@ -18,6 +18,19 @@ def test_record_and_resolve_link(tmp_path: Path) -> None:
     assert store.portal_order_id_for("999") is None
 
 
+def test_clinic_mapping_record_resolve_and_unlink(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert store.lis_client_id_for("5") is None
+    store.record_clinic_link("5", 42)
+    assert store.lis_client_id_for("5") == "42"
+    assert store.lis_client_id_for(5) == "42"  # int/str keys equivalent
+    assert store.load_clinic_mapping() == {"5": "42"}
+    # Empty value unlinks.
+    store.record_clinic_link("5", "")
+    assert store.lis_client_id_for("5") is None
+    assert store.load_clinic_mapping() == {}
+
+
 def test_publish_not_linked_is_noop(tmp_path: Path) -> None:
     svc = PortalResultService(_store(tmp_path))
     assert svc.publish("123", b"%PDF-1.4") == "not_linked"

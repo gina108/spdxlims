@@ -111,6 +111,7 @@ class PortalImportService:
         patient_payload: dict[str, Any],
         lis_panel_ids: list[str],
         notes: str,
+        lis_client_id: str | int | None = None,
     ) -> ImportResult:
         if not lis_panel_ids:
             raise ValueError("Select at least one LIS panel before importing.")
@@ -131,6 +132,7 @@ class PortalImportService:
                 sample_id=None,
                 status="registered",
                 notes=notes,
+                client_id=str(lis_client_id) if lis_client_id not in (None, "") else None,
             )
             return ImportResult(order_id=created["id"], order_number=created["order_number"])
 
@@ -144,7 +146,7 @@ class PortalImportService:
             sample_id=None,
             patient_id=int(patient_id),
             doctor_id=None,
-            client_id=None,
+            client_id=int(lis_client_id) if lis_client_id not in (None, "") else None,
             order_items=order_items,
             status="draft",
             notes=notes,

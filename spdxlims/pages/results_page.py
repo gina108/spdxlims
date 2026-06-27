@@ -2280,28 +2280,27 @@ class ResultsPage(DataAwarePage):
             except OSError:
                 portal_status = ""
 
-        exported_path = pdf_path if export_pdf else None
-        if exported_path is not None:
-            self._reveal_file_in_explorer(exported_path)
-
-        base_message = (
-            success_message
-            if success_message
-            else (
-                tr("Report approved and PDF exported. WhatsApp sending is now enabled.")
-                if exported_path is not None
-                else tr("Report approved. WhatsApp sending is now enabled.")
+        # Approving never opens the export folder. The PDF is still generated (for
+        # the portal upload, and so WhatsApp export is ready); the Explorer reveal
+        # now happens only when a report is actually sent via WhatsApp.
+        if portal_linked:
+            message = {
+                "uploaded": tr("Report approved and published to the client portal."),
+                "queued": tr(
+                    "Report approved. The portal was unreachable; the result is queued and will be sent automatically."
+                ),
+            }.get(portal_status, tr("Report approved, but the PDF could not be generated to publish to the portal."))
+        else:
+            message = (
+                success_message
+                if success_message
+                else (
+                    tr("Report approved and PDF exported. WhatsApp sending is now enabled.")
+                    if pdf_path is not None
+                    else tr("Report approved. WhatsApp sending is now enabled.")
+                )
             )
-        )
-        portal_note = {
-            "uploaded": tr("The result was published to the client portal."),
-            "queued": tr("The portal was unreachable; the result is queued and will be sent automatically."),
-        }.get(portal_status, "")
-        QMessageBox.information(
-            self,
-            tr("Saved"),
-            base_message + (f"\n\n{portal_note}" if portal_note else ""),
-        )
+        QMessageBox.information(self, tr("Saved"), message)
 
     def send_to_patient(self, order_id: int) -> None:
         order = self._find_order(order_id)

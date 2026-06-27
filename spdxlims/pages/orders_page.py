@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
+from typing import Iterator
 
 import sqlite3
 from datetime import datetime
@@ -1540,30 +1542,56 @@ class OrdersPage(DataAwarePage):
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
             return None
 
+    @contextmanager
+    def _busy(self, button: QPushButton, busy_text: str) -> Iterator[None]:
+        """Show a wait cursor and a disabled '…' button while a slow op runs.
+
+        Saving an order blocks the UI thread (DB writes plus, in server mode,
+        network calls), so without this the window looks frozen. We repaint the
+        busy state before yielding so the user sees it before the blocking work.
+        """
+        original_text = button.text()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        button.setEnabled(False)
+        button.setText(busy_text)
+        QApplication.processEvents()
+        try:
+            yield
+        finally:
+            # Only restore our label if nothing else changed it meanwhile —
+            # a successful save clears the form and _update_form_mode() may have
+            # already set the correct ("Save Order" vs "Update Order") text.
+            if button.text() == busy_text:
+                button.setText(original_text)
+            button.setEnabled(True)
+            QApplication.restoreOverrideCursor()
+
     def save_order(self) -> None:
-        result = self._save_current_order()
-        if result is None:
-            return
-        patient_id, order_id, message = result
-        self._maybe_broadcast_order(patient_id, order_id)
-        self.clear_order_form()
-        self.refresh_recent_orders()
-        self.notify_data_changed()
+        with self._busy(self.save_button, tr("Saving…")):
+            result = self._save_current_order()
+            if result is None:
+                return
+            patient_id, order_id, message = result
+            self._maybe_broadcast_order(patient_id, order_id)
+            self.clear_order_form()
+            self.refresh_recent_orders()
+            self.notify_data_changed()
         QMessageBox.information(self, tr("Saved"), message)
 
     def save_and_print_labels(self) -> None:
-        result = self._save_current_order()
-        if result is None:
-            return
-        patient_id, order_id, _message = result
-        self._maybe_broadcast_order(patient_id, order_id)
-        self.clear_order_form()
-        self.refresh_recent_orders()
-        self.notify_data_changed()
-        if order_id is None:
-            return
-        prefs = self.database.get_label_print_preferences()
-        self._silent_print_labels_niimbot(order_id, prefs)
+        with self._busy(self.save_and_print_labels_button, tr("Saving…")):
+            result = self._save_current_order()
+            if result is None:
+                return
+            patient_id, order_id, _message = result
+            self._maybe_broadcast_order(patient_id, order_id)
+            self.clear_order_form()
+            self.refresh_recent_orders()
+            self.notify_data_changed()
+            if order_id is None:
+                return
+            prefs = self.database.get_label_print_preferences()
+            self._silent_print_labels_niimbot(order_id, prefs)
 
     def print_order_receipt(self) -> None:
         if self.edit_order_id is not None:
