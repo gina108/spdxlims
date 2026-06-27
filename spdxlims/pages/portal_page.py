@@ -6,9 +6,10 @@ remembered), and import it as a LIS patient + lab order.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -380,6 +381,10 @@ class ClinicsDialog(QDialog):
 
 
 class PortalPage(DataAwarePage):
+    # Emitted from the background poll worker with the fetch/import outcome so the
+    # UI thread can update the table and labels (see _bg_poll / _apply_poll_result).
+    _poll_result = Signal(object)
+
     def __init__(self, data_dir: Path, database: Database, deployment_service: DeploymentService) -> None:
         super().__init__()
         self.store = PortalStore(data_dir)
@@ -435,15 +440,18 @@ class PortalPage(DataAwarePage):
         actions.addWidget(self.import_button)
         root.addLayout(actions)
 
-        # Background poll: only runs while auto-import is enabled and the portal
-        # is configured. Each tick re-fetches pending orders and imports any that
-        # are fully mapped.
-        self._auto_importing = False
+        # Background poll: runs whenever auto-import is enabled and the portal is
+        # configured, even while this page is hidden. The network fetch + import
+        # work happens on a worker thread (see _bg_poll) so it never freezes the
+        # UI of whatever page the user is on. Each tick re-fetches pending orders
+        # and imports any that are fully mapped.
+        self._poll_busy = False
         self._poll_timer = QTimer(self)
-        self._poll_timer.timeout.connect(self.refresh_on_show)
+        self._poll_timer.timeout.connect(self._start_poll)
+        self._poll_result.connect(self._apply_poll_result)
 
         self._load_settings_into_form()
-        self.refresh_on_show()
+        self._start_poll()
 
     # -- settings UI -------------------------------------------------------
     def _build_settings_box(self) -> QWidget:
@@ -493,11 +501,12 @@ class PortalPage(DataAwarePage):
         )
 
     def _sync_poll_timer(self) -> None:
-        """Run the background poll only while auto-import is on, configured, and
-        this page is visible. The poll does blocking network I/O on the UI thread,
-        so it must not fire while the user is working on another page."""
+        """Keep the background poll running whenever auto-import is on and the
+        portal is configured. The poll's network I/O runs on a worker thread (see
+        _bg_poll), so it is safe to keep ticking while the user works on another
+        page — newly placed portal orders import without switching back here."""
         settings = self.store.load_settings()
-        if settings.auto_import and settings.is_configured() and self.isVisible():
+        if settings.auto_import and settings.is_configured():
             self._poll_timer.start(max(15, settings.poll_interval_seconds) * 1000)
         else:
             self._poll_timer.stop()
@@ -505,10 +514,6 @@ class PortalPage(DataAwarePage):
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().showEvent(event)
         self._sync_poll_timer()
-
-    def hideEvent(self, event) -> None:  # noqa: N802 - Qt override
-        super().hideEvent(event)
-        self._poll_timer.stop()
 
     def _on_auto_import_toggled(self, checked: bool) -> None:
         # Persist alongside the connection settings (don't lose URL/secret).
@@ -572,97 +577,141 @@ class PortalPage(DataAwarePage):
             self.status_label.setText("Configura la conexión para ver pedidos pendientes.")
             self.import_button.setEnabled(False)
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            self._portal_test_labels = self._load_portal_test_labels(client)
-            self._pending = client.pending_orders()
-            health = client.health()
-        except PortalError as exc:
-            QApplication.restoreOverrideCursor()
-            self.connection_label.setText("● sin conexión")
-            self.connection_label.setStyleSheet("color: #e05260;")
-            self.status_label.setText(str(exc))
-            self.import_button.setEnabled(False)
+        self._start_poll()
+
+    def _start_poll(self) -> None:
+        """Kick off a background poll if one isn't already in flight and the portal
+        is configured. Safe to call from the UI thread (timer tick, page show,
+        buttons). The actual fetch + auto-import happens off the UI thread."""
+        if self._poll_busy:
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+        settings = self.store.load_settings()
+        if not settings.is_configured():
+            return
+        client = PortalClient(settings.base_url, settings.shared_secret)
+        self._poll_busy = True
+        threading.Thread(
+            target=self._bg_poll, args=(client, settings.auto_import), daemon=True
+        ).start()
 
-        self.connection_label.setText("● conectado")
-        self.connection_label.setStyleSheet("color: #3ddc84;")
-        self.import_button.setEnabled(True)
-        self._populate_table()
-        self.status_label.setText(
-            f"Pendientes: {health.get('pending_count', 0)}   "
-            f"Última importación: {health.get('last_import_at') or 'nunca'}"
+    def _bg_poll(self, client: PortalClient, auto_import: bool) -> None:
+        """Worker thread: fetch pending orders, auto-import the ready ones, and
+        re-send any finalized reports. Never touches widgets directly — results
+        are handed back to the UI thread via the _poll_result signal."""
+        result: dict = {"ok": False}
+        try:
+            labels = self._load_portal_test_labels(client)
+            pending = client.pending_orders()
+            health = client.health()
+        except Exception as exc:  # noqa: BLE001 - report any failure to the UI thread
+            result["error"] = str(exc)
+            self._poll_result.emit(result)
+            return
+
+        imported = 0
+        failures = 0
+        if auto_import:
+            imported, failures = self._import_ready_orders(client, pending)
+            if imported:
+                try:
+                    pending = client.pending_orders()
+                except PortalError:
+                    pass
+
+        try:
+            published = self._results.retry_pending()
+        except Exception:  # noqa: BLE001 - retry again on the next poll
+            published = 0
+
+        result.update(
+            ok=True,
+            labels=labels,
+            pending=pending,
+            health=health,
+            imported=imported,
+            failures=failures,
+            published=published,
         )
+        self._poll_result.emit(result)
 
-        if self.auto_import_check.isChecked():
-            self._auto_import_ready_orders(client)
-
-        # Re-send any finalized reports that couldn't be uploaded earlier.
-        published = self._results.retry_pending()
-        if published:
-            self.status_label.setText(
-                self.status_label.text() + f"   Resultados enviados al portal: {published}."
-            )
-
-    def _auto_import_ready_orders(self, client: PortalClient) -> None:
+    def _import_ready_orders(
+        self, client: PortalClient, pending: list[PendingOrder]
+    ) -> tuple[int, int]:
         """Import, without prompting, every pending order whose portal tests are
         all already mapped to a LIS panel. Orders with any unmapped test (or no
-        patient name) are left untouched for manual review in the dialog."""
-        if self._auto_importing:
-            return
+        patient name) are left untouched for manual review in the dialog. Runs on
+        the worker thread; the Database opens a fresh connection per call so this
+        is safe off the UI thread."""
         mapping = self.store.load_mapping()
         ready = [
             order
-            for order in self._pending
+            for order in pending
             if order.tests
             and order.patient_name.strip()
             and all(str(test_id) in mapping for test_id in order.tests)
         ]
-        if not ready:
-            return
-
-        self._auto_importing = True
         imported = 0
         failures = 0
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            for order in ready:
-                lis_panel_ids = [mapping[str(test_id)] for test_id in order.tests]
-                try:
-                    outcome = self.import_service.import_order(
-                        order,
-                        patient_payload=self.import_service.build_patient_payload(order),
-                        lis_panel_ids=lis_panel_ids,
-                        notes=order.notes,
-                        lis_client_id=self.store.lis_client_id_for(order.clinic_id),
-                    )
-                except Exception:  # noqa: BLE001 - skip a bad order, keep going
-                    failures += 1
-                    continue
-                # Remember the portal<->LIS link so the finalized report can be
-                # published back to the portal later.
-                self.store.record_import_link(outcome.order_id, order.id)
-                try:
-                    client.mark_imported([order.id], {order.id: outcome.order_id})
-                except PortalError:
-                    failures += 1  # created in LIS but not marked; will retry next poll
-                imported += 1
-        finally:
-            self._auto_importing = False
-            QApplication.restoreOverrideCursor()
+        for order in ready:
+            lis_panel_ids = [mapping[str(test_id)] for test_id in order.tests]
+            try:
+                outcome = self.import_service.import_order(
+                    order,
+                    patient_payload=self.import_service.build_patient_payload(order),
+                    lis_panel_ids=lis_panel_ids,
+                    notes=order.notes,
+                    lis_client_id=self.store.lis_client_id_for(order.clinic_id),
+                )
+            except Exception:  # noqa: BLE001 - skip a bad order, keep going
+                failures += 1
+                continue
+            # Remember the portal<->LIS link so the finalized report can be
+            # published back to the portal later.
+            self.store.record_import_link(outcome.order_id, order.id)
+            try:
+                client.mark_imported([order.id], {order.id: outcome.order_id})
+            except PortalError:
+                failures += 1  # created in LIS but not marked; will retry next poll
+            imported += 1
+        return imported, failures
+
+    def _apply_poll_result(self, result: dict) -> None:
+        """UI thread: apply a background poll's outcome to the table and labels."""
+        self._poll_busy = False
+        if not result.get("ok"):
+            self.connection_label.setText("● sin conexión")
+            self.connection_label.setStyleSheet("color: #e05260;")
+            error = result.get("error")
+            if error:
+                self.status_label.setText(str(error))
+            self.import_button.setEnabled(False)
+            return
+
+        self._portal_test_labels = result["labels"]
+        self._pending = result["pending"]
+        health = result["health"]
+        self.connection_label.setText("● conectado")
+        self.connection_label.setStyleSheet("color: #3ddc84;")
+        self.import_button.setEnabled(True)
+        self._populate_table()
+
+        status = (
+            f"Pendientes: {health.get('pending_count', 0)}   "
+            f"Última importación: {health.get('last_import_at') or 'nunca'}"
+        )
+        imported = result.get("imported", 0)
+        failures = result.get("failures", 0)
+        if imported or failures:
+            suffix = f"   Con problemas: {failures} (revisa manualmente)." if failures else ""
+            status = f"Importados automáticamente: {imported}.{suffix}   " + status
+        published = result.get("published", 0)
+        if published:
+            status += f"   Resultados enviados al portal: {published}."
+        self.status_label.setText(status)
 
         if imported:
+            # Refresh the page the user is actually on so the new order shows up.
             self.notify_data_changed()
-            try:
-                self._pending = client.pending_orders()
-            except PortalError:
-                pass
-            else:
-                self._populate_table()
-        suffix = f"   Con problemas: {failures} (revisa manualmente)." if failures else ""
-        self.status_label.setText(f"Importados automáticamente: {imported}.{suffix}")
 
     def _load_portal_test_labels(self, client: PortalClient) -> dict[int, str]:
         labels: dict[int, str] = {}

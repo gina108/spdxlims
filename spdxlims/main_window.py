@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(200, self._try_auto_start_backend)
         QTimer.singleShot(300, self._try_auto_login)
         QTimer.singleShot(750, self._autostart_instrument_connectivity)
+        QTimer.singleShot(900, self._autostart_portal_poll)
 
     def retranslate_ui(self) -> None:
         self.setWindowTitle("SPDXLIMS")
@@ -684,6 +685,18 @@ class MainWindow(QMainWindow):
         auto_start = getattr(page, "auto_start", None)
         if callable(auto_start):
             auto_start()
+
+    def _autostart_portal_poll(self) -> None:
+        """Build the PORTAL page at launch so its background auto-import poll runs
+        from startup, without the user having to open the page first. The poll only
+        does network work when the portal is configured with auto-import enabled, so
+        eagerly creating the page is cheap when the portal isn't set up."""
+        if "addon:facturas" not in self.page_builders:
+            return
+        try:
+            self._ensure_page("addon:facturas")
+        except Exception:  # noqa: BLE001 - never let addon startup break the app
+            pass
 
     def navigate_to_pdf_target(self, order_id: int, panel_label: str) -> None:
         self.current_top_button = "pdf_tables"
