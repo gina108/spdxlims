@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
             ("orders", lambda: OrdersPage(database, deployment_service)),
             ("orders_browser", lambda: OrdersBrowserPage(database, deployment_service)),
             ("instrument_results", lambda: InstrumentResultsPage(database, deployment_service)),
-            ("results", lambda: ResultsPage(database, deployment_service)),
+            ("results", lambda: ResultsPage(database, deployment_service, data_dir=addon_manager.data_dir)),
             ("doctors", lambda: DoctorsPage(database, deployment_service)),
             ("clients", lambda: ClientsPage(database, deployment_service)),
             ("addons", lambda: AddonsPage(addon_manager)),
@@ -346,7 +346,7 @@ class MainWindow(QMainWindow):
                 )
         self.workspace_targets["administrative"] = self._find_nav_page_key("Reportes", "administrative")
         self.workspace_targets["equipment"] = self._find_nav_page_key("Equipment", "equipment")
-        self.workspace_targets["invoices"] = self._find_nav_page_key("PORTAL", "invoices")
+        self.workspace_targets["invoices"] = self._find_nav_page_key("Portal", "invoices")
         self.workspace_targets["pdf_tables"] = self._find_nav_page_key("PDF Tables", "pdf_tables")
 
         addons_page = self.pages.get("addons")
@@ -533,7 +533,7 @@ class MainWindow(QMainWindow):
             "data": "Datos",
             "administrative": "Admin",
             "equipment": "Equipo",
-            "invoices": "PORTAL",
+            "invoices": "Portal",
             "pdf_tables": "PDF",
         }
         return labels[workspace_key]
@@ -552,7 +552,7 @@ class MainWindow(QMainWindow):
             "data": "Datos",
             "administrative": "Administrativo",
             "equipment": "Equipo",
-            "invoices": "PORTAL",
+            "invoices": "Portal",
             "pdf_tables": "PDF",
         }
         key = self.current_top_button

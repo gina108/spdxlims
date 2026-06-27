@@ -42,6 +42,8 @@ from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pages.instrument_status_panel import InstrumentStatusPanel
+from spdxlims.portal.result_service import PortalResultService
+from spdxlims.portal.settings import PortalStore
 from spdxlims.report_export import build_pdf_export_path
 from spdxlims.report_layout import build_report_html
 from spdxlims.report_service import ReportService
@@ -690,6 +692,7 @@ class ResultsPage(DataAwarePage):
         database: Database,
         deployment_service: DeploymentService,
         *,
+        data_dir: Path | None = None,
         show_instruments: bool = False,
         show_review: bool = True,
     ) -> None:
@@ -698,6 +701,7 @@ class ResultsPage(DataAwarePage):
         self.deployment_service = deployment_service
         self.result_service = ResultService(database, deployment_service)
         self.report_service = ReportService(database, deployment_service)
+        self._portal_results = PortalResultService(PortalStore(data_dir or (Path.cwd() / "data")))
         self.show_instruments = show_instruments
         self.show_review = show_review
         self.current_orders: list[ResultWorkflowRecord] = []
@@ -2261,21 +2265,42 @@ class ResultsPage(DataAwarePage):
         self._save_approved_version(order_id, report_version)
         self.refresh_on_show()
         self.notify_data_changed()
-        exported_path: Path | None = None
-        if export_pdf:
-            exported_path = self._export_report_pdf_for_whatsapp(order_id)
-            if exported_path is not None:
-                self._reveal_file_in_explorer(exported_path)
-        QMessageBox.information(
-            self,
-            tr("Saved"),
+
+        # Render the approved PDF at most once, then reuse it for the local export
+        # and/or the portal upload.
+        portal_linked = self._portal_results.is_linked(order_id)
+        pdf_path: Path | None = None
+        if export_pdf or portal_linked:
+            pdf_path = self._export_report_pdf_for_whatsapp(order_id)
+
+        portal_status = ""
+        if portal_linked and pdf_path is not None:
+            try:
+                portal_status = self._portal_results.publish(order_id, Path(pdf_path).read_bytes())
+            except OSError:
+                portal_status = ""
+
+        exported_path = pdf_path if export_pdf else None
+        if exported_path is not None:
+            self._reveal_file_in_explorer(exported_path)
+
+        base_message = (
             success_message
             if success_message
             else (
                 tr("Report approved and PDF exported. WhatsApp sending is now enabled.")
                 if exported_path is not None
                 else tr("Report approved. WhatsApp sending is now enabled.")
-            ),
+            )
+        )
+        portal_note = {
+            "uploaded": tr("The result was published to the client portal."),
+            "queued": tr("The portal was unreachable; the result is queued and will be sent automatically."),
+        }.get(portal_status, "")
+        QMessageBox.information(
+            self,
+            tr("Saved"),
+            base_message + (f"\n\n{portal_note}" if portal_note else ""),
         )
 
     def send_to_patient(self, order_id: int) -> None:

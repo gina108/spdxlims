@@ -30,6 +30,8 @@ class PortalStore:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._settings_path = self._dir / "settings.json"
         self._mapping_path = self._dir / "test_mapping.json"
+        self._links_path = self._dir / "imported_orders.json"
+        self._pending_dir = self._dir / "pending_results"
 
     # -- settings ----------------------------------------------------------
     def load_settings(self) -> PortalSettings:
@@ -64,6 +66,51 @@ class PortalStore:
                 mapping[str(portal_id)] = str(lis_id)
         self.save_mapping(mapping)
         return mapping
+
+    # -- import links (LIS order id -> portal order id) --------------------
+    def record_import_link(self, lis_order_id: object, portal_order_id: int) -> None:
+        links = self._read_json(self._links_path)
+        links = links if isinstance(links, dict) else {}
+        links[str(lis_order_id)] = int(portal_order_id)
+        self._write_json(self._links_path, links)
+
+    def portal_order_id_for(self, lis_order_id: object) -> int | None:
+        links = self._read_json(self._links_path)
+        if not isinstance(links, dict):
+            return None
+        value = links.get(str(lis_order_id))
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # -- pending result uploads (stashed report PDFs) ---------------------
+    # A finalized PDF that couldn't be uploaded (portal offline) is stashed here
+    # and retried later; the portal order id is resolved from the link map above.
+    def stash_pending_result(self, lis_order_id: object, pdf_bytes: bytes) -> None:
+        self._pending_dir.mkdir(parents=True, exist_ok=True)
+        self._pending_path(lis_order_id).write_bytes(pdf_bytes)
+
+    def clear_pending_result(self, lis_order_id: object) -> None:
+        try:
+            self._pending_path(lis_order_id).unlink()
+        except OSError:
+            pass
+
+    def list_pending_results(self) -> list[tuple[str, bytes]]:
+        if not self._pending_dir.exists():
+            return []
+        results: list[tuple[str, bytes]] = []
+        for path in sorted(self._pending_dir.glob("*.pdf")):
+            try:
+                results.append((path.stem, path.read_bytes()))
+            except OSError:
+                continue
+        return results
+
+    def _pending_path(self, lis_order_id: object) -> Path:
+        safe = "".join(ch for ch in str(lis_order_id) if ch.isalnum() or ch in ("-", "_")) or "order"
+        return self._pending_dir / f"{safe}.pdf"
 
     # -- helpers -----------------------------------------------------------
     @staticmethod

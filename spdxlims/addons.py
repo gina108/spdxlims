@@ -175,13 +175,13 @@ class AddonManager:
             ),
             AddonManifest(
                 addon_id="facturas",
-                name="PORTAL",
+                name="Portal",
                 version="1.0.0",
                 description="Client web portal integration: pull clinic orders and publish result PDFs.",
                 nav_entries=[
                     AddonNavEntry(
                         entry_id="facturas",
-                        nav_label="PORTAL",
+                        nav_label="Portal",
                         workspace="administrative",
                     )
                 ],

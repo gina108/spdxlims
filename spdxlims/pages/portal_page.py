@@ -37,6 +37,7 @@ from spdxlims.deployment import DeploymentService
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.portal.client import PendingOrder, PortalClient, PortalError
 from spdxlims.portal.import_service import PortalImportService
+from spdxlims.portal.result_service import PortalResultService
 from spdxlims.portal.settings import PortalSettings, PortalStore
 
 _SEX_CHOICES = [("(sin especificar)", None), ("Femenino", "F"), ("Masculino", "M"), ("Otro", "O")]
@@ -182,6 +183,7 @@ class PortalPage(DataAwarePage):
         super().__init__()
         self.store = PortalStore(data_dir)
         self.import_service = PortalImportService(database, deployment_service)
+        self._results = PortalResultService(self.store)
         self._pending: list[PendingOrder] = []
         self._portal_test_labels: dict[int, str] = {}
 
@@ -377,6 +379,13 @@ class PortalPage(DataAwarePage):
         if self.auto_import_check.isChecked():
             self._auto_import_ready_orders(client)
 
+        # Re-send any finalized reports that couldn't be uploaded earlier.
+        published = self._results.retry_pending()
+        if published:
+            self.status_label.setText(
+                self.status_label.text() + f"   Resultados enviados al portal: {published}."
+            )
+
     def _auto_import_ready_orders(self, client: PortalClient) -> None:
         """Import, without prompting, every pending order whose portal tests are
         all already mapped to a LIS panel. Orders with any unmapped test (or no
@@ -411,6 +420,9 @@ class PortalPage(DataAwarePage):
                 except Exception:  # noqa: BLE001 - skip a bad order, keep going
                     failures += 1
                     continue
+                # Remember the portal<->LIS link so the finalized report can be
+                # published back to the portal later.
+                self.store.record_import_link(outcome.order_id, order.id)
                 try:
                     client.mark_imported([order.id], {order.id: outcome.order_id})
                 except PortalError:
@@ -473,6 +485,9 @@ class PortalPage(DataAwarePage):
         if dialog.exec() != QDialog.Accepted or dialog.result is None:
             return
 
+        # Remember the portal<->LIS link so the finalized report can be published
+        # back to the portal later.
+        self.store.record_import_link(dialog.result.order_id, order.id)
         client = self._client()
         try:
             if client is not None:
