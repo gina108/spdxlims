@@ -9,19 +9,6 @@ _log = logging.getLogger(__name__)
 
 
 class SchemaMixin:
-    URINALYSIS_STRIP_TESTS = (
-        ("EGO-LEU", "Urine leukocytes", "Urinalysis", "Urine", "Strip reader", "text", ""),
-        ("EGO-NIT", "Urine nitrite", "Urinalysis", "Urine", "Strip reader", "text", ""),
-        ("EGO-URO", "Urine urobilinogen", "Urinalysis", "Urine", "Strip reader", "text", "mg/dL"),
-        ("EGO-PRO", "Urine protein", "Urinalysis", "Urine", "Strip reader", "text", "mg/dL"),
-        ("EGO-PH", "Urine pH", "Urinalysis", "Urine", "Strip reader", "text", ""),
-        ("EGO-BLO", "Urine blood", "Urinalysis", "Urine", "Strip reader", "text", ""),
-        ("EGO-SG", "Urine specific gravity", "Urinalysis", "Urine", "Strip reader", "text", ""),
-        ("EGO-KET", "Urine ketones", "Urinalysis", "Urine", "Strip reader", "text", ""),
-        ("EGO-BIL", "Urine bilirubin", "Urinalysis", "Urine", "Strip reader", "text", ""),
-        ("EGO-GLU", "Urine glucose", "Urinalysis", "Urine", "Strip reader", "text", ""),
-    )
-
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.assets_dir = db_path.parent / "assets" / "lab"
@@ -544,7 +531,6 @@ class SchemaMixin:
             self._migrate_inventory_items_table(connection)
             self._migrate_invoices_table(connection)
             self._migrate_suppliers_table(connection)
-            self._ensure_urinalysis_strip_tests(connection)
 
     def _get_report_context(self, order_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:

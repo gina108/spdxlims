@@ -177,54 +177,6 @@ class HelpersMixin:
         cursor = connection.execute("INSERT INTO tests (code, name, category_id, specimen_type, method, result_kind, is_active, sort_order) VALUES ('__PANEL_COMMENT__', 'Panel Comment', NULL, NULL, NULL, 'text', 0, 0)")
         return int(cursor.lastrowid)
 
-    def _ensure_urinalysis_strip_tests(self, connection: sqlite3.Connection) -> None:
-        category_id = self._get_or_create_category(connection, "Urinalysis")
-        for code, name, _category, specimen_type, method, result_kind, unit in self.URINALYSIS_STRIP_TESTS:
-            row = connection.execute("SELECT id FROM tests WHERE code = ?", (code,)).fetchone()
-            if row is None:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO tests (
-                        code, name, category_id, specimen_type, method, result_kind,
-                        select_options, default_result_value, price, is_active
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, 1)
-                    """,
-                    (code, name, category_id, specimen_type, method, result_kind),
-                )
-                test_id = int(cursor.lastrowid)
-            else:
-                test_id = int(row["id"])
-                connection.execute(
-                    """
-                    UPDATE tests
-                    SET category_id = COALESCE(category_id, ?),
-                        specimen_type = COALESCE(NULLIF(specimen_type, ''), ?),
-                        method = COALESCE(NULLIF(method, ''), ?),
-                        result_kind = CASE WHEN result_kind IN ('numeric', 'text', 'select') THEN result_kind ELSE ? END,
-                        is_active = 1
-                    WHERE id = ?
-                    """,
-                    (category_id, specimen_type, method, result_kind, test_id),
-                )
-            if unit:
-                existing_range = connection.execute(
-                    "SELECT id FROM test_reference_ranges WHERE test_id = ? AND unit = ?",
-                    (test_id, unit),
-                ).fetchone()
-                if existing_range is None:
-                    connection.execute(
-                        """
-                        INSERT INTO test_reference_ranges (
-                            test_id, sex, age_min_days, age_max_days,
-                            lower_value, upper_value, lower_value_text,
-                            upper_value_text, unit, reference_text
-                        )
-                        VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, '')
-                        """,
-                        (test_id, unit),
-                    )
-
     @staticmethod
     def _specimen_code(specimen_type: str) -> str:
         normalized = ''.join(character for character in specimen_type.upper() if character.isalnum() or character == ' ')
