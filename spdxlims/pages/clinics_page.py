@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -20,10 +21,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from spdxlims.database import Database
@@ -32,6 +35,65 @@ from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.portal.client import PortalClient
 from spdxlims.portal.settings import PortalStore
 from spdxlims.provider_service import ProviderService
+
+
+class CredentialsDialog(QDialog):
+    """Show a clinic's portal login in a copy-paste friendly box.
+
+    The portal stores only a password hash and never returns it, so the moment a
+    password is set (clinic created or reset) is the only chance to capture it.
+    Presenting it as selectable text with a one-click copy avoids transcription
+    errors when handing the login to the clinic.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        site_url: str,
+        email: str,
+        password: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Acceso de la clínica")
+        self.setMinimumWidth(460)
+        self._text = self._format(name, site_url, email, password)
+
+        root = QVBoxLayout(self)
+        root.addWidget(
+            QLabel(
+                "Comparte estos datos con la clínica. La contraseña no se puede volver "
+                "a consultar después; cópiala ahora."
+            )
+        )
+        view = QPlainTextEdit(self._text)
+        view.setReadOnly(True)
+        view.setFixedHeight(120)
+        root.addWidget(view)
+
+        buttons = QHBoxLayout()
+        self.copy_button = QPushButton("Copiar")
+        self.copy_button.clicked.connect(self._copy)
+        close_button = QPushButton("Cerrar")
+        close_button.clicked.connect(self.accept)
+        buttons.addStretch(1)
+        buttons.addWidget(self.copy_button)
+        buttons.addWidget(close_button)
+        root.addLayout(buttons)
+
+    @staticmethod
+    def _format(name: str, site_url: str, email: str, password: str) -> str:
+        lines = [f"Acceso al portal de laboratorio — {name}".rstrip(" —")]
+        if site_url:
+            lines.append(f"Sitio: {site_url}")
+        lines.append(f"Usuario (correo): {email}")
+        lines.append(f"Contraseña: {password}")
+        return "\n".join(lines)
+
+    def _copy(self) -> None:
+        QApplication.clipboard().setText(self._text)
+        self.copy_button.setText("Copiado ✓")
 
 
 class ClinicsPage(DataAwarePage):
@@ -113,6 +175,12 @@ class ClinicsPage(DataAwarePage):
         if not settings.is_configured():
             return None
         return PortalClient(settings.base_url, settings.shared_secret)
+
+    def _show_credentials(self, *, name: str, email: str, password: str) -> None:
+        site_url = self.store.load_settings().base_url.strip()
+        CredentialsDialog(
+            name=name, site_url=site_url, email=email, password=password, parent=self
+        ).exec()
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         self.table.setEnabled(enabled)
@@ -209,7 +277,7 @@ class ClinicsPage(DataAwarePage):
             return
         for field in (self.new_name, self.new_email, self.new_password, self.new_phone):
             field.clear()
-        QMessageBox.information(self, "Clínica creada", f"Se creó el acceso para {name}.")
+        self._show_credentials(name=name, email=email, password=password)
         self._reload()
 
     def _reset_password(self) -> None:
@@ -236,7 +304,11 @@ class ClinicsPage(DataAwarePage):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Error", str(exc))
             return
-        QMessageBox.information(self, "Listo", "La contraseña se actualizó.")
+        self._show_credentials(
+            name=str(clinic.get("name") or ""),
+            email=str(clinic.get("email") or ""),
+            password=new_password,
+        )
 
     def _toggle_active(self) -> None:
         client = self._client()
