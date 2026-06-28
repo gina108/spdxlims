@@ -42,7 +42,7 @@ class PatientDialog(QDialog):
         self.sex.addItem(tr("Female"), "F")
         self.sex.addItem(tr("Other"), "O")
         self.date_of_birth = QLineEdit()
-        self.date_of_birth.setPlaceholderText("YYYY-MM-DD")
+        self.date_of_birth.setPlaceholderText("AAAA-MM-DD")
         self.age_value = QLineEdit()
         self.age_value.setPlaceholderText("ej. 35")
         self.age_unit = QComboBox()

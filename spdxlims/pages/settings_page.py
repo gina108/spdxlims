@@ -354,7 +354,7 @@ class SettingsPage(DataAwarePage):
         self.backup_cloud_sync_note = QLineEdit()
         self.backup_cloud_sync_note.setPlaceholderText(tr("Optional cloud/offsite sync notes"))
         self.backup_restore_drill_date = QLineEdit()
-        self.backup_restore_drill_date.setPlaceholderText("YYYY-MM-DD")
+        self.backup_restore_drill_date.setPlaceholderText("AAAA-MM-DD")
         self.backup_status = QLabel()
         self.backup_status.setWordWrap(True)
         self.backup_options = QWidget()
