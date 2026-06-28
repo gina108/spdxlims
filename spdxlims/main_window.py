@@ -46,6 +46,7 @@ from spdxlims.pages.prices_page import PricesPage
 from spdxlims.pages.results_page import InstrumentResultsPage, ResultsPage
 from spdxlims.pages.reports_page import ReportsPage
 from spdxlims.pages.settings_page import SettingsPage
+from spdxlims.pages.statistics_page import StatisticsPage
 from spdxlims.pages.tests_page import TestsPage
 
 
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
             ("results", lambda: ResultsPage(database, deployment_service, data_dir=addon_manager.data_dir)),
             ("doctors", lambda: DoctorsPage(database, deployment_service)),
             ("clients", lambda: ClientsPage(database, deployment_service)),
+            ("statistics", lambda: StatisticsPage(database, deployment_service)),
             ("addons", lambda: AddonsPage(addon_manager)),
             ("settings", lambda: SettingsPage(database, deployment_service)),
             ("admin_prices", lambda: PricesPage(database, deployment_service)),
@@ -185,6 +187,7 @@ class MainWindow(QMainWindow):
             ("instrument_connectivity", "instrument_connectivity", "Instrument Connectivity", ("equipment",)),
             ("portal_catalog", "portal_catalog", "Catálogo del portal", ("invoices",)),
             ("portal_clinics", "portal_clinics", "Clínicas", ("invoices",)),
+            ("statistics", "statistics", "Statistics", ("administrative",)),
         ]
         self.reload_addons(initial_load=True)
 
@@ -339,7 +342,7 @@ class MainWindow(QMainWindow):
                     workspace = "invoices"
                 elif addon.manifest.addon_id == "pdf_table_extractor":
                     workspace = "pdf_tables"
-                workspaces = ("invoices", "administrative") if addon.manifest.addon_id == "facturas" else (workspace,)
+                workspaces = (workspace,)
                 self.nav_entries.append(
                     (
                         f"addon:{addon.manifest.addon_id}:{nav_entry.entry_id}",

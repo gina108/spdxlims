@@ -40,6 +40,7 @@ from spdxlims.db.panels import PanelsMixin
 from spdxlims.db.orders import OrdersMixin
 from spdxlims.db.instruments import InstrumentsMixin
 from spdxlims.db.results import ResultsMixin
+from spdxlims.db.statistics import StatisticsMixin
 from spdxlims.db.helpers import HelpersMixin
 
 
@@ -57,6 +58,7 @@ class Database(
     OrdersMixin,
     InstrumentsMixin,
     ResultsMixin,
+    StatisticsMixin,
     HelpersMixin,
 ):
     pass
