@@ -78,6 +78,8 @@ class SchemaMixin:
                     auto_invoice_enabled INTEGER NOT NULL DEFAULT 0,
                     auto_invoice_frequency TEXT,
                     auto_invoice_last_run TEXT,
+                    header_image_path TEXT,
+                    footer_signature_image_path TEXT,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -550,7 +552,9 @@ class SchemaMixin:
                        p.age_value AS patient_age_value,
                        p.age_unit AS patient_age_unit,
                        d.full_name AS doctor_name,
-                       c.name AS client_name
+                       c.name AS client_name,
+                       c.header_image_path AS client_header_image_path,
+                       c.footer_signature_image_path AS client_footer_signature_image_path
                 FROM orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN doctors d ON d.id = o.doctor_id
@@ -765,6 +769,10 @@ class SchemaMixin:
             connection.execute("ALTER TABLE clients ADD COLUMN auto_invoice_frequency TEXT")
         if "auto_invoice_last_run" not in columns:
             connection.execute("ALTER TABLE clients ADD COLUMN auto_invoice_last_run TEXT")
+        if "header_image_path" not in columns:
+            connection.execute("ALTER TABLE clients ADD COLUMN header_image_path TEXT")
+        if "footer_signature_image_path" not in columns:
+            connection.execute("ALTER TABLE clients ADD COLUMN footer_signature_image_path TEXT")
 
     def _migrate_doctors_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(doctors)").fetchall()}

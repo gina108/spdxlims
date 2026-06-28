@@ -89,6 +89,8 @@ class ClientRecord:
     auto_invoice_enabled: int = 0
     auto_invoice_frequency: str | None = None
     auto_invoice_last_run: str | None = None
+    header_image_path: str | None = None
+    footer_signature_image_path: str | None = None
 
 
 @dataclass(slots=True)

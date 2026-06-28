@@ -443,12 +443,38 @@ class ReportsPage(DataAwarePage):
         merged['footer_signature_image_path'] = self._selected_footer_path()
         return merged
 
+    def _apply_order_branding(self, preview: dict[str, object]) -> None:
+        """Default the header/footer combos to the order's client branding when set.
+
+        Falls back to the globally selected branding when the client has none.
+        The selection is not persisted, so it does not leak to other orders.
+        """
+        branding = self.database.get_report_branding_options()
+        header = str(preview.get('client_header_image_path') or '').strip() or branding['selected_header']
+        footer = str(preview.get('client_footer_signature_image_path') or '').strip() or branding['selected_footer']
+        self._loading_branding_controls = True
+        self._select_combo_path(self.header_combo, header)
+        self._select_combo_path(self.footer_combo, footer)
+        self._loading_branding_controls = False
+
+    def _select_combo_path(self, combo: QComboBox, path: str) -> None:
+        value = str(path or '').strip()
+        if not value:
+            combo.setCurrentIndex(0)
+            return
+        index = combo.findData(value)
+        if index < 0:
+            combo.addItem(self._report_asset_label(value), value)
+            index = combo.findData(value)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
     def _load_preview_for_order(self, order_id: int | str | None) -> bool:
         if order_id is None:
             return False
         preview = self.report_service.get_saved_report_preview(order_id) or self.report_service.get_live_report_preview(order_id)
         if preview is None:
             return False
+        self._apply_order_branding(preview)
         self.current_preview = self._override_preview_branding(preview)
         self._render_preview(self.current_preview)
         self._update_actions()
@@ -504,6 +530,7 @@ class ReportsPage(DataAwarePage):
         if preview is None:
             QMessageBox.warning(self, tr('Missing Selection'), tr('The selected order could not be loaded.'))
             return
+        self._apply_order_branding(preview)
         self.current_preview = self._override_preview_branding(preview)
         self._render_preview(self.current_preview)
         self._update_actions()
@@ -550,10 +577,13 @@ class ReportsPage(DataAwarePage):
         failures = 0
         for order_id, _label in choices:
             try:
+                # Pass None so each report keeps its own resolved branding
+                # (per-client header/footer when set, otherwise the lab default)
+                # instead of forcing the single global combo selection on every order.
                 self.report_service.finalize_report(
                     order_id,
-                    header_image_path=self._selected_header_path(),
-                    footer_signature_image_path=self._selected_footer_path(),
+                    header_image_path=None,
+                    footer_signature_image_path=None,
                 )
                 created += 1
             except Exception:  # noqa: BLE001

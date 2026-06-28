@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -29,7 +30,7 @@ class ClientDialog(QDialog):
         self._editing = client_id is not None
         self.setWindowTitle(tr("Edit Client") if self._editing else tr("New Client"))
         self.setModal(True)
-        self.resize(440, 440)
+        self.resize(480, 520)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -55,6 +56,12 @@ class ClientDialog(QDialog):
         self.auto_invoice_enabled.toggled.connect(self.auto_invoice_frequency.setEnabled)
         self.auto_invoice_frequency.setEnabled(False)
 
+        branding = self.database.get_report_branding_options()
+        self.header_image_combo = QComboBox()
+        self._populate_branding_combo(self.header_image_combo, branding.get("headers", []))
+        self.footer_image_combo = QComboBox()
+        self._populate_branding_combo(self.footer_image_combo, branding.get("footers", []))
+
         form.addRow(tr("Client"), self.name)
         form.addRow(tr("Phone"), self.phone)
         form.addRow(tr("Email"), self.email)
@@ -64,6 +71,8 @@ class ClientDialog(QDialog):
         form.addRow(tr("CFDI Use"), self.cfdi_use)
         form.addRow("", self.auto_invoice_enabled)
         form.addRow(tr("Invoice Frequency"), self.auto_invoice_frequency)
+        form.addRow(tr("Report Header Image"), self.header_image_combo)
+        form.addRow(tr("Report Footer Image"), self.footer_image_combo)
         layout.addLayout(form)
 
         buttons = QHBoxLayout()
@@ -83,6 +92,37 @@ class ClientDialog(QDialog):
         if self._editing and self.client_id is not None:
             self._load_client()
 
+    def _populate_branding_combo(self, combo: QComboBox, paths: list[str]) -> None:
+        """Fill a combo with the report images uploaded in Settings.
+
+        The first entry ("Use lab default") maps to an empty path, meaning the
+        report falls back to the lab-wide header/footer for this client.
+        """
+        combo.clear()
+        combo.addItem(tr("Use lab default"), "")
+        for raw_path in paths:
+            value = str(raw_path or "").strip()
+            if not value or combo.findData(value) >= 0:
+                continue
+            combo.addItem(self._branding_label(value), value)
+
+    @staticmethod
+    def _branding_label(raw_path: str) -> str:
+        return Path(raw_path).name or raw_path
+
+    def _select_branding_path(self, combo: QComboBox, raw_path: str | None) -> None:
+        value = str(raw_path or "").strip()
+        if not value:
+            combo.setCurrentIndex(0)
+            return
+        index = combo.findData(value)
+        if index < 0:
+            # The image is still assigned to the client but was removed from the
+            # Settings library; keep it selectable so saving does not drop it.
+            combo.addItem(self._branding_label(value), value)
+            index = combo.findData(value)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
     def _load_client(self) -> None:
         client = self.database.get_client(self.client_id)
         if client is None:
@@ -99,6 +139,8 @@ class ClientDialog(QDialog):
         self.auto_invoice_enabled.setChecked(bool(client.auto_invoice_enabled))
         frequency_index = self.auto_invoice_frequency.findData(client.auto_invoice_frequency or '')
         self.auto_invoice_frequency.setCurrentIndex(frequency_index if frequency_index >= 0 else 0)
+        self._select_branding_path(self.header_image_combo, client.header_image_path)
+        self._select_branding_path(self.footer_image_combo, client.footer_signature_image_path)
         self.archive_client_button.setText(tr("Unarchive Client") if not client.is_active else tr("Archive Client"))
 
     def toggle_client_archive(self) -> None:
@@ -131,6 +173,8 @@ class ClientDialog(QDialog):
                 "cfdi_use": self.cfdi_use.currentData(),
                 "auto_invoice_enabled": self.auto_invoice_enabled.isChecked(),
                 "auto_invoice_frequency": self.auto_invoice_frequency.currentData() if self.auto_invoice_enabled.isChecked() else None,
+                "header_image_path": self.header_image_combo.currentData(),
+                "footer_signature_image_path": self.footer_image_combo.currentData(),
             }
             if self._editing and self.client_id is not None:
                 self.database.update_client(self.client_id, payload)

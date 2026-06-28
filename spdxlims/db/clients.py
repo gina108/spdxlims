@@ -60,10 +60,17 @@ class ClientsMixin:
             for row in rows
         ]
 
+    def _client_branding_path(self, raw_path: object, kind: str) -> str | None:
+        """Copy a selected header/footer image into managed assets; return stored path."""
+        value = str(raw_path or "").strip()
+        if not value:
+            return None
+        return self._copy_report_branding_asset(value, kind) or None
+
     def create_client(self, payload: dict[str, Any]) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO clients (name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                "INSERT INTO clients (name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency, header_image_path, footer_signature_image_path) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
                 (
                     payload["name"].strip(),
                     str(payload.get("phone") or "").strip() or None,
@@ -74,6 +81,8 @@ class ClientsMixin:
                     str(payload.get("cfdi_use") or "").strip() or None,
                     1 if payload.get("auto_invoice_enabled") else 0,
                     str(payload.get("auto_invoice_frequency") or "").strip() or None,
+                    self._client_branding_path(payload.get("header_image_path"), "header"),
+                    self._client_branding_path(payload.get("footer_signature_image_path"), "footer"),
                 ),
             )
             return int(cursor.lastrowid)
@@ -81,7 +90,7 @@ class ClientsMixin:
     def update_client(self, client_id: int, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE clients SET name = ?, phone = ?, email = ?, tax_id = ?, fiscal_regime = ?, postal_code = ?, cfdi_use = ?, auto_invoice_enabled = ?, auto_invoice_frequency = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE clients SET name = ?, phone = ?, email = ?, tax_id = ?, fiscal_regime = ?, postal_code = ?, cfdi_use = ?, auto_invoice_enabled = ?, auto_invoice_frequency = ?, header_image_path = ?, footer_signature_image_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (
                     payload["name"].strip(),
                     str(payload.get("phone") or "").strip() or None,
@@ -92,6 +101,8 @@ class ClientsMixin:
                     str(payload.get("cfdi_use") or "").strip() or None,
                     1 if payload.get("auto_invoice_enabled") else 0,
                     str(payload.get("auto_invoice_frequency") or "").strip() or None,
+                    self._client_branding_path(payload.get("header_image_path"), "header"),
+                    self._client_branding_path(payload.get("footer_signature_image_path"), "footer"),
                     client_id,
                 ),
             )
@@ -106,7 +117,7 @@ class ClientsMixin:
 
     def get_client(self, client_id: int) -> ClientRecord | None:
         with self.connect() as connection:
-            row = connection.execute("SELECT id, name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency, auto_invoice_last_run FROM clients WHERE id = ?", (client_id,)).fetchone()
+            row = connection.execute("SELECT id, name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency, auto_invoice_last_run, header_image_path, footer_signature_image_path FROM clients WHERE id = ?", (client_id,)).fetchone()
         return ClientRecord(**dict(row)) if row is not None else None
 
     def list_auto_invoice_clients(self) -> list[dict[str, Any]]:
