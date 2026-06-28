@@ -23,6 +23,10 @@ RESULT_ROW_UNIT_HEIGHT_MM = 5.6
 FOOTER_SAFETY_GAP_MM = 8.0
 GENERAL_COMMENTS_RESERVE_MM = 14.0
 MIN_ROW_PAGE_LIMIT = 18.0
+# The reference column is ~25% of the content width versus ~44% for the test
+# name column (which `_estimated_line_units` defaults to at 48 chars/line), so a
+# reference range wraps after roughly 27 characters.
+REFERENCE_CHARS_PER_LINE = 27
 
 
 def build_report_html(preview: dict[str, object]) -> str:
@@ -188,7 +192,11 @@ def build_report_html(preview: dict[str, object]) -> str:
             f"<td>{range_text}</td>"
             "</tr>"
         )
-        rows.append((row_html, 1.0 + _estimated_line_units(test_name), "test", panel_group))
+        row_text_units = max(
+            _estimated_line_units(test_name),
+            _estimated_line_units(range_text, chars_per_line=REFERENCE_CHARS_PER_LINE),
+        )
+        rows.append((row_html, 1.0 + row_text_units, "test", panel_group))
         if comments:
             rows.append((f'<tr><td colspan="5" class="subcomment">{comments}</td></tr>', 0.8 + _estimated_line_units(comments), "subcomment", panel_group))
 
@@ -710,11 +718,14 @@ def _is_abnormal_flag(flag_value: str) -> bool:
 
 
 def _estimated_line_units(value: str, *, chars_per_line: int = 48) -> float:
-    compact = " ".join((value or "").split())
-    if not compact:
-        return 0.0
-    estimated_lines = max(1, (len(compact) + chars_per_line - 1) // chars_per_line)
-    return max(0.0, (estimated_lines - 1) * 0.6)
+    total_lines = 0
+    for segment in re.split(r"<br\s*/?>", value or ""):
+        compact = " ".join(segment.split())
+        if not compact:
+            total_lines += 1
+            continue
+        total_lines += max(1, (len(compact) + chars_per_line - 1) // chars_per_line)
+    return max(0.0, (total_lines - 1) * 0.6)
 
 
 def _paginate_result_rows(

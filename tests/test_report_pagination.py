@@ -1,8 +1,33 @@
 ﻿from spdxlims.report_layout import _paginate_result_rows, _rebalance_paged_row_groups
 from spdxlims.report_layout import _rendered_image_height_mm, _row_page_limit_for_footer
-from spdxlims.report_layout import build_report_html
+from spdxlims.report_layout import _estimated_line_units, build_report_html
 from spdxlims.i18n import tr
 from spdxlims.db.results import ResultsMixin
+
+
+def test_estimated_line_units_counts_explicit_line_breaks() -> None:
+    assert _estimated_line_units("one<br>two<br>three") == 1.2
+    assert _estimated_line_units("single line") == 0.0
+
+
+def test_long_reference_text_adds_pages() -> None:
+    # A wide reference range wraps onto several lines, so the rows it sits on are
+    # taller and must be counted as such — otherwise the bottom rows overflow the
+    # page and get clipped.
+    long_reference = (
+        "Hombres: 13.5 - 17.5 g/dL\nMujeres: 12.0 - 15.5 g/dL\n"
+        "Neonatos: 14.0 - 24.0 g/dL\nLactantes: 10.0 - 13.0 g/dL"
+    )
+    items = [
+        {"item_type": "test", "test_name": f"Analito {index}", "result_value": "1", "reference_text": long_reference}
+        for index in range(30)
+    ]
+    short_pages = build_report_html(
+        {"items": [{"item_type": "test", "test_name": f"Analito {i}", "result_value": "1"} for i in range(30)]}
+    ).count("results-page-number")
+    long_pages = build_report_html({"items": items}).count("results-page-number")
+
+    assert long_pages > short_pages
 
 
 def test_report_header_places_age_above_birthdate() -> None:
