@@ -46,6 +46,15 @@ def build_client_results_sheet(
     }
 
 
+def build_marketing_list_sheet(
+    header: Sequence[str],
+    rows: Sequence[Sequence[str]],
+) -> dict[str, list[list[str]]]:
+    return {
+        'MarketingList': [list(header), *[list(row) for row in rows]],
+    }
+
+
 def build_admin_export_sheets(
     billing_rows: Sequence[Sequence[str]],
     inventory_rows: Sequence[Sequence[str]],

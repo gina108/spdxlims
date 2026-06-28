@@ -213,6 +213,55 @@ class StatisticsMixin:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_marketing_abnormal_patients(
+        self,
+        test_ids: list[int],
+        date_from: str = "",
+        date_to: str = "",
+    ) -> list[dict[str, Any]]:
+        """Patients with at least one out-of-range result on the selected analytes.
+
+        Builds a marketing/follow-up contact list: one row per patient with their
+        contact details, the analytes that came back abnormal (with direction),
+        how many abnormal results they have, and the most recent abnormal date.
+        ``flag`` is precomputed at result entry, so abnormal = flag IN ('low','high').
+        Returns an empty list when no analytes are selected.
+        """
+        clean_ids = [int(test_id) for test_id in test_ids if test_id is not None]
+        if not clean_ids:
+            return []
+        placeholders = ", ".join("?" for _ in clean_ids)
+        params: list[Any] = list(clean_ids) + self._date_params(date_from, date_to)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT TRIM(p.first_name || ' ' || p.last_name
+                            || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != ''
+                                    THEN ' ' || p.middle_name ELSE '' END) AS patient_name,
+                       COALESCE(p.phone, '') AS phone,
+                       COALESCE(p.email, '') AS email,
+                       COALESCE(p.sex, '') AS sex,
+                       p.age_value AS age_value,
+                       COALESCE(p.age_unit, '') AS age_unit,
+                       p.date_of_birth AS date_of_birth,
+                       GROUP_CONCAT(DISTINCT t.name || ' (' || r.flag || ')') AS abnormal_tests,
+                       COUNT(*) AS abnormal_count,
+                       MAX(DATE(COALESCE(o.ordered_at, o.created_at))) AS last_date
+                FROM results r
+                INNER JOIN order_tests ot ON ot.id = r.order_test_id
+                INNER JOIN orders o ON o.id = ot.order_id
+                INNER JOIN patients p ON p.id = o.patient_id
+                INNER JOIN tests t ON t.id = ot.test_id
+                WHERE r.flag IN ('low', 'high')
+                  AND ot.test_id IN ({placeholders})
+                  AND {_ORDER_DATE_FILTER}
+                GROUP BY p.id, patient_name, phone, email, sex, age_value, age_unit, date_of_birth
+                ORDER BY last_date DESC, patient_name
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def report_inventory_usage(self, date_from: str = "", date_to: str = "") -> list[dict[str, Any]]:
         """Per item: purchased/consumed/adjusted in the window plus current stock.
 

@@ -37,6 +37,7 @@ from spdxlims.pages.clients_page import ClientsPage
 from spdxlims.pages.clinics_page import ClinicsPage
 from spdxlims.pages.doctors_page import DoctorsPage
 from spdxlims.pages.instrument_connectivity_page import InstrumentConnectivityPage
+from spdxlims.pages.marketing_page import MarketingListPage
 from spdxlims.pages.orders_browser_page import OrdersBrowserPage
 from spdxlims.pages.orders_page import OrdersPage
 from spdxlims.pages.panels_page import PanelsPage
@@ -169,6 +170,7 @@ class MainWindow(QMainWindow):
             ("admin_invoices", lambda: AdministrativePage(database, section_mode="collections")),
             ("admin_inventory", lambda: AdministrativePage(database, section_mode="inventory")),
             ("admin_reports", lambda: ReportsPage(database, deployment_service)),
+            ("admin_marketing", lambda: MarketingListPage(database, deployment_service)),
         ]
         self.pages: dict[str, QWidget] = {}
         for page_key, builder in page_specs:
@@ -314,9 +316,11 @@ class MainWindow(QMainWindow):
                 self.page_builders["admin_prices"] = lambda: PricesPage(self.database, self.deployment_service)
                 self.page_builders["admin_invoices"] = lambda: AdministrativePage(self.database, section_mode="collections")
                 self.page_builders["admin_inventory"] = lambda: AdministrativePage(self.database, section_mode="inventory")
+                self.page_builders["admin_marketing"] = lambda: MarketingListPage(self.database, self.deployment_service)
                 self.nav_entries.append(("admin_inventory", "admin_inventory", "Inventario", ("administrative",)))
                 self.nav_entries.append(("admin_prices", "admin_prices", "Precios", ("administrative",)))
                 self.nav_entries.append(("admin_invoices", "admin_invoices", "Cobranza de clientes", ("administrative",)))
+                self.nav_entries.append(("admin_marketing", "admin_marketing", "Marketing List", ("administrative",)))
                 continue
             page_key = f"addon:{addon_id}"
             if addon_id in {"equipment_manager", "pdf_table_extractor", "facturas"} or addon.is_installed:
