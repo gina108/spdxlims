@@ -282,13 +282,17 @@ class OrdersMixin:
                        d.full_name AS doctor_name,
                        o.status,
                        COALESCE(o.is_archived, 0) AS is_archived,
-                       SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count
+                       SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count,
+                       CASE WHEN COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) > 0
+                            AND COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) = COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 AND COALESCE(NULLIF(TRIM(r.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL THEN 1 END)
+                           THEN 1 ELSE 0 END AS all_results_entered
                 FROM orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN clients c ON c.id = o.client_id
                 LEFT JOIN doctors d ON d.id = o.doctor_id
                 LEFT JOIN order_tests ot ON ot.order_id = o.id
                 LEFT JOIN tests t ON t.id = ot.test_id
+                LEFT JOIN results r ON r.order_test_id = ot.id
                 WHERE COALESCE(o.is_preallocated, 0) = 0
                   {archived_clause}
                   AND (

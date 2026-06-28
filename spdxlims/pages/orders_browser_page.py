@@ -6,6 +6,7 @@ from PySide6.QtCore import QEventLoop, QMarginsF, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QGroupBox,
     QHBoxLayout,
@@ -66,6 +67,12 @@ class OrdersBrowserPage(DataAwarePage):
         self._search_timer.setInterval(250)
         self._search_timer.timeout.connect(self.refresh_on_show)
         self.search_input.textChanged.connect(lambda _: self._search_timer.start())
+        # Live refresh: while this page is the visible one, re-poll so status
+        # changes from other sources (results entered, reports finalized, portal
+        # imports) appear without having to navigate away and back.
+        self._auto_refresh_timer = QTimer(self)
+        self._auto_refresh_timer.setInterval(5000)
+        self._auto_refresh_timer.timeout.connect(self._auto_refresh_tick)
         self.show_archived_checkbox = QCheckBox()
         self.show_archived_checkbox.stateChanged.connect(lambda _: self.refresh_on_show())
         search_layout.addWidget(self.search_label)
@@ -136,6 +143,8 @@ class OrdersBrowserPage(DataAwarePage):
         self._refresh_table()
 
     def refresh_on_show(self) -> None:
+        selected = self._selected_order()
+        selected_id = selected.id if selected is not None else None
         include_archived = self.show_archived_checkbox.isChecked()
         try:
             self.current_records = self.order_service.search_orders(
@@ -144,6 +153,28 @@ class OrdersBrowserPage(DataAwarePage):
         except RuntimeError:
             self.current_records = []
         self._refresh_table()
+        if selected_id is not None:
+            for row_index, record in enumerate(self.current_records):
+                if record.id == selected_id:
+                    self.table.selectRow(row_index)
+                    break
+
+    def _auto_refresh_tick(self) -> None:
+        # Skip while a menu or modal dialog is open so the table isn't rebuilt
+        # out from under the user mid-interaction.
+        if not self.isVisible():
+            return
+        if QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None:
+            return
+        self.refresh_on_show()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self._auto_refresh_timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().hideEvent(event)
+        self._auto_refresh_timer.stop()
 
     def _refresh_table(self) -> None:
         self.table.clearContents()
@@ -162,7 +193,7 @@ class OrdersBrowserPage(DataAwarePage):
             self._set_item(row_index, 1, record.patient_name, muted if archived else None)
             self._set_item(row_index, 2, record.client_name or "", muted if archived else None)
             self._set_item(row_index, 3, record.doctor_name or "", muted if archived else None)
-            self.table.setCellWidget(row_index, 4, self.build_order_status_indicator(record.status))
+            self.table.setCellWidget(row_index, 4, self.build_order_status_indicator(record.status, all_results_entered=record.all_results_entered))
             self._set_item(row_index, 5, self._format_order_date(record.order_date), muted if archived else None)
 
     def _set_item(self, row: int, column: int, value: str, color: QColor | None = None) -> None:

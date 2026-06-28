@@ -36,7 +36,9 @@ class DataAwarePage(QWidget):
             "in_lab":      ("#4db8ff", "En laboratorio"),
             "completed":   ("#4db8ff", "Completada"),
             "reported":    ("#3ddc84", "Reportada"),
+            "finalized":   ("#3ddc84", "Finalizada"),
             "amended":     ("#f5a742", "Corregida"),
+            "cancelled":   ("#e06c75", "Cancelada"),
         }
         normalized = str(status or "").strip()
         color, tooltip = _STATUS_MAP.get(normalized, ("#7f8a98", normalized or ""))

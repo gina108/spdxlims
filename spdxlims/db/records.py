@@ -258,6 +258,7 @@ class OrderBrowserRecord:
     doctor_name: str | None
     status: str
     item_count: int
+    all_results_entered: bool = False
     is_archived: int = 0
 
 
