@@ -141,7 +141,10 @@ class StatisticsPage(DataAwarePage):
             widget.setDisplayFormat("yyyy-MM-dd")
             widget.setMinimumDate(self.FILTER_DATE_MIN)
             widget.setSpecialValueText(" ")
-            widget.setMaximumWidth(120)
+            widget.setMinimumWidth(160)
+            widget.setMaximumWidth(190)
+            widget.setMinimumHeight(38)
+            widget.setStyleSheet("QDateEdit { padding-top: 2px; padding-bottom: 2px; }")
 
         # Subject filter picker shown next to the date range: choosing a doctor,
         # panel, or test adds it to the selected-subjects list below. Editable +
