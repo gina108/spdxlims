@@ -4,7 +4,7 @@ from html import escape
 import base64
 import mimetypes
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -35,6 +35,14 @@ from PySide6.QtWidgets import (
 
 from spdxlims.admin_cfdi import write_cfdi_preview_xml
 from spdxlims.admin_excel import build_admin_export_sheets, build_invoice_excel_sheet, write_admin_export_workbook
+from spdxlims.cfdi_pac import (
+    CfdiError,
+    CfdiConfigError,
+    CfdiLineItem,
+    build_cfdi_document,
+    create_provider,
+    validate_for_stamping,
+)
 from spdxlims.database import (
     BillingCustomerRecord,
     ClientRecord,
@@ -324,6 +332,10 @@ class AdministrativePage(DataAwarePage):
         self.create_receipt_button.clicked.connect(self.create_receipt_for_selected_order)
         self.export_cfdi_button = QPushButton()
         self.export_cfdi_button.clicked.connect(self.export_selected_invoice_cfdi)
+        self.timbrar_invoice_button = QPushButton()
+        self.timbrar_invoice_button.clicked.connect(self.timbrar_selected_invoice)
+        self.cancel_cfdi_button = QPushButton()
+        self.cancel_cfdi_button.clicked.connect(self.cancel_selected_invoice_cfdi)
         self.print_invoice_button = QPushButton()
         self.print_invoice_button.clicked.connect(self.print_selected_invoice)
         self.export_invoice_pdf_button = QPushButton()
@@ -344,6 +356,8 @@ class AdministrativePage(DataAwarePage):
             self.export_invoice_excel_button,
             self.send_invoice_whatsapp_button,
             self.export_cfdi_button,
+            self.timbrar_invoice_button,
+            self.cancel_cfdi_button,
             self.delete_invoice_button,
         ]
         self._invoice_button_grid = button_row
@@ -553,6 +567,8 @@ class AdministrativePage(DataAwarePage):
             self.export_invoice_excel_button.setText(tr('Export Invoice Excel'))
             self.send_invoice_whatsapp_button.setText(tr('Send via WhatsApp'))
             self.export_cfdi_button.setText(tr('Export CFDI Preview XML'))
+            self.timbrar_invoice_button.setText(tr('Timbrar Factura (CFDI)'))
+            self.cancel_cfdi_button.setText(tr('Cancelar CFDI'))
             self.delete_invoice_button.setText(tr('Delete Invoice'))
             self.invoice_table.setHorizontalHeaderLabels([tr('Invoice Number'), tr('Customer'), tr('Invoice Date'), tr('Status'), tr('Total Amount'), tr('Orders')])
             self.receipt_table.setHorizontalHeaderLabels([tr('Receipt Number'), tr('Order Number'), tr('Customer'), tr('Patient'), tr('Receipt Date'), tr('Total Amount')])
@@ -1107,6 +1123,153 @@ class AdministrativePage(DataAwarePage):
         target = write_cfdi_preview_xml(path, settings=self.database.get_lab_settings(), client=client, invoice=invoice)
         QMessageBox.information(self, tr('Saved'), tr('CFDI preview saved: {path}', path=str(target)))
 
+    def _build_cfdi_line_items(self, invoice: InvoiceRecord) -> list[CfdiLineItem]:
+        """Conceptos for the CFDI, one per (panel, price) on the invoice.
+
+        Mirrors the panel breakdown shown on the printed invoice so the stamped
+        CFDI total matches what the customer sees. Zero-priced panels are
+        skipped; if nothing priced remains the document builder falls back to a
+        single concept covering the invoice total.
+        """
+        summary: dict[tuple[str, float], int] = {}
+        for row in self.database.list_invoice_order_panels(invoice.id):
+            name = str(row.get('panel') or tr('Panel'))
+            price = float(row.get('panel_total') or 0)
+            summary[(name, price)] = summary.get((name, price), 0) + 1
+        return [
+            CfdiLineItem(description=name, quantity=count, unit_price=price)
+            for (name, price), count in sorted(summary.items(), key=lambda item: item[0][0].lower())
+            if price > 0
+        ]
+
+    def _show_cfdi_error(self, title: str, exc: CfdiError) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Critical)
+        box.setWindowTitle(title)
+        box.setText(str(exc))
+        if getattr(exc, 'detail', None):
+            box.setDetailedText(str(exc.detail))
+        box.exec()
+
+    def timbrar_selected_invoice(self) -> None:
+        invoice = self._selected_invoice()
+        if invoice is None:
+            return
+        if (invoice.cfdi_status or '') == 'stamped' and invoice.cfdi_uuid:
+            QMessageBox.information(
+                self,
+                tr('Already Stamped'),
+                tr('This factura is already stamped. Folio Fiscal: {uuid}', uuid=invoice.cfdi_uuid),
+            )
+            return
+        if invoice.client_id is None:
+            QMessageBox.warning(self, tr('Missing Data'), tr('The selected invoice does not have a customer.'))
+            return
+        client = self.database.get_client(invoice.client_id)
+        if client is None:
+            QMessageBox.warning(self, tr('Missing Data'), tr('The selected invoice customer could not be loaded.'))
+            return
+        settings = self.database.get_lab_settings()
+        try:
+            document = build_cfdi_document(
+                invoice=invoice,
+                client=client,
+                settings=settings,
+                line_items=self._build_cfdi_line_items(invoice),
+                tax_treatment=(settings.cfdi_tax_treatment or 'exempt'),
+            )
+            validate_for_stamping(document, settings)
+        except (ValueError, CfdiConfigError) as exc:
+            QMessageBox.warning(self, tr('Cannot Stamp'), str(exc))
+            return
+        environment = (settings.pac_environment or 'sandbox').strip().lower()
+        env_label = tr('PRODUCTION (live SAT)') if environment == 'production' else tr('Sandbox (test)')
+        confirm = QMessageBox.question(
+            self,
+            tr('Timbrar Factura'),
+            tr(
+                'Stamp factura {number} for {client} — total {total} {currency} — through the PAC ({env})?\n\n'
+                'This issues a real CFDI and cannot be undone (it can only be cancelled).',
+                number=invoice.invoice_number,
+                client=client.name or '',
+                total=self._format_decimal(document.total),
+                currency=document.currency,
+                env=env_label,
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            provider = create_provider(settings)
+            stamped = provider.stamp(document)
+            xml_bytes = provider.fetch_xml(stamped.provider_id)
+            try:
+                pdf_bytes: bytes | None = provider.fetch_pdf(stamped.provider_id)
+            except CfdiError:
+                pdf_bytes = None  # XML is authoritative; PDF is a convenience.
+        except CfdiError as exc:
+            self._show_cfdi_error(tr('Stamping Failed'), exc)
+            return
+        cfdi_dir = self.database.db_path.parent / 'exports' / 'cfdi'
+        cfdi_dir.mkdir(parents=True, exist_ok=True)
+        safe = ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in invoice.invoice_number)
+        xml_path = cfdi_dir / f'{safe}_{stamped.uuid}.xml'
+        xml_path.write_bytes(xml_bytes)
+        pdf_path = None
+        if pdf_bytes:
+            pdf_path = cfdi_dir / f'{safe}_{stamped.uuid}.pdf'
+            pdf_path.write_bytes(pdf_bytes)
+        self.database.record_invoice_stamp(
+            invoice.id,
+            uuid=stamped.uuid,
+            provider_id=stamped.provider_id,
+            xml_path=str(xml_path),
+            pdf_path=str(pdf_path) if pdf_path else None,
+            stamped_at=datetime.now().isoformat(timespec='seconds'),
+        )
+        self.refresh_data()
+        if self.invoice_table.rowCount() > 0:
+            self.invoice_table.selectRow(0)
+        self.notify_data_changed()
+        QMessageBox.information(
+            self,
+            tr('Factura Stamped'),
+            tr('CFDI stamped. Folio Fiscal (UUID): {uuid}\nSaved XML: {xml}', uuid=stamped.uuid, xml=str(xml_path)),
+        )
+
+    def cancel_selected_invoice_cfdi(self) -> None:
+        invoice = self._selected_invoice()
+        if invoice is None:
+            return
+        if not (invoice.cfdi_uuid and invoice.cfdi_provider_id):
+            QMessageBox.warning(self, tr('Not Stamped'), tr('Only a stamped factura can be cancelled.'))
+            return
+        if (invoice.cfdi_status or '') == 'cancelled':
+            QMessageBox.information(self, tr('Already Cancelled'), tr('This CFDI is already cancelled.'))
+            return
+        confirm = QMessageBox.question(
+            self,
+            tr('Cancelar CFDI'),
+            tr('Cancel CFDI {uuid} at the PAC/SAT? This cannot be undone.', uuid=invoice.cfdi_uuid),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        settings = self.database.get_lab_settings()
+        try:
+            provider = create_provider(settings)
+            provider.cancel(invoice.cfdi_provider_id)
+        except CfdiError as exc:
+            self._show_cfdi_error(tr('Cancellation Failed'), exc)
+            return
+        self.database.mark_invoice_cfdi_cancelled(invoice.id)
+        self.refresh_data()
+        self.notify_data_changed()
+        QMessageBox.information(self, tr('CFDI Cancelled'), tr('The CFDI was cancelled at the PAC/SAT.'))
+
     def print_selected_invoice(self) -> None:
         invoice = self._selected_invoice()
         if invoice is None:
@@ -1364,6 +1527,7 @@ class AdministrativePage(DataAwarePage):
                     <div>{escape(tr("Payment Form"))}: {escape(invoice.payment_form or "")}</div>
                     <div>{escape(tr("Payment Method"))}: {escape(invoice.payment_method or "")}</div>
                     <div>{escape(tr("CFDI Use"))}: {escape(invoice.cfdi_use or "")}</div>
+                    {f'<div><b>{escape(tr("Folio Fiscal (UUID)"))}:</b> {escape(invoice.cfdi_uuid)}</div>' if invoice.cfdi_uuid else ''}
                 </div>
             </div>
             <div class="total">{escape(tr("Total"))}: {self._format_decimal(grand_total)} {currency}</div>

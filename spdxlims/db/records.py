@@ -63,6 +63,11 @@ class LabSettingsRecord:
     report_dob_col: str = "right"
     report_ordered_at_col: str = "right"
     report_reported_at_col: str = "right"
+    pac_provider: str = "facturama"
+    pac_environment: str = "sandbox"
+    pac_username: str = ""
+    pac_password: str = ""
+    cfdi_tax_treatment: str = "exempt"
 
 
 @dataclass(slots=True)
@@ -207,6 +212,12 @@ class InvoiceRecord:
     payment_method: str | None
     currency: str | None
     xml_path: str | None
+    cfdi_uuid: str | None = None
+    cfdi_status: str | None = None
+    cfdi_xml_path: str | None = None
+    cfdi_pdf_path: str | None = None
+    cfdi_provider_id: str | None = None
+    cfdi_stamped_at: str | None = None
 
 
 @dataclass(slots=True)

@@ -150,6 +150,12 @@ class SchemaMixin:
                     payment_method TEXT,
                     currency TEXT NOT NULL DEFAULT 'MXN',
                     xml_path TEXT,
+                    cfdi_uuid TEXT,
+                    cfdi_status TEXT NOT NULL DEFAULT 'none',
+                    cfdi_xml_path TEXT,
+                    cfdi_pdf_path TEXT,
+                    cfdi_provider_id TEXT,
+                    cfdi_stamped_at DATETIME,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (client_id) REFERENCES clients(id),
@@ -474,6 +480,11 @@ class SchemaMixin:
                     sat_postal_code TEXT NOT NULL DEFAULT '',
                     sat_certificate_path TEXT NOT NULL DEFAULT '',
                     sat_key_path TEXT NOT NULL DEFAULT '',
+                    pac_provider TEXT NOT NULL DEFAULT 'facturama',
+                    pac_environment TEXT NOT NULL DEFAULT 'sandbox',
+                    pac_username TEXT NOT NULL DEFAULT '',
+                    pac_password TEXT NOT NULL DEFAULT '',
+                    cfdi_tax_treatment TEXT NOT NULL DEFAULT 'exempt',
                     ui_language TEXT NOT NULL DEFAULT 'es',
                     report_flag_style TEXT NOT NULL DEFAULT 'arrows',
                     keep_panels_together INTEGER NOT NULL DEFAULT 0,
@@ -800,6 +811,18 @@ class SchemaMixin:
             connection.execute("ALTER TABLE invoices ADD COLUMN currency TEXT NOT NULL DEFAULT 'MXN'")
         if "xml_path" not in columns:
             connection.execute("ALTER TABLE invoices ADD COLUMN xml_path TEXT")
+        if "cfdi_uuid" not in columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN cfdi_uuid TEXT")
+        if "cfdi_status" not in columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN cfdi_status TEXT NOT NULL DEFAULT 'none'")
+        if "cfdi_xml_path" not in columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN cfdi_xml_path TEXT")
+        if "cfdi_pdf_path" not in columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN cfdi_pdf_path TEXT")
+        if "cfdi_provider_id" not in columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN cfdi_provider_id TEXT")
+        if "cfdi_stamped_at" not in columns:
+            connection.execute("ALTER TABLE invoices ADD COLUMN cfdi_stamped_at DATETIME")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS invoice_order_links (
@@ -851,6 +874,16 @@ class SchemaMixin:
             connection.execute("ALTER TABLE lab_settings ADD COLUMN sat_certificate_path TEXT NOT NULL DEFAULT ''")
         if "sat_key_path" not in columns:
             connection.execute("ALTER TABLE lab_settings ADD COLUMN sat_key_path TEXT NOT NULL DEFAULT ''")
+        if "pac_provider" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN pac_provider TEXT NOT NULL DEFAULT 'facturama'")
+        if "pac_environment" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN pac_environment TEXT NOT NULL DEFAULT 'sandbox'")
+        if "pac_username" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN pac_username TEXT NOT NULL DEFAULT ''")
+        if "pac_password" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN pac_password TEXT NOT NULL DEFAULT ''")
+        if "cfdi_tax_treatment" not in columns:
+            connection.execute("ALTER TABLE lab_settings ADD COLUMN cfdi_tax_treatment TEXT NOT NULL DEFAULT 'exempt'")
         if "report_flag_style" not in columns:
             connection.execute("ALTER TABLE lab_settings ADD COLUMN report_flag_style TEXT NOT NULL DEFAULT 'arrows'")
         if "keep_panels_together" not in columns:

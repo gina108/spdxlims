@@ -13,7 +13,7 @@ class SettingsMixin:
     def get_lab_settings(self) -> LabSettingsRecord:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT lab_name, address, phone, email, logo_path, header_image_path, footer_signature_image_path, report_footer, director_name, director_license, sat_rfc, sat_fiscal_regime, sat_postal_code, sat_certificate_path, sat_key_path, ui_language, report_flag_style, keep_panels_together, report_font_family, report_font_size, report_font_bold, report_abnormal_bold, report_subheading_font_family, report_subheading_font_size, report_subheading_font_bold, report_footer_gap_mm, ui_state, report_sex_format, report_date_format, report_show_doctor, report_show_client, report_show_sex, report_show_age, report_show_dob, report_show_ordered_at, report_show_reported_at FROM lab_settings WHERE id = 1"
+                "SELECT lab_name, address, phone, email, logo_path, header_image_path, footer_signature_image_path, report_footer, director_name, director_license, sat_rfc, sat_fiscal_regime, sat_postal_code, sat_certificate_path, sat_key_path, ui_language, report_flag_style, keep_panels_together, report_font_family, report_font_size, report_font_bold, report_abnormal_bold, report_subheading_font_family, report_subheading_font_size, report_subheading_font_bold, report_footer_gap_mm, ui_state, report_sex_format, report_date_format, report_show_doctor, report_show_client, report_show_sex, report_show_age, report_show_dob, report_show_ordered_at, report_show_reported_at, pac_provider, pac_environment, pac_username, pac_password, cfdi_tax_treatment FROM lab_settings WHERE id = 1"
             ).fetchone()
         return LabSettingsRecord(**dict(row))
 
@@ -23,7 +23,7 @@ class SettingsMixin:
         logo_path = self._copy_asset(payload.get("logo_path", ""), "logo")
         with self.connect() as connection:
             connection.execute(
-                "UPDATE lab_settings SET lab_name = ?, address = ?, phone = ?, email = ?, logo_path = ?, header_image_path = ?, footer_signature_image_path = ?, report_footer = ?, director_name = ?, director_license = ?, sat_rfc = ?, sat_fiscal_regime = ?, sat_postal_code = ?, sat_certificate_path = ?, sat_key_path = ?, ui_language = ?, report_flag_style = ?, keep_panels_together = ?, report_font_family = ?, report_font_size = ?, report_font_bold = ?, report_abnormal_bold = ?, report_subheading_font_family = ?, report_subheading_font_size = ?, report_subheading_font_bold = ?, report_footer_gap_mm = ?, ui_state = ?, report_sex_format = ?, report_date_format = ?, report_show_doctor = ?, report_show_client = ?, report_show_sex = ?, report_show_age = ?, report_show_dob = ?, report_show_ordered_at = ?, report_show_reported_at = ?, report_doctor_col = ?, report_client_col = ?, report_sex_col = ?, report_age_col = ?, report_dob_col = ?, report_ordered_at_col = ?, report_reported_at_col = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                "UPDATE lab_settings SET lab_name = ?, address = ?, phone = ?, email = ?, logo_path = ?, header_image_path = ?, footer_signature_image_path = ?, report_footer = ?, director_name = ?, director_license = ?, sat_rfc = ?, sat_fiscal_regime = ?, sat_postal_code = ?, sat_certificate_path = ?, sat_key_path = ?, ui_language = ?, report_flag_style = ?, keep_panels_together = ?, report_font_family = ?, report_font_size = ?, report_font_bold = ?, report_abnormal_bold = ?, report_subheading_font_family = ?, report_subheading_font_size = ?, report_subheading_font_bold = ?, report_footer_gap_mm = ?, ui_state = ?, report_sex_format = ?, report_date_format = ?, report_show_doctor = ?, report_show_client = ?, report_show_sex = ?, report_show_age = ?, report_show_dob = ?, report_show_ordered_at = ?, report_show_reported_at = ?, report_doctor_col = ?, report_client_col = ?, report_sex_col = ?, report_age_col = ?, report_dob_col = ?, report_ordered_at_col = ?, report_reported_at_col = ?, pac_provider = ?, pac_environment = ?, pac_username = ?, pac_password = ?, cfdi_tax_treatment = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
                 (
                     payload.get("lab_name", "").strip(),
                     payload.get("address", "").strip(),
@@ -68,6 +68,11 @@ class SettingsMixin:
                     payload.get("report_dob_col", "right").strip() or "right",
                     payload.get("report_ordered_at_col", "right").strip() or "right",
                     payload.get("report_reported_at_col", "right").strip() or "right",
+                    payload.get("pac_provider", "facturama").strip() or "facturama",
+                    payload.get("pac_environment", "sandbox").strip() or "sandbox",
+                    payload.get("pac_username", "").strip(),
+                    payload.get("pac_password", ""),
+                    payload.get("cfdi_tax_treatment", "exempt").strip() or "exempt",
                 ),
             )
 

@@ -467,13 +467,15 @@ class BillingMixin:
                            WHEN COUNT(iol.order_id) > 0 THEN CAST(COUNT(iol.order_id) AS TEXT) || ' orders'
                            ELSE NULL
                        END AS order_number,
-                       i.invoice_date, i.status, i.total_amount, i.notes, i.cfdi_use, i.payment_form, i.payment_method, i.currency, i.xml_path
+                       i.invoice_date, i.status, i.total_amount, i.notes, i.cfdi_use, i.payment_form, i.payment_method, i.currency, i.xml_path,
+                       i.cfdi_uuid, i.cfdi_status, i.cfdi_xml_path, i.cfdi_pdf_path, i.cfdi_provider_id, i.cfdi_stamped_at
                 FROM invoices i
                 LEFT JOIN clients c ON c.id = i.client_id
                 LEFT JOIN orders o ON o.id = i.order_id
                 LEFT JOIN invoice_order_links iol ON iol.invoice_id = i.id
                 GROUP BY i.id, i.invoice_number, i.client_id, c.name, i.order_id, o.order_number,
-                         i.invoice_date, i.status, i.total_amount, i.notes, i.cfdi_use, i.payment_form, i.payment_method, i.currency, i.xml_path
+                         i.invoice_date, i.status, i.total_amount, i.notes, i.cfdi_use, i.payment_form, i.payment_method, i.currency, i.xml_path,
+                         i.cfdi_uuid, i.cfdi_status, i.cfdi_xml_path, i.cfdi_pdf_path, i.cfdi_provider_id, i.cfdi_stamped_at
                 ORDER BY i.invoice_date DESC, i.id DESC
                 """
             ).fetchall()
@@ -692,3 +694,71 @@ class BillingMixin:
                 "DELETE FROM invoices WHERE id = ?", (int(invoice_id),)
             )
             return cursor.rowcount > 0
+
+    def get_invoice(self, invoice_id: int) -> InvoiceRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT i.id, i.invoice_number, i.client_id, c.name AS client_name,
+                       i.order_id, o.order_number,
+                       i.invoice_date, i.status, i.total_amount, i.notes, i.cfdi_use,
+                       i.payment_form, i.payment_method, i.currency, i.xml_path,
+                       i.cfdi_uuid, i.cfdi_status, i.cfdi_xml_path, i.cfdi_pdf_path,
+                       i.cfdi_provider_id, i.cfdi_stamped_at
+                FROM invoices i
+                LEFT JOIN clients c ON c.id = i.client_id
+                LEFT JOIN orders o ON o.id = i.order_id
+                WHERE i.id = ?
+                """,
+                (int(invoice_id),),
+            ).fetchone()
+        return InvoiceRecord(**dict(row)) if row is not None else None
+
+    def record_invoice_stamp(
+        self,
+        invoice_id: int,
+        *,
+        uuid: str,
+        provider_id: str,
+        xml_path: str | None = None,
+        pdf_path: str | None = None,
+        stamped_at: str,
+    ) -> None:
+        """Persist the PAC stamping result and mark the invoice issued + stamped."""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE invoices
+                SET cfdi_uuid = ?,
+                    cfdi_provider_id = ?,
+                    cfdi_xml_path = ?,
+                    cfdi_pdf_path = ?,
+                    cfdi_status = 'stamped',
+                    cfdi_stamped_at = ?,
+                    status = CASE WHEN status = 'draft' THEN 'issued' ELSE status END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    uuid.strip(),
+                    str(provider_id).strip(),
+                    xml_path or None,
+                    pdf_path or None,
+                    stamped_at,
+                    int(invoice_id),
+                ),
+            )
+
+    def mark_invoice_cfdi_cancelled(self, invoice_id: int) -> None:
+        """Mark a stamped invoice's CFDI as cancelled at the PAC/SAT."""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE invoices
+                SET cfdi_status = 'cancelled',
+                    status = 'cancelled',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (int(invoice_id),),
+            )

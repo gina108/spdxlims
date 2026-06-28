@@ -241,6 +241,18 @@ class SettingsPage(DataAwarePage):
         self.sat_postal_code = QLineEdit()
         self.sat_certificate_path = QLineEdit()
         self.sat_key_path = QLineEdit()
+        self.pac_provider = QComboBox()
+        self.pac_provider.addItem('Facturama', 'facturama')
+        self.pac_environment = QComboBox()
+        self.pac_environment.addItem(tr('Sandbox (testing)'), 'sandbox')
+        self.pac_environment.addItem(tr('Production (live)'), 'production')
+        self.pac_username = QLineEdit()
+        self.pac_password = QLineEdit()
+        self.pac_password.setEchoMode(QLineEdit.Password)
+        self.cfdi_tax_treatment = QComboBox()
+        self.cfdi_tax_treatment.addItem(tr('Exempt (no IVA)'), 'exempt')
+        self.cfdi_tax_treatment.addItem(tr('IVA 16%'), 'iva16')
+        self.cfdi_tax_treatment.addItem(tr('Zero-rated (IVA 0%)'), 'zero')
         self.language_combo = QComboBox()
 
         for code, label in SUPPORTED_LANGUAGES:
@@ -434,6 +446,11 @@ class SettingsPage(DataAwarePage):
         self._add_lab_row("sat_postal_code", self.sat_postal_code)
         self._add_lab_row("sat_certificate_path", self.sat_certificate_path)
         self._add_lab_row("sat_key_path", self.sat_key_path)
+        self._add_lab_row("pac_provider", self.pac_provider)
+        self._add_lab_row("pac_environment", self.pac_environment)
+        self._add_lab_row("pac_username", self.pac_username)
+        self._add_lab_row("pac_password", self.pac_password)
+        self._add_lab_row("cfdi_tax_treatment", self.cfdi_tax_treatment)
         self._add_lab_row("language", self.language_combo)
 
         self._add_report_row("logo", self.logo_row)
@@ -720,6 +737,11 @@ class SettingsPage(DataAwarePage):
         self.lab_labels["sat_postal_code"].setText(tr("Lab Postal Code"))
         self.lab_labels["sat_certificate_path"].setText(tr("CSD Certificate Path"))
         self.lab_labels["sat_key_path"].setText(tr("CSD Key Path"))
+        self.lab_labels["pac_provider"].setText(tr("PAC Provider"))
+        self.lab_labels["pac_environment"].setText(tr("PAC Environment"))
+        self.lab_labels["pac_username"].setText(tr("PAC Username"))
+        self.lab_labels["pac_password"].setText(tr("PAC Password"))
+        self.lab_labels["cfdi_tax_treatment"].setText(tr("CFDI Tax Treatment"))
         self.lab_labels["language"].setText(tr("Language"))
         self.report_labels["logo"].setText(tr("Logo"))
         self.report_labels["header"].setText(tr("Header Banner"))
@@ -939,6 +961,14 @@ class SettingsPage(DataAwarePage):
         self.sat_postal_code.setText(settings.sat_postal_code)
         self.sat_certificate_path.setText(settings.sat_certificate_path)
         self.sat_key_path.setText(settings.sat_key_path)
+        pac_provider_index = self.pac_provider.findData(settings.pac_provider or 'facturama')
+        self.pac_provider.setCurrentIndex(pac_provider_index if pac_provider_index >= 0 else 0)
+        pac_env_index = self.pac_environment.findData(settings.pac_environment or 'sandbox')
+        self.pac_environment.setCurrentIndex(pac_env_index if pac_env_index >= 0 else 0)
+        self.pac_username.setText(settings.pac_username)
+        self.pac_password.setText(settings.pac_password)
+        tax_index = self.cfdi_tax_treatment.findData(settings.cfdi_tax_treatment or 'exempt')
+        self.cfdi_tax_treatment.setCurrentIndex(tax_index if tax_index >= 0 else 0)
         index = self.language_combo.findData(settings.ui_language)
         self.language_combo.setCurrentIndex(index if index >= 0 else 0)
         self._load_header_library()
@@ -1227,6 +1257,11 @@ class SettingsPage(DataAwarePage):
             "sat_postal_code": self.sat_postal_code.text(),
             "sat_certificate_path": self.sat_certificate_path.text(),
             "sat_key_path": self.sat_key_path.text(),
+            "pac_provider": self.pac_provider.currentData() or "facturama",
+            "pac_environment": self.pac_environment.currentData() or "sandbox",
+            "pac_username": self.pac_username.text(),
+            "pac_password": self.pac_password.text(),
+            "cfdi_tax_treatment": self.cfdi_tax_treatment.currentData() or "exempt",
             "ui_language": self.language_combo.currentData(),
         }
         self.database.save_lab_settings(settings_payload)
