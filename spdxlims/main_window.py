@@ -314,8 +314,6 @@ class MainWindow(QMainWindow):
                 self.page_builders["admin_prices"] = lambda: PricesPage(self.database, self.deployment_service)
                 self.page_builders["admin_invoices"] = lambda: AdministrativePage(self.database, section_mode="collections")
                 self.page_builders["admin_inventory"] = lambda: AdministrativePage(self.database, section_mode="inventory")
-                self.page_builders["admin_reports"] = lambda: ReportsPage(self.database, self.deployment_service)
-                self.nav_entries.append(("admin_reports", "admin_reports", "Reportes", ("administrative",)))
                 self.nav_entries.append(("admin_inventory", "admin_inventory", "Inventario", ("administrative",)))
                 self.nav_entries.append(("admin_prices", "admin_prices", "Precios", ("administrative",)))
                 self.nav_entries.append(("admin_invoices", "admin_invoices", "Cobranza de clientes", ("administrative",)))
@@ -351,7 +349,7 @@ class MainWindow(QMainWindow):
                         workspaces,
                     )
                 )
-        self.workspace_targets["administrative"] = self._find_nav_page_key("Reportes", "administrative")
+        self.workspace_targets["administrative"] = self._find_nav_page_key("Statistics", "administrative")
         self.workspace_targets["equipment"] = self._find_nav_page_key("Equipment", "equipment")
         self.workspace_targets["invoices"] = self._find_nav_page_key("Portal", "invoices")
         self.workspace_targets["pdf_tables"] = self._find_nav_page_key("PDF Tables", "pdf_tables")
