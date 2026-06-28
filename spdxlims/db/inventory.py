@@ -33,6 +33,41 @@ class InventoryMixin:
             )
             return int(cursor.lastrowid)
 
+    def get_inventory_item(self, item_id: int) -> InventoryItemRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT id, sku, name, unit, on_hand, reorder_level, unit_cost FROM inventory_items WHERE id = ?",
+                (int(item_id),),
+            ).fetchone()
+        return InventoryItemRecord(**dict(row)) if row is not None else None
+
+    def update_inventory_item(self, item_id: int, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE inventory_items SET sku = ?, name = ?, unit = ?, on_hand = ?, reorder_level = ?, unit_cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (
+                    payload["sku"].strip(),
+                    payload["name"].strip(),
+                    payload.get("unit") or None,
+                    payload.get("on_hand") or 0,
+                    payload.get("reorder_level") or 0,
+                    payload.get("unit_cost") or 0,
+                    int(item_id),
+                ),
+            )
+
+    def inventory_item_has_movements(self, item_id: int) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM inventory_movements WHERE inventory_item_id = ? LIMIT 1",
+                (int(item_id),),
+            ).fetchone()
+        return row is not None
+
+    def delete_inventory_item(self, item_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM inventory_items WHERE id = ?", (int(item_id),))
+
     def list_suppliers(self) -> list[SupplierRecord]:
         with self.connect() as connection:
             rows = connection.execute("SELECT id, name, phone, email, tax_id FROM suppliers ORDER BY name, id").fetchall()
@@ -50,6 +85,39 @@ class InventoryMixin:
                 (payload["name"].strip(), payload.get("phone") or None, payload.get("email") or None, payload.get("tax_id") or None),
             )
             return int(cursor.lastrowid)
+
+    def get_supplier(self, supplier_id: int) -> SupplierRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT id, name, phone, email, tax_id FROM suppliers WHERE id = ?",
+                (int(supplier_id),),
+            ).fetchone()
+        return SupplierRecord(**dict(row)) if row is not None else None
+
+    def update_supplier(self, supplier_id: int, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE suppliers SET name = ?, phone = ?, email = ?, tax_id = ? WHERE id = ?",
+                (
+                    payload["name"].strip(),
+                    payload.get("phone") or None,
+                    payload.get("email") or None,
+                    payload.get("tax_id") or None,
+                    int(supplier_id),
+                ),
+            )
+
+    def supplier_has_movements(self, supplier_id: int) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM inventory_movements WHERE supplier_id = ? LIMIT 1",
+                (int(supplier_id),),
+            ).fetchone()
+        return row is not None
+
+    def delete_supplier(self, supplier_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM suppliers WHERE id = ?", (int(supplier_id),))
 
     def list_inventory_movements(self) -> list[InventoryMovementRecord]:
         with self.connect() as connection:

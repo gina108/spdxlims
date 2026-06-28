@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from PySide6.QtCore import QDate, QMarginsF, QSize, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QPageLayout, QPageSize, QTextDocument
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPageLayout, QPageSize, QTextDocument
 from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter
 from PySide6.QtWidgets import (
     QDialog,
@@ -70,6 +70,10 @@ class AdministrativePage(DataAwarePage):
         self.filtered_doctor_records: list[DoctorRecord] = []
         self.doctor_status_filter = 'active'
         self.inventory_records: list[InventoryItemRecord] = []
+        self.filtered_inventory_records: list[InventoryItemRecord] = []
+        self.editing_inventory_id: int | None = None
+        self.filtered_supplier_records: list[SupplierRecord] = []
+        self.editing_supplier_id: int | None = None
         self.invoice_records: list[InvoiceRecord] = []
         self.receipt_records: list[ReceiptRecord] = []
         self.supplier_records: list[SupplierRecord] = []
@@ -194,6 +198,12 @@ class AdministrativePage(DataAwarePage):
         self.inventory_info = QLabel()
         self.inventory_info.setWordWrap(True)
         layout.addWidget(self.inventory_info)
+        self.inventory_search = QLineEdit()
+        self.inventory_search.textChanged.connect(self.refresh_inventory_table)
+        layout.addWidget(self.inventory_search)
+        self.inventory_summary_label = QLabel()
+        self.inventory_summary_label.setWordWrap(True)
+        layout.addWidget(self.inventory_summary_label)
         form = QFormLayout()
         self.inventory_labels: dict[str, QLabel] = {}
         self.inventory_sku = QLineEdit()
@@ -207,12 +217,25 @@ class AdministrativePage(DataAwarePage):
             self.inventory_labels[key] = label
             form.addRow(label, field)
         layout.addLayout(form)
+        button_row = QHBoxLayout()
         self.save_inventory_button = QPushButton()
         self.save_inventory_button.clicked.connect(self.save_inventory_item)
-        layout.addWidget(self.save_inventory_button, alignment=Qt.AlignRight)
+        self.clear_inventory_button = QPushButton()
+        self.clear_inventory_button.clicked.connect(self.clear_inventory_form)
+        self.delete_inventory_button = QPushButton()
+        self.delete_inventory_button.clicked.connect(self.delete_selected_inventory_item)
+        self.delete_inventory_button.setVisible(False)
+        button_row.addStretch(1)
+        button_row.addWidget(self.delete_inventory_button)
+        button_row.addWidget(self.clear_inventory_button)
+        button_row.addWidget(self.save_inventory_button)
+        layout.addLayout(button_row)
         self.inventory_table = QTableWidget(0, 6)
         self.inventory_table.setObjectName('recentPatientsTable')
         self.inventory_table.horizontalHeader().setStretchLastSection(True)
+        self.inventory_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.inventory_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.inventory_table.cellDoubleClicked.connect(lambda row, _col: self.load_inventory_item_for_edit(row))
         layout.addWidget(self.inventory_table)
         return self.inventory_group
 
@@ -232,12 +255,25 @@ class AdministrativePage(DataAwarePage):
             self.supplier_labels[key] = label
             form.addRow(label, field)
         layout.addLayout(form)
+        supplier_button_row = QHBoxLayout()
         self.save_supplier_button = QPushButton()
         self.save_supplier_button.clicked.connect(self.save_supplier)
-        layout.addWidget(self.save_supplier_button, alignment=Qt.AlignRight)
+        self.clear_supplier_button = QPushButton()
+        self.clear_supplier_button.clicked.connect(self.clear_supplier_form)
+        self.delete_supplier_button = QPushButton()
+        self.delete_supplier_button.clicked.connect(self.delete_selected_supplier)
+        self.delete_supplier_button.setVisible(False)
+        supplier_button_row.addStretch(1)
+        supplier_button_row.addWidget(self.delete_supplier_button)
+        supplier_button_row.addWidget(self.clear_supplier_button)
+        supplier_button_row.addWidget(self.save_supplier_button)
+        layout.addLayout(supplier_button_row)
         self.supplier_table = QTableWidget(0, 4)
         self.supplier_table.setObjectName('recentPatientsTable')
         self.supplier_table.horizontalHeader().setStretchLastSection(True)
+        self.supplier_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.supplier_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.supplier_table.cellDoubleClicked.connect(lambda row, _col: self.load_supplier_for_edit(row))
         layout.addWidget(self.supplier_table)
         return self.supplier_group
 
@@ -253,7 +289,9 @@ class AdministrativePage(DataAwarePage):
         self.movement_type = QComboBox()
         self.movement_quantity = QLineEdit('0')
         self.movement_cost = QLineEdit('0')
-        self.movement_date = QLineEdit(date.today().isoformat())
+        self.movement_date = QDateEdit(QDate.currentDate())
+        self.movement_date.setCalendarPopup(True)
+        self.movement_date.setDisplayFormat('yyyy-MM-dd')
         self.movement_notes = QLineEdit()
         for key, field in [('movement_inventory', self.movement_inventory), ('movement_supplier', self.movement_supplier), ('movement_type', self.movement_type), ('movement_quantity', self.movement_quantity), ('movement_cost', self.movement_cost), ('movement_date', self.movement_date), ('movement_notes', self.movement_notes)]:
             label = QLabel()
@@ -457,17 +495,22 @@ class AdministrativePage(DataAwarePage):
 
         if hasattr(self, 'inventory_group'):
             self.inventory_group.setTitle(tr('Inventory'))
-            self.inventory_info.setText(tr('Track stock, reorder thresholds, and unit cost for consumables.'))
+            self.inventory_info.setText(tr('Track stock, reorder thresholds, and unit cost for consumables. Double-click an item to edit it.'))
+            self.inventory_search.setPlaceholderText(tr('Search inventory'))
             for key, label in [('inventory_sku','SKU'),('inventory_name','Name'),('inventory_unit','Unit'),('inventory_on_hand','On Hand'),('inventory_reorder','Reorder Level'),('inventory_cost','Unit Cost')]:
                 self.inventory_labels[key].setText(tr(label))
-            self.save_inventory_button.setText(tr('Save Inventory Item'))
+            self.clear_inventory_button.setText(tr('Clear'))
+            self.delete_inventory_button.setText(tr('Delete Inventory Item'))
+            self._update_inventory_form_mode()
             self.inventory_table.setHorizontalHeaderLabels([tr('SKU'), tr('Name'), tr('Unit'), tr('On Hand'), tr('Reorder Level'), tr('Unit Cost')])
 
             self.supplier_group.setTitle(tr('Suppliers'))
-            self.supplier_info.setText(tr('Maintain supplier records for purchases and stock movements.'))
+            self.supplier_info.setText(tr('Maintain supplier records for purchases and stock movements. Double-click a supplier to edit it.'))
             for key, label in [('supplier_name','Supplier Name'),('supplier_tax_id','Tax ID (RFC)'),('supplier_phone','Phone'),('supplier_email','Email')]:
                 self.supplier_labels[key].setText(tr(label))
-            self.save_supplier_button.setText(tr('Save Supplier'))
+            self.clear_supplier_button.setText(tr('Clear'))
+            self.delete_supplier_button.setText(tr('Delete Supplier'))
+            self._update_supplier_form_mode()
             self.supplier_table.setHorizontalHeaderLabels([tr('Supplier Name'), tr('Tax ID (RFC)'), tr('Phone'), tr('Email')])
 
             self.movement_group.setTitle(tr('Stock Movements'))
@@ -676,11 +719,44 @@ class AdministrativePage(DataAwarePage):
         self.doctor_status_filter = str(self.doctor_filter_combo.currentData() or 'active')
         self.refresh_doctor_table()
 
+    @staticmethod
+    def _is_low_stock(record: InventoryItemRecord) -> bool:
+        return float(record.reorder_level) > 0 and float(record.on_hand) <= float(record.reorder_level)
+
     def refresh_inventory_table(self) -> None:
-        self.set_table_rows(self.inventory_table, [(r.sku, r.name, r.unit or '', self._format_decimal(r.on_hand), self._format_decimal(r.reorder_level), self._format_decimal(r.unit_cost)) for r in self.inventory_records])
+        query = self.inventory_search.text().strip().lower()
+        self.filtered_inventory_records = [
+            record for record in self.inventory_records
+            if not query or query in ' '.join([record.sku, record.name, record.unit or '']).lower()
+        ]
+        self.set_table_rows(self.inventory_table, [
+            (r.sku, r.name, r.unit or '', self._format_decimal(r.on_hand), self._format_decimal(r.reorder_level), self._format_decimal(r.unit_cost))
+            for r in self.filtered_inventory_records
+        ])
+        low_background = QBrush(QColor('#7a3030'))
+        low_foreground = QBrush(QColor('#ffffff'))
+        for row_index, record in enumerate(self.filtered_inventory_records):
+            if not self._is_low_stock(record):
+                continue
+            for column in range(self.inventory_table.columnCount()):
+                cell = self.inventory_table.item(row_index, column)
+                if cell is not None:
+                    cell.setBackground(low_background)
+                    cell.setForeground(low_foreground)
+        total_value = sum(float(r.on_hand) * float(r.unit_cost) for r in self.inventory_records)
+        low_count = sum(1 for r in self.inventory_records if self._is_low_stock(r))
+        reorder_text = (
+            tr('{count} items need reordering', count=str(low_count))
+            if low_count
+            else tr('All items above reorder level')
+        )
+        self.inventory_summary_label.setText(
+            tr('Total inventory value: {value}', value=self._format_decimal(total_value)) + '  •  ' + reorder_text
+        )
 
     def refresh_supplier_table(self) -> None:
-        self.set_table_rows(self.supplier_table, [(r.name, r.tax_id or '', r.phone or '', r.email or '') for r in self.supplier_records])
+        self.filtered_supplier_records = list(self.supplier_records)
+        self.set_table_rows(self.supplier_table, [(r.name, r.tax_id or '', r.phone or '', r.email or '') for r in self.filtered_supplier_records])
 
     def refresh_movement_table(self) -> None:
         self.set_table_rows(self.movement_table, [(r.inventory_name, r.supplier_name or '', self._format_movement_type(r.movement_type), self._format_decimal(r.quantity), self._format_decimal(r.unit_cost), r.movement_date) for r in self.movement_records[:25]])
@@ -739,36 +815,129 @@ class AdministrativePage(DataAwarePage):
             QMessageBox.warning(self, tr('Missing Data'), tr('SKU and inventory name are required.'))
             return
         try:
-            self.database.create_inventory_item({'sku': self.inventory_sku.text(), 'name': self.inventory_name.text(), 'unit': self.inventory_unit.text(), 'on_hand': self._parse_decimal(self.inventory_on_hand.text()), 'reorder_level': self._parse_decimal(self.inventory_reorder.text()), 'unit_cost': self._parse_decimal(self.inventory_cost.text())})
+            payload = {
+                'sku': self.inventory_sku.text(),
+                'name': self.inventory_name.text(),
+                'unit': self.inventory_unit.text(),
+                'on_hand': self._parse_decimal(self.inventory_on_hand.text()),
+                'reorder_level': self._parse_decimal(self.inventory_reorder.text()),
+                'unit_cost': self._parse_decimal(self.inventory_cost.text()),
+            }
+            if self.editing_inventory_id is not None:
+                self.database.update_inventory_item(self.editing_inventory_id, payload)
+            else:
+                self.database.create_inventory_item(payload)
         except ValueError:
             QMessageBox.warning(self, tr('Invalid Data'), tr('Inventory quantities and cost must be numeric.'))
             return
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr('Save Failed'), str(exc))
             return
-        for field, value in [(self.inventory_sku,''),(self.inventory_name,''),(self.inventory_unit,''),(self.inventory_on_hand,'0'),(self.inventory_reorder,'0'),(self.inventory_cost,'0')]:
-            field.setText(value)
+        self.clear_inventory_form()
         self.refresh_data()
+        self.notify_data_changed()
+
+    def load_inventory_item_for_edit(self, row: int) -> None:
+        if row < 0 or row >= len(self.filtered_inventory_records):
+            return
+        record = self.filtered_inventory_records[row]
+        self.editing_inventory_id = record.id
+        self.inventory_sku.setText(record.sku)
+        self.inventory_name.setText(record.name)
+        self.inventory_unit.setText(record.unit or '')
+        self.inventory_on_hand.setText(self._format_decimal(record.on_hand))
+        self.inventory_reorder.setText(self._format_decimal(record.reorder_level))
+        self.inventory_cost.setText(self._format_decimal(record.unit_cost))
+        self._update_inventory_form_mode()
+
+    def clear_inventory_form(self) -> None:
+        self.editing_inventory_id = None
+        for field, value in [(self.inventory_sku, ''), (self.inventory_name, ''), (self.inventory_unit, ''), (self.inventory_on_hand, '0'), (self.inventory_reorder, '0'), (self.inventory_cost, '0')]:
+            field.setText(value)
+        self.inventory_table.clearSelection()
+        self._update_inventory_form_mode()
+
+    def delete_selected_inventory_item(self) -> None:
+        if self.editing_inventory_id is None:
+            QMessageBox.warning(self, tr('Missing Selection'), tr('Select an inventory item first.'))
+            return
+        if self.database.inventory_item_has_movements(self.editing_inventory_id):
+            QMessageBox.warning(self, tr('Delete Failed'), tr('This item has stock movements and cannot be deleted.'))
+            return
+        confirm = QMessageBox.question(self, tr('Delete Inventory Item'), tr('Delete this inventory item?'), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        self.database.delete_inventory_item(self.editing_inventory_id)
+        self.clear_inventory_form()
+        self.refresh_data()
+        self.notify_data_changed()
+
+    def _update_inventory_form_mode(self) -> None:
+        editing = self.editing_inventory_id is not None
+        self.save_inventory_button.setText(tr('Update Inventory Item') if editing else tr('Save Inventory Item'))
+        self.delete_inventory_button.setVisible(editing)
 
     def save_supplier(self) -> None:
         if not self.supplier_name.text().strip():
             QMessageBox.warning(self, tr('Missing Data'), tr('Supplier name is required.'))
             return
         try:
-            self.database.create_supplier({'name': self.supplier_name.text(), 'tax_id': self.supplier_tax_id.text(), 'phone': self.supplier_phone.text(), 'email': self.supplier_email.text()})
+            payload = {'name': self.supplier_name.text(), 'tax_id': self.supplier_tax_id.text(), 'phone': self.supplier_phone.text(), 'email': self.supplier_email.text()}
+            if self.editing_supplier_id is not None:
+                self.database.update_supplier(self.editing_supplier_id, payload)
+            else:
+                self.database.create_supplier(payload)
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr('Save Failed'), str(exc))
             return
+        self.clear_supplier_form()
+        self.refresh_data()
+        self.notify_data_changed()
+
+    def load_supplier_for_edit(self, row: int) -> None:
+        if row < 0 or row >= len(self.filtered_supplier_records):
+            return
+        record = self.filtered_supplier_records[row]
+        self.editing_supplier_id = record.id
+        self.supplier_name.setText(record.name)
+        self.supplier_tax_id.setText(record.tax_id or '')
+        self.supplier_phone.setText(record.phone or '')
+        self.supplier_email.setText(record.email or '')
+        self._update_supplier_form_mode()
+
+    def clear_supplier_form(self) -> None:
+        self.editing_supplier_id = None
         for field in [self.supplier_name, self.supplier_tax_id, self.supplier_phone, self.supplier_email]:
             field.clear()
+        self.supplier_table.clearSelection()
+        self._update_supplier_form_mode()
+
+    def delete_selected_supplier(self) -> None:
+        if self.editing_supplier_id is None:
+            QMessageBox.warning(self, tr('Missing Selection'), tr('Select a supplier first.'))
+            return
+        if self.database.supplier_has_movements(self.editing_supplier_id):
+            QMessageBox.warning(self, tr('Delete Failed'), tr('This supplier is used by stock movements and cannot be deleted.'))
+            return
+        confirm = QMessageBox.question(self, tr('Delete Supplier'), tr('Delete this supplier?'), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        self.database.delete_supplier(self.editing_supplier_id)
+        self.clear_supplier_form()
         self.refresh_data()
+        self.notify_data_changed()
+
+    def _update_supplier_form_mode(self) -> None:
+        editing = self.editing_supplier_id is not None
+        self.save_supplier_button.setText(tr('Update Supplier') if editing else tr('Save Supplier'))
+        self.delete_supplier_button.setVisible(editing)
 
     def save_inventory_movement(self) -> None:
         if self.movement_inventory.currentData() is None:
             QMessageBox.warning(self, tr('Missing Data'), tr('Select inventory item'))
             return
         try:
-            self.database.create_inventory_movement({'inventory_item_id': self.movement_inventory.currentData(), 'supplier_id': self.movement_supplier.currentData(), 'movement_type': self.movement_type.currentData(), 'quantity': self._parse_decimal(self.movement_quantity.text()), 'unit_cost': self._parse_decimal(self.movement_cost.text()), 'movement_date': self.movement_date.text().strip(), 'notes': self.movement_notes.text()})
+            self.database.create_inventory_movement({'inventory_item_id': self.movement_inventory.currentData(), 'supplier_id': self.movement_supplier.currentData(), 'movement_type': self.movement_type.currentData(), 'quantity': self._parse_decimal(self.movement_quantity.text()), 'unit_cost': self._parse_decimal(self.movement_cost.text()), 'movement_date': self.movement_date.date().toString('yyyy-MM-dd'), 'notes': self.movement_notes.text()})
         except ValueError:
             QMessageBox.warning(self, tr('Invalid Data'), tr('Inventory quantities and cost must be numeric.'))
             return
@@ -776,6 +945,7 @@ class AdministrativePage(DataAwarePage):
         self.movement_cost.setText('0')
         self.movement_notes.clear()
         self.refresh_data()
+        self.notify_data_changed()
 
     def sync_invoice_client_defaults(self) -> None:
         client_id = self.invoice_client.currentData()
