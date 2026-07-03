@@ -431,6 +431,140 @@ class ReportEditorDialog(QDialog):
 
         self._populate_items_table()
 
+        # Extracted (outsourced PDF) rows are editable in their own table, shown
+        # only when the order has outsourced panels.
+        self.outsourced_table: QTableWidget | None = None
+        self._outsourced_edited = False
+        self._outsourced_sources: dict[str, str] = {}
+        self._panel_labels: list[str] = []
+        for section in list(self._preview.get("outsourced_panels") or []):
+            label = str(section.get("panel_label") or "").strip()
+            if not label:
+                continue
+            if label not in self._panel_labels:
+                self._panel_labels.append(label)
+            self._outsourced_sources.setdefault(label, str(section.get("source_pdf_path") or ""))
+        if self._panel_labels:
+            self._build_outsourced_editor(layout)
+
+    def _build_outsourced_editor(self, layout: QVBoxLayout) -> None:
+        header = QHBoxLayout()
+        header.addWidget(QLabel(tr("Extracted Panel Rows (PDF)")))
+        header.addStretch(1)
+        add_button = QPushButton(tr("Fila en blanca"))
+        add_button.clicked.connect(self._add_outsourced_row)
+        header.addWidget(add_button)
+        remove_button = QPushButton(tr("Delete Selected Row"))
+        remove_button.clicked.connect(self._remove_selected_outsourced_row)
+        header.addWidget(remove_button)
+        move_up_button = QPushButton(tr("Move Up"))
+        move_up_button.clicked.connect(lambda: self._move_outsourced_row(-1))
+        header.addWidget(move_up_button)
+        move_down_button = QPushButton(tr("Move Down"))
+        move_down_button.clicked.connect(lambda: self._move_outsourced_row(1))
+        header.addWidget(move_down_button)
+        layout.addLayout(header)
+
+        self.outsourced_table = QTableWidget(0, 6)
+        self.outsourced_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.outsourced_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.outsourced_table.setHorizontalHeaderLabels(
+            [tr("Panel"), tr("Test"), tr("Flag"), tr("Result"), tr("Unit"), tr("Reference")]
+        )
+        self.outsourced_table.setColumnWidth(0, 170)
+        self.outsourced_table.horizontalHeader().setStretchLastSection(True)
+        self.outsourced_table.verticalHeader().setDefaultSectionSize(40)
+        layout.addWidget(self.outsourced_table, 1)
+        self._populate_outsourced_table()
+
+    def _populate_outsourced_table(self) -> None:
+        flat_rows: list[tuple[str, dict[str, object]]] = []
+        for section in list(self._preview.get("outsourced_panels") or []):
+            label = str(section.get("panel_label") or "").strip()
+            for row in list(section.get("rows") or []):
+                flat_rows.append((label, dict(row)))
+        self.outsourced_table.setRowCount(len(flat_rows))
+        for row_index, (label, row) in enumerate(flat_rows):
+            self._set_outsourced_row(row_index, label, row)
+
+    def _set_outsourced_row(self, row_index: int, panel_label: str, row: dict[str, object]) -> None:
+        self.outsourced_table.setCellWidget(row_index, 0, self._make_panel_combo(panel_label))
+        for column in range(1, 6):
+            value = str(row.get(f"col_{column}") or "")
+            self.outsourced_table.setItem(row_index, column, QTableWidgetItem(value))
+
+    def _make_panel_combo(self, panel_label: str) -> QComboBox:
+        combo = QComboBox()
+        for label in self._panel_labels:
+            combo.addItem(label, label)
+        index = combo.findData(panel_label)
+        if index < 0 and panel_label:
+            combo.addItem(panel_label, panel_label)
+            index = combo.findData(panel_label)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        return combo
+
+    def _add_outsourced_row(self) -> None:
+        row = self.outsourced_table.rowCount()
+        self.outsourced_table.insertRow(row)
+        self._set_outsourced_row(row, self._panel_labels[0] if self._panel_labels else "", {})
+        self.outsourced_table.setCurrentCell(row, 1)
+
+    def _remove_selected_outsourced_row(self) -> None:
+        row = self.outsourced_table.currentRow()
+        if row < 0:
+            return
+        self.outsourced_table.removeRow(row)
+
+    def _move_outsourced_row(self, offset: int) -> None:
+        row = self.outsourced_table.currentRow()
+        if row < 0:
+            return
+        new_row = row + offset
+        if new_row < 0 or new_row >= self.outsourced_table.rowCount():
+            return
+        row_data = self._take_outsourced_row_data(row)
+        other_data = self._take_outsourced_row_data(new_row)
+        self._set_outsourced_row(row, other_data[0], other_data[1])
+        self._set_outsourced_row(new_row, row_data[0], row_data[1])
+        self.outsourced_table.setCurrentCell(new_row, 1)
+
+    def _take_outsourced_row_data(self, row: int) -> tuple[str, dict[str, object]]:
+        combo = self.outsourced_table.cellWidget(row, 0)
+        panel_label = str(combo.currentData() or "") if isinstance(combo, QComboBox) else ""
+        values = {f"col_{column}": self._outsourced_text(row, column) for column in range(1, 6)}
+        return panel_label, values
+
+    def _outsourced_text(self, row: int, column: int) -> str:
+        item = self.outsourced_table.item(row, column)
+        return item.text().strip() if item is not None else ""
+
+    def _collect_outsourced_sections(self) -> list[dict[str, object]]:
+        grouped: dict[str, dict[str, object]] = {}
+        order: list[str] = []
+        for row_index in range(self.outsourced_table.rowCount()):
+            panel_label, values = self._take_outsourced_row_data(row_index)
+            panel_label = panel_label.strip()
+            cols = [values[f"col_{column}"] for column in range(1, 6)]
+            if not panel_label or not any(cols):
+                continue
+            if panel_label not in grouped:
+                grouped[panel_label] = {
+                    "panel_label": panel_label,
+                    "source_pdf_path": self._outsourced_sources.get(panel_label, ""),
+                    "rows": [],
+                }
+                order.append(panel_label)
+            section_rows = grouped[panel_label]["rows"]
+            section_rows.append(
+                {
+                    "row_index": len(section_rows),
+                    "col_1": cols[0], "col_2": cols[1], "col_3": cols[2],
+                    "col_4": cols[3], "col_5": cols[4],
+                }
+            )
+        return [grouped[label] for label in order]
+
     @property
     def edited_preview(self) -> dict[str, object]:
         return self._clone_preview(self._preview)
@@ -621,12 +755,20 @@ class ReportEditorDialog(QDialog):
                 item["upper_value"] = ""
             edited_items.append(item)
 
+        outsourced_sections = None
+        if self.outsourced_table is not None:
+            outsourced_sections = self._collect_outsourced_sections()
+
         reportable_items = [item for item in edited_items if item.get("item_type") != "heading"]
-        if not reportable_items:
+        has_outsourced = bool(outsourced_sections)
+        if not reportable_items and not has_outsourced:
             QMessageBox.warning(self, tr("Missing Selection"), tr("No report could be generated for this order."))
             return
 
         self._preview["items"] = edited_items
+        if outsourced_sections is not None:
+            self._preview["outsourced_panels"] = outsourced_sections
+            self._preview["_outsourced_edited"] = True
         self.accept()
 
     @staticmethod
@@ -677,6 +819,10 @@ class ReportEditorDialog(QDialog):
     def _clone_preview(preview: dict[str, object]) -> dict[str, object]:
         cloned = dict(preview)
         cloned["items"] = [dict(item) for item in list(preview.get("items") or [])]
+        cloned["outsourced_panels"] = [
+            {**dict(section), "rows": [dict(row) for row in list(section.get("rows") or [])]}
+            for section in list(preview.get("outsourced_panels") or [])
+        ]
         return cloned
 
 
@@ -2216,6 +2362,7 @@ class ResultsPage(DataAwarePage):
             return
         if approved and dialog.preview_changed:
             try:
+                self._persist_outsourced_edits(order_id, dialog.current_preview)
                 self.report_service.finalize_report(
                     order_id,
                     header_image_path=dialog.selected_header,
@@ -2240,6 +2387,23 @@ class ResultsPage(DataAwarePage):
             return
         self._refresh_table()
 
+    def _persist_outsourced_edits(self, order_id: int, preview: dict[str, object] | None) -> None:
+        """Write edited extracted (outsourced) rows back to the live store.
+
+        The report PDF renders outsourced sections from the live outsourced tables,
+        so edits made in the report editor must be persisted here to appear. Only
+        runs when the editor actually changed the extracted rows.
+        """
+        if not preview or not preview.get("_outsourced_edited"):
+            return
+        try:
+            resolved_order_id = int(order_id)
+        except (TypeError, ValueError):
+            return
+        self.database.replace_outsourced_panel_rows(
+            resolved_order_id, list(preview.get("outsourced_panels") or [])
+        )
+
     def approve_report(
         self,
         order_id: int,
@@ -2258,6 +2422,11 @@ class ResultsPage(DataAwarePage):
                 selected_header = str(preview_override["header_image_path"] or "")
             if "footer_signature_image_path" in preview_override:
                 selected_footer = str(preview_override["footer_signature_image_path"] or "")
+        try:
+            self._persist_outsourced_edits(order_id, preview_override)
+        except Exception as exc:
+            QMessageBox.critical(self, tr("Save Failed"), str(exc))
+            return
         try:
             self.report_service.finalize_report(order_id, header_image_path=selected_header, footer_signature_image_path=selected_footer, preview_override=preview_override)
         except Exception as exc:

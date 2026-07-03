@@ -495,6 +495,93 @@ class OrdersMixin:
     ) -> None:
         self.append_outsourced_panel_extraction(order_id, panel_label, source_pdf_path, "", rows)
 
+    def replace_outsourced_panel_rows(
+        self, order_id: int, sections: list[dict[str, Any]]
+    ) -> None:
+        """Overwrite the live outsourced rows for an order with edited sections.
+
+        Used when the report editor lets the user edit the extracted (outsourced)
+        PDF rows: the report PDF renders from these live tables, so the edits must
+        be persisted here to survive. Each panel's rows are consolidated into a
+        single extraction; panels no longer present are cleared.
+        """
+        sections_by_label: dict[str, dict[str, Any]] = {}
+        for section in sections or []:
+            label = str(section.get("panel_label") or "").strip()
+            if label:
+                sections_by_label[label] = section
+        with self.connect() as connection:
+            existing_tables = {
+                str(row["panel_label"]).strip(): int(row["id"])
+                for row in connection.execute(
+                    "SELECT id, panel_label FROM outsourced_panel_tables WHERE order_id = ?",
+                    (order_id,),
+                ).fetchall()
+            }
+            labels = set(sections_by_label) | set(existing_tables)
+            for label in labels:
+                section = sections_by_label.get(label)
+                rows = self._normalize_outsourced_table_rows(
+                    [
+                        [
+                            row.get("col_1"), row.get("col_2"), row.get("col_3"),
+                            row.get("col_4"), row.get("col_5"),
+                        ]
+                        for row in list((section or {}).get("rows") or [])
+                    ]
+                )
+                table_id = existing_tables.get(label)
+                if table_id is None:
+                    source_pdf_path = str((section or {}).get("source_pdf_path") or "").strip()
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO outsourced_panel_tables (
+                            order_id, panel_label, source_pdf_path, updated_at
+                        ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (order_id, label, source_pdf_path),
+                    )
+                    table_id = int(cursor.lastrowid)
+                else:
+                    connection.execute(
+                        "UPDATE outsourced_panel_tables SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (table_id,),
+                    )
+                connection.execute(
+                    "DELETE FROM outsourced_panel_rows WHERE outsourced_panel_table_id = ?",
+                    (table_id,),
+                )
+                connection.execute(
+                    "DELETE FROM outsourced_panel_extractions WHERE outsourced_panel_table_id = ?",
+                    (table_id,),
+                )
+                if not rows:
+                    continue
+                source_row = connection.execute(
+                    "SELECT source_pdf_path FROM outsourced_panel_tables WHERE id = ?",
+                    (table_id,),
+                ).fetchone()
+                source_pdf_path = str((source_row["source_pdf_path"] if source_row else "") or "")
+                ext_cursor = connection.execute(
+                    """
+                    INSERT INTO outsourced_panel_extractions (
+                        outsourced_panel_table_id, source_pdf_path, page_label, row_count
+                    ) VALUES (?, ?, '', ?)
+                    """,
+                    (table_id, source_pdf_path, len(rows)),
+                )
+                extraction_id = int(ext_cursor.lastrowid)
+                for row_index, row in enumerate(rows):
+                    connection.execute(
+                        """
+                        INSERT INTO outsourced_panel_rows (
+                            outsourced_panel_table_id, extraction_id, row_index,
+                            col_1, col_2, col_3, col_4, col_5
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (table_id, extraction_id, row_index, row[0], row[1], row[2], row[3], row[4]),
+                    )
+
     def get_outsourced_panel_preview_sections(self, order_id: int) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(

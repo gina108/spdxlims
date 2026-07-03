@@ -70,6 +70,7 @@ _TRANSLATIONS = {
         "Edit the report content before approving it. You can update fields and remove full rows.": "Edite el contenido del reporte antes de aprobarlo. Puede actualizar campos y eliminar filas completas.",
         "Report Rows": "Filas del Reporte",
         "Delete Selected Row": "Eliminar Fila Seleccionada",
+        "Extracted Panel Rows (PDF)": "Filas de Panel Extraídas (PDF)",
         "Apply Changes": "Aplicar Cambios",
         "Approve and Enable Send": "Aprobar y Habilitar Envío",
         "Approve and Export PDF": "Aprobar y Exportar PDF",
