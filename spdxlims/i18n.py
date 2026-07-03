@@ -632,6 +632,7 @@ _TRANSLATIONS = {
         "Bajo/Alto": "Bajo/Alto",
         "Low": "Bajo",
         "High": "Alto",
+        "Abnormal": "Anormal",
         "Save Settings": "Guardar Configuración",
         "Browse": "Buscar",
         "Choose Image": "Elegir Imagen",

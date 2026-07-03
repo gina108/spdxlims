@@ -489,9 +489,34 @@ class ReportEditorDialog(QDialog):
 
     def _set_outsourced_row(self, row_index: int, panel_label: str, row: dict[str, object]) -> None:
         self.outsourced_table.setCellWidget(row_index, 0, self._make_panel_combo(panel_label))
-        for column in range(1, 6):
+        for column in (1, 3, 4, 5):
             value = str(row.get(f"col_{column}") or "")
             self.outsourced_table.setItem(row_index, column, QTableWidgetItem(value))
+        # Flag (bandera) is a dropdown, like the manually entered rows.
+        self.outsourced_table.setCellWidget(row_index, 2, self._make_outsourced_flag_combo(str(row.get("col_2") or "")))
+
+    def _make_outsourced_flag_combo(self, value: str) -> QComboBox:
+        combo = QComboBox()
+        for label in ("", tr("Low"), tr("Normal"), tr("High"), tr("Abnormal")):
+            combo.addItem(label)
+        value = (value or "").strip()
+        if value:
+            # Preserve a value the PDF extraction produced (e.g. "H", "*") that is
+            # not one of the standard options, so nothing is lost.
+            index = combo.findText(value, Qt.MatchFixedString)
+            if index < 0:
+                combo.addItem(value)
+                index = combo.findText(value, Qt.MatchFixedString)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        else:
+            combo.setCurrentIndex(0)
+        return combo
+
+    def _outsourced_flag_value(self, row: int) -> str:
+        combo = self.outsourced_table.cellWidget(row, 2)
+        if isinstance(combo, QComboBox):
+            return combo.currentText().strip()
+        return self._outsourced_text(row, 2)
 
     def _make_panel_combo(self, panel_label: str) -> QComboBox:
         combo = QComboBox()
@@ -532,7 +557,11 @@ class ReportEditorDialog(QDialog):
     def _take_outsourced_row_data(self, row: int) -> tuple[str, dict[str, object]]:
         combo = self.outsourced_table.cellWidget(row, 0)
         panel_label = str(combo.currentData() or "") if isinstance(combo, QComboBox) else ""
-        values = {f"col_{column}": self._outsourced_text(row, column) for column in range(1, 6)}
+        values: dict[str, object] = {}
+        for column in range(1, 6):
+            values[f"col_{column}"] = (
+                self._outsourced_flag_value(row) if column == 2 else self._outsourced_text(row, column)
+            )
         return panel_label, values
 
     def _outsourced_text(self, row: int, column: int) -> str:
