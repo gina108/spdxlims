@@ -205,12 +205,18 @@ def build_report_html(preview: dict[str, object]) -> str:
         section_rows: list[tuple[str, str]] = []
         for row in list(section.get("rows") or []):
             raw_values = [str(row.get(f"col_{index}") or "") for index in range(1, 6)]
-            values = [escape(value) for value in raw_values]
-            if not any(values):
+            if not any(raw_values):
                 continue
+            # Column 2 is the flag (bandera); render it in the style chosen in
+            # settings (arrows / asterisks / text), same as the entered rows.
+            raw_flag = raw_values[1]
+            display_values = list(raw_values)
+            display_values[1] = _format_flag(raw_flag, flag_display_mode)
+            values = [escape(value) for value in display_values]
+            row_class = ' class="abnormal-result"' if _is_abnormal_flag(raw_flag) else ""
             section_rows.append(
                 (
-                    "<tr>"
+                    f"<tr{row_class}>"
                     f"<td>{values[0]}</td>"
                     f"<td>{values[1]}</td>"
                     f"<td>{values[2]}</td>"
@@ -704,6 +710,7 @@ def _is_abnormal_flag(flag_value: str) -> bool:
         return False
     return normalized in {
         "abnormal",
+        "anormal",
         "low",
         "bajo",
         "l",
