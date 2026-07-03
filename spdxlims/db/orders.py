@@ -510,7 +510,7 @@ class OrdersMixin:
                 FROM outsourced_panel_tables opt
                 LEFT JOIN outsourced_panel_rows opr ON opr.outsourced_panel_table_id = opt.id
                 WHERE opt.order_id = ?
-                ORDER BY opt.panel_label, opr.row_index, opr.id
+                ORDER BY opt.panel_label, opr.id
                 """,
                 (order_id,),
             ).fetchall()
@@ -548,9 +548,13 @@ class OrdersMixin:
                 continue
             if row["row_index"] is None:
                 continue
+            # Renumber sequentially within the section. Each extraction restarts its
+            # own row_index at 0, so the stored value collides across extractions and
+            # would interleave page 1/page 2 rows if used for ordering. Rows arrive in
+            # insertion order (ordered by id), so position gives the true sequence.
             current_section["rows"].append(
                 {
-                    "row_index": int(row["row_index"]),
+                    "row_index": len(current_section["rows"]),
                     "col_1": str(row["col_1"] or ""),
                     "col_2": str(row["col_2"] or ""),
                     "col_3": str(row["col_3"] or ""),

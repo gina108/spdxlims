@@ -627,7 +627,7 @@ class ResultsMixin:
                 "source_pdf_path": str(section.get("source_pdf_path") or ""),
                 "rows": [
                     {
-                        "row_index": int(row.get("row_index") or index),
+                        "row_index": index,
                         "col_1": str(row.get("col_1") or ""),
                         "col_2": str(row.get("col_2") or ""),
                         "col_3": str(row.get("col_3") or ""),
