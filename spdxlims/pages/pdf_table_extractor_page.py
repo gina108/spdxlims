@@ -928,8 +928,10 @@ class LegacyPdfTableExtractorPage(DataAwarePage):
             )
 
         self._page_number_label.setText("1")
-        self._page_up_btn.setEnabled(self._page_count > 1)
-        self._page_down_btn.setEnabled(False)
+        # Start on page 1: "previous" (∧) is disabled, "next" (∨) is enabled when
+        # the document has more than one page so the second page is reachable.
+        self._page_up_btn.setEnabled(False)
+        self._page_down_btn.setEnabled(self._page_count > 1)
         self._render_current_page()
 
     # ── Page navigation ────────────────────────────────────────────────────
