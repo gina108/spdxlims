@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from spdxlims.database import Database, OrderSummaryRecord, ResultEntryRecord
+from spdxlims.database import Database, OrderBrowserRecord, OrderSummaryRecord, ResultEntryRecord
 from spdxlims.deployment import DeploymentService
 from spdxlims.label_printer_client import LabelPrinterClient, LabelPrinterError
 from spdxlims.patient_dialog import PatientDialog as SharedPatientDialog
@@ -77,7 +77,7 @@ class OrdersPage(DataAwarePage):
         self.patient_service = PatientService(database, deployment_service)
         self.order_service = OrderService(database, deployment_service)
         self.selected_items: list[dict[str, object]] = []
-        self.recent_order_records: list[OrderSummaryRecord] = []
+        self.recent_order_records: list[OrderBrowserRecord] = []
         self.edit_order_id: int | str | None = None
 
         self.setObjectName("ordersPage")
@@ -143,6 +143,14 @@ class OrdersPage(DataAwarePage):
         self.status.setMinimumWidth(150)
         self.scan_input = QLineEdit()
         self.scan_input.returnPressed.connect(self.open_scanned_order)
+        # Typing in the scan/search box live-filters the orders list (debounced) so
+        # any order can be found and acted on, not just the newest ones. Enter still
+        # opens an exact barcode/order via open_scanned_order.
+        self._orders_filter_timer = QTimer(self)
+        self._orders_filter_timer.setSingleShot(True)
+        self._orders_filter_timer.setInterval(220)
+        self._orders_filter_timer.timeout.connect(self.refresh_recent_orders)
+        self.scan_input.textChanged.connect(lambda _text: self._orders_filter_timer.start())
 
         for key, field in (
             ("order_number", self.order_number),
@@ -503,13 +511,17 @@ class OrdersPage(DataAwarePage):
         combo.setCurrentIndex(match_index if match_index >= 0 else -1)
 
     def refresh_recent_orders(self) -> None:
-        self.recent_order_records = self.order_service.list_recent_orders()
+        # Source the list from search_orders so it (a) shows far more than the
+        # newest orders and (b) live-filters by the scan/search box, making every
+        # order selectable and actionable (edit, results, labels, outsourced PDF).
+        filter_text = self.scan_input.text().strip() if hasattr(self, "scan_input") else ""
+        self.recent_order_records = self.order_service.search_orders(filter_text)
         rows = [
             (
                 record.order_number,
                 record.patient_name,
                 "",
-                self._format_recent_order_date(record.created_at),
+                self._format_recent_order_date(record.order_date),
             )
             for record in self.recent_order_records
         ]
@@ -671,7 +683,7 @@ class OrdersPage(DataAwarePage):
                 self.scan_input.clear()
                 QMessageBox.information(self, tr("Saved"), tr("Barcode order loaded. Assign the patient and tests, then save."))
                 return
-            self._highlight_order_in_table(lookup.id)
+            self._highlight_order_in_table(lookup.id, lookup.order_number)
             return
         matches = self.database.search_orders(query)
         if not matches:
@@ -679,16 +691,24 @@ class OrdersPage(DataAwarePage):
             return
         if len(matches) == 1:
             order_id = matches[0].id
+            order_number = matches[0].order_number
         else:
             order_id = self._pick_order_from_list(matches)
             if order_id is None:
                 return
-        self._highlight_order_in_table(order_id)
+            order_number = next((m.order_number for m in matches if m.id == order_id), "")
+        self._highlight_order_in_table(order_id, order_number)
 
-    def _highlight_order_in_table(self, order_id: int) -> None:
-        self.scan_input.clear()
+    def _highlight_order_in_table(self, order_id: int, order_number: str = "") -> None:
+        # Filter the list down to the matched order (by its number) so it is
+        # visible and selectable even when it is far older than the newest 250.
+        # selectAll lets the next barcode scan overwrite the box cleanly.
+        self.scan_input.blockSignals(True)
+        self.scan_input.setText(order_number)
+        self.scan_input.blockSignals(False)
         self.refresh_recent_orders()
         self._select_recent_order(order_id)
+        self.scan_input.selectAll()
         row = self.orders_table.currentRow()
         if row >= 0:
             item = self.orders_table.item(row, 0)
