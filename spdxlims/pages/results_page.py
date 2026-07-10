@@ -46,6 +46,7 @@ from spdxlims.portal.result_service import PortalResultService
 from spdxlims.portal.settings import PortalStore
 from spdxlims.report_export import build_pdf_export_path
 from spdxlims.report_layout import build_report_html
+from spdxlims.outsourced_service import OutsourcedService
 from spdxlims.report_service import ReportService
 from spdxlims.result_service import ResultService
 from spdxlims.whatsapp_templates import default_whatsapp_templates, get_whatsapp_templates
@@ -876,6 +877,7 @@ class ResultsPage(DataAwarePage):
         self.deployment_service = deployment_service
         self.result_service = ResultService(database, deployment_service)
         self.report_service = ReportService(database, deployment_service)
+        self.outsourced_service = OutsourcedService(database, deployment_service)
         self._portal_results = PortalResultService(PortalStore(data_dir or (Path.cwd() / "data")))
         self.show_instruments = show_instruments
         self.show_review = show_review
@@ -2416,21 +2418,20 @@ class ResultsPage(DataAwarePage):
             return
         self._refresh_table()
 
-    def _persist_outsourced_edits(self, order_id: int, preview: dict[str, object] | None) -> None:
+    def _persist_outsourced_edits(self, order_id: object, preview: dict[str, object] | None) -> None:
         """Write edited extracted (outsourced) rows back to the live store.
 
         The report PDF renders outsourced sections from the live outsourced tables,
         so edits made in the report editor must be persisted here to appear. Only
-        runs when the editor actually changed the extracted rows.
+        runs when the editor actually changed the extracted rows. Routes through the
+        outsourced service so it works in both local and server mode.
         """
         if not preview or not preview.get("_outsourced_edited"):
             return
-        try:
-            resolved_order_id = int(order_id)
-        except (TypeError, ValueError):
+        if order_id is None:
             return
-        self.database.replace_outsourced_panel_rows(
-            resolved_order_id, list(preview.get("outsourced_panels") or [])
+        self.outsourced_service.replace_outsourced_panel_rows(
+            order_id, list(preview.get("outsourced_panels") or [])
         )
 
     def approve_report(

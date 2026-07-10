@@ -504,7 +504,8 @@ def import_orders(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
     ).fetchall()
     order_tests = sqlite_db.execute(
         """
-        SELECT ot.id, ot.order_id, ot.test_id, ot.display_name, ot.sort_order, t.code AS test_code, t.name AS test_name
+        SELECT ot.id, ot.order_id, ot.test_id, ot.display_name, ot.sort_order,
+               ot.is_outsourced, ot.source_label, t.code AS test_code, t.name AS test_name
         FROM order_tests ot
         LEFT JOIN tests t ON t.id = ot.test_id
         ORDER BY ot.order_id ASC, ot.sort_order ASC, ot.id ASC
@@ -572,6 +573,8 @@ def import_orders(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
                 test_id=imported_test_id,
                 group_label=current_group_label,
                 priority="routine",
+                is_outsourced=_parse_bool(source_item["is_outsourced"], default=False),
+                source_label=_clean_text(source_item["source_label"]),
             )
             db.add(order_item)
             db.flush()

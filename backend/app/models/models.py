@@ -168,6 +168,10 @@ class OrderItem(Base):
     test_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("test_catalog.id"), nullable=False)
     group_label: Mapped[str | None] = mapped_column(String(255))
     priority: Mapped[str] = mapped_column(String(16), nullable=False, default="routine")
+    # Outsourced (send-out) tests rendered from an external PDF rather than
+    # in-house results. source_label groups them into their outsourced panel.
+    is_outsourced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source_label: Mapped[str | None] = mapped_column(String(255))
 
 
 class Sample(Base):

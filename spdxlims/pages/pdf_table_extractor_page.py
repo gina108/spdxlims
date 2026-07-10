@@ -27,7 +27,9 @@ from PySide6.QtWidgets import (
 )
 
 from spdxlims.database import Database
+from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import get_language, tr
+from spdxlims.outsourced_service import OutsourcedService
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pdf_table_extractor_library import (
     DetectedTable,
@@ -1167,11 +1169,22 @@ class LegacyPdfTableExtractorPage(DataAwarePage):
 
 
 class PdfTableExtractorPage(DataAwarePage):
-    def __init__(self, data_root: Path) -> None:
+    def __init__(
+        self,
+        data_root: Path,
+        database: Database | None = None,
+        deployment_service: DeploymentService | None = None,
+    ) -> None:
         super().__init__()
         self.data_root = data_root
-        self.database = Database(data_root.parent.parent / "spdxlims.db")
-        self._pending_target_selection: tuple[int, str] | None = None
+        self.database = database if database is not None else Database(data_root.parent.parent / "spdxlims.db")
+        if deployment_service is None:
+            deployment_service = DeploymentService(data_root.parent.parent / "deployment.json")
+        self.deployment_service = deployment_service
+        # Routes outsourced-panel reads/writes to local SQLite or the server API
+        # depending on the configured mode, so the addon works in server mode too.
+        self.outsourced_service = OutsourcedService(self.database, self.deployment_service)
+        self._pending_target_selection: tuple[object, str] | None = None
         self._external_window = None
         self._external_workspace = None
         self._fallback_page = None
@@ -1298,8 +1311,8 @@ class PdfTableExtractorPage(DataAwarePage):
         if self._fallback_page is not None:
             self._fallback_page.refresh_on_show()
 
-    def set_target_selection(self, order_id: int, panel_label: str) -> None:
-        self._pending_target_selection = (int(order_id), str(panel_label))
+    def set_target_selection(self, order_id: object, panel_label: str) -> None:
+        self._pending_target_selection = (order_id, str(panel_label))
         self._load_outsourced_orders()
         self._apply_pending_target_selection()
 
@@ -1311,12 +1324,12 @@ class PdfTableExtractorPage(DataAwarePage):
         if order_id is None or not panel_label:
             self._fallback_page.set_saved_extractions([])
             return
-        extractions = self.database.list_outsourced_panel_extractions(int(order_id), str(panel_label))
+        extractions = self.outsourced_service.list_outsourced_panel_extractions(order_id, str(panel_label))
         self._fallback_page.set_saved_extractions(extractions)
 
-    def _delete_saved_extraction(self, extraction_id: int) -> None:
+    def _delete_saved_extraction(self, extraction_id: object) -> None:
         try:
-            self.database.delete_outsourced_panel_extraction(extraction_id)
+            self.outsourced_service.delete_outsourced_panel_extraction(extraction_id)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, tr("Delete Failed"), str(exc))
             return
@@ -1334,7 +1347,7 @@ class PdfTableExtractorPage(DataAwarePage):
         self.order_combo.blockSignals(True)
         self.order_combo.clear()
         self.order_combo.addItem(tr("Select order"), None)
-        for order_id, label in self.database.list_outsourced_order_choices():
+        for order_id, label in self.outsourced_service.list_outsourced_order_choices():
             self.order_combo.addItem(label, order_id)
         if current_order_id is not None:
             index = self.order_combo.findData(current_order_id)
@@ -1352,7 +1365,7 @@ class PdfTableExtractorPage(DataAwarePage):
             self.outsourced_panel_combo.setEnabled(False)
             self._update_save_btn()
             return
-        panel_labels = self.database.list_outsourced_panels_for_order(int(order_id))
+        panel_labels = self.outsourced_service.list_outsourced_panels_for_order(order_id)
         for label in panel_labels:
             self.outsourced_panel_combo.addItem(label, label)
         self.outsourced_panel_combo.setEnabled(bool(panel_labels))
@@ -1411,8 +1424,8 @@ class PdfTableExtractorPage(DataAwarePage):
         table = getattr(workspace, "_selected_table", lambda: None)() if workspace else None
         page_label = str(getattr(table, "page_label", "") or "")
         try:
-            self.database.append_outsourced_panel_extraction(
-                int(order_id), str(panel_label), source_pdf_path, page_label, rows
+            self.outsourced_service.append_outsourced_panel_extraction(
+                order_id, str(panel_label), source_pdf_path, page_label, rows
             )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, tr("Save Failed"), str(exc))

@@ -203,8 +203,8 @@ class AddonManager:
         return {
             "administrative_tools": lambda database, deployment: AdminSuitePage(database, deployment),
             "equipment_manager": lambda database, _deployment: EquipmentPage(database),
-            "pdf_table_extractor": lambda _database, _deployment: PdfTableExtractorPage(
-                self.data_dir / "addons" / "pdf_table_extractor"
+            "pdf_table_extractor": lambda database, deployment: PdfTableExtractorPage(
+                self.data_dir / "addons" / "pdf_table_extractor", database, deployment
             ),
             "facturas": lambda database, deployment: PortalPage(self.data_dir, database, deployment),
         }
