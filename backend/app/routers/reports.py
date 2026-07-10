@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -49,6 +50,8 @@ class ReportPreviewItemOut(BaseModel):
     flag: str | None = None
     comments: str | None = None
     sort_order: int
+    result_kind: str | None = None
+    images: list[dict[str, Any]] = []
 
 
 class FinalizeReportIn(BaseModel):
@@ -312,6 +315,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
             OrderItem.id.label('order_item_id'),
             TestCatalog.name.label('test_name'),
             TestCatalog.code.label('test_code'),
+            TestCatalog.result_kind.label('result_kind'),
             Result.value_text,
             Result.unit,
             Result.reference_text,
@@ -326,6 +330,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
         .where(OrderItem.order_id == order_id)
         .order_by(OrderItem.id.asc())
     ).all()
+    live_images = _live_images_by_order_item(order_id, db)
     items: list[ReportPreviewItemOut] = []
     for index, row in enumerate(item_rows):
         group_label = (row.group_label or '').strip()
@@ -358,6 +363,8 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                 flag=row.flag,
                 comments=row.comments,
                 sort_order=len(items),
+                result_kind=row.result_kind,
+                images=_encode_images(live_images.get(row.order_item_id, [])),
             )
         )
     profile = _get_lab_profile(db)
@@ -409,6 +416,15 @@ def _build_saved_preview(order_id: UUID, request: Request, db: Session) -> Repor
     # Prefer live patient age over the (age-less) snapshot so it reflects edits,
     # matching the desktop's saved-preview behaviour.
     patient = db.get(Patient, order.patient_id)
+    result_kinds = {
+        row.id: row.result_kind
+        for row in db.execute(
+            select(OrderItem.id, TestCatalog.result_kind)
+            .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
+            .where(OrderItem.order_id == order_id)
+        ).all()
+    }
+    snapshot_images = _snapshot_images_by_order_item(report.id, db)
     return ReportPreviewOut(
         source='saved',
         report_status=report.status,
@@ -451,6 +467,8 @@ def _build_saved_preview(order_id: UUID, request: Request, db: Session) -> Repor
                 flag=item.flag_snapshot,
                 comments=item.comments_snapshot,
                 sort_order=item.sort_order,
+                result_kind=result_kinds.get(item.order_item_id),
+                images=_encode_images(snapshot_images.get(item.order_item_id, [])),
             )
             for item in items
         ],
@@ -577,6 +595,45 @@ def _build_outsourced_sections(order_id: UUID, report_id: UUID | None, db: Sessi
         .order_by(ReportOutsourcedRowSnapshot.panel_label.asc(), ReportOutsourcedRowSnapshot.row_index.asc(), ReportOutsourcedRowSnapshot.id.asc())
     ).all()
     return _group_outsourced_rows(snapshot_rows)
+
+
+def _encode_images(rows) -> list[dict[str, Any]]:
+    """Encode result-image bytes as base64 for the report renderer's data URIs."""
+    return [
+        {
+            'data': base64.b64encode(row.image_data).decode('ascii') if row.image_data else '',
+            'mime_type': row.mime_type or 'image/png',
+            'caption': row.caption or '',
+        }
+        for row in rows
+    ]
+
+
+def _live_images_by_order_item(order_id: UUID, db: Session) -> dict[Any, list[Any]]:
+    rows = db.scalars(
+        select(ResultImage)
+        .join(OrderItem, OrderItem.id == ResultImage.order_item_id)
+        .where(OrderItem.order_id == order_id)
+        .order_by(ResultImage.order_item_id.asc(), ResultImage.sort_order.asc(), ResultImage.id.asc())
+    ).all()
+    grouped: dict[Any, list[Any]] = {}
+    for row in rows:
+        grouped.setdefault(row.order_item_id, []).append(row)
+    return grouped
+
+
+def _snapshot_images_by_order_item(report_id: UUID, db: Session) -> dict[Any, list[Any]]:
+    rows = db.scalars(
+        select(ReportItemImageSnapshot)
+        .where(ReportItemImageSnapshot.report_id == report_id)
+        .order_by(ReportItemImageSnapshot.order_item_id.asc(), ReportItemImageSnapshot.sort_order.asc(), ReportItemImageSnapshot.id.asc())
+    ).all()
+    grouped: dict[Any, list[Any]] = {}
+    for row in rows:
+        if row.order_item_id is None:
+            continue
+        grouped.setdefault(row.order_item_id, []).append(row)
+    return grouped
 
 
 def _group_outsourced_rows(rows) -> list[dict[str, Any]]:
