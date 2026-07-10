@@ -23,12 +23,16 @@ from app.models.models import (
     LabOrder,
     LabProfile,
     OrderItem,
+    OutsourcedPanelExtraction,
+    OutsourcedPanelRow,
+    OutsourcedPanelTable,
     PanelCatalog,
     PanelCatalogItem,
     Patient,
     Provider,
     ReportItemImageSnapshot,
     ReportItemSnapshot,
+    ReportOutsourcedRowSnapshot,
     ReportSnapshot,
     Result,
     ResultImage,
@@ -51,6 +55,7 @@ class ImportContext:
     panel_ids: dict[int, Any]
     order_ids: dict[int, Any]
     order_item_ids: dict[int, Any | None]
+    report_ids: dict[int, Any]
 
 
 def main() -> None:
@@ -82,6 +87,7 @@ def main() -> None:
             panel_ids={},
             order_ids={},
             order_item_ids={},
+            report_ids={},
         )
 
         counts: dict[str, int] = {}
@@ -95,6 +101,8 @@ def main() -> None:
         counts["results"] = import_results(sqlite_db, db, context)
         counts["result_images"] = import_result_images(sqlite_db, db, context)
         counts["reports"] = import_reports(sqlite_db, db, context)
+        counts["report_outsourced_rows"] = import_report_outsourced_rows(sqlite_db, db, context)
+        counts["outsourced_panels"] = import_outsourced_panels(sqlite_db, db, context)
         db.commit()
     except Exception:
         db.rollback()
@@ -158,16 +166,21 @@ def import_patients(sqlite_db: sqlite3.Connection, db: Session, context: ImportC
     imported = 0
     for row in rows:
         mrn = _clean_text(row["patient_code"])
+        parsed_dob = _parse_date(row["date_of_birth"])
         patient = None
         if mrn:
             patient = db.scalars(select(Patient).where(Patient.mrn == mrn)).first()
-        if patient is None:
+        # Only de-duplicate on a strong key. Legacy records carry no MRN and the
+        # date_of_birth column sometimes holds junk (e.g. a stray 'M'/'F'), so
+        # matching on name alone would merge distinct people who share a common
+        # name. Require a real parsed DOB before treating name+dob as identity.
+        if patient is None and parsed_dob is not None:
             patient = db.scalars(
                 select(Patient).where(
                     Patient.first_name == _clean_text(row["first_name"], fallback=""),
                     Patient.last_name == _clean_text(row["last_name"], fallback=""),
                     Patient.middle_name == _clean_text(row["middle_name"]),
-                    Patient.dob == _parse_date(row["date_of_birth"]),
+                    Patient.dob == parsed_dob,
                 )
             ).first()
         if patient is None:
@@ -654,6 +667,7 @@ def import_reports(sqlite_db: sqlite3.Connection, db: Session, context: ImportCo
             db.flush()
         else:
             db.execute(delete(ReportItemSnapshot).where(ReportItemSnapshot.report_id == snapshot.id))
+            db.execute(delete(ReportOutsourcedRowSnapshot).where(ReportOutsourcedRowSnapshot.report_id == snapshot.id))
             snapshot.report_version = _parse_int(row["report_version"]) or snapshot.report_version
             snapshot.status = _clean_text(row["status"], fallback=snapshot.status)
             snapshot.finalized_at = _parse_datetime(row["finalized_at"]) or snapshot.finalized_at
@@ -690,9 +704,138 @@ def import_reports(sqlite_db: sqlite3.Connection, db: Session, context: ImportCo
                     item_type_snapshot=_clean_text(item["item_type_snapshot"], fallback="test"),
                 )
             )
+        context.report_ids[int(row["id"])] = snapshot.id
         imported += 1
     db.flush()
     return imported
+
+
+def import_report_outsourced_rows(sqlite_db: sqlite3.Connection, db: Session, context: ImportContext) -> int:
+    if not _sqlite_has_table(sqlite_db, "report_outsourced_rows"):
+        return 0
+    rows = sqlite_db.execute(
+        """
+        SELECT report_id, panel_label, source_pdf_path, row_index, col_1, col_2, col_3, col_4, col_5
+        FROM report_outsourced_rows
+        ORDER BY report_id ASC, panel_label ASC, row_index ASC, id ASC
+        """
+    ).fetchall()
+    imported = 0
+    for row in rows:
+        report_id = context.report_ids.get(_parse_int(row["report_id"]) or -1)
+        if report_id is None:
+            continue
+        db.add(
+            ReportOutsourcedRowSnapshot(
+                report_id=report_id,
+                panel_label=_clean_text(row["panel_label"], fallback="") or "",
+                source_pdf_path=_clean_text(row["source_pdf_path"], fallback="") or "",
+                row_index=_parse_int(row["row_index"]) or 0,
+                col_1=_clean_text(row["col_1"]),
+                col_2=_clean_text(row["col_2"]),
+                col_3=_clean_text(row["col_3"]),
+                col_4=_clean_text(row["col_4"]),
+                col_5=_clean_text(row["col_5"]),
+            )
+        )
+        imported += 1
+    db.flush()
+    return imported
+
+
+def import_outsourced_panels(sqlite_db: sqlite3.Connection, db: Session, context: ImportContext) -> int:
+    if not _sqlite_has_table(sqlite_db, "outsourced_panel_tables"):
+        return 0
+    tables = sqlite_db.execute(
+        """
+        SELECT id, order_id, panel_label, source_pdf_path
+        FROM outsourced_panel_tables
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    has_extractions = _sqlite_has_table(sqlite_db, "outsourced_panel_extractions")
+    has_rows = _sqlite_has_table(sqlite_db, "outsourced_panel_rows")
+    imported = 0
+    for table_row in tables:
+        order_id = context.order_ids.get(_parse_int(table_row["order_id"]) or -1)
+        if order_id is None:
+            continue
+        panel_label = _clean_text(table_row["panel_label"], fallback="") or ""
+        # Reimport is idempotent: drop any prior copy for this order/panel first.
+        existing = db.scalars(
+            select(OutsourcedPanelTable).where(
+                OutsourcedPanelTable.order_id == order_id,
+                OutsourcedPanelTable.panel_label == panel_label,
+            )
+        ).first()
+        if existing is not None:
+            db.delete(existing)
+            db.flush()
+        panel_table = OutsourcedPanelTable(
+            order_id=order_id,
+            panel_label=panel_label,
+            source_pdf_path=_clean_text(table_row["source_pdf_path"], fallback="") or "",
+        )
+        db.add(panel_table)
+        db.flush()
+
+        extraction_ids: dict[int, Any] = {}
+        if has_extractions:
+            for extraction in sqlite_db.execute(
+                """
+                SELECT id, source_pdf_path, page_label, row_count, extracted_at
+                FROM outsourced_panel_extractions
+                WHERE outsourced_panel_table_id = ?
+                ORDER BY id ASC
+                """,
+                (int(table_row["id"]),),
+            ).fetchall():
+                new_extraction = OutsourcedPanelExtraction(
+                    outsourced_panel_table_id=panel_table.id,
+                    source_pdf_path=_clean_text(extraction["source_pdf_path"], fallback="") or "",
+                    page_label=_clean_text(extraction["page_label"], fallback="") or "",
+                    row_count=_parse_int(extraction["row_count"]) or 0,
+                    extracted_at=_parse_datetime(extraction["extracted_at"]) or datetime.utcnow(),
+                )
+                db.add(new_extraction)
+                db.flush()
+                extraction_ids[int(extraction["id"])] = new_extraction.id
+
+        if has_rows:
+            for source_row in sqlite_db.execute(
+                """
+                SELECT row_index, col_1, col_2, col_3, col_4, col_5, extraction_id
+                FROM outsourced_panel_rows
+                WHERE outsourced_panel_table_id = ?
+                ORDER BY row_index ASC, id ASC
+                """,
+                (int(table_row["id"]),),
+            ).fetchall():
+                db.add(
+                    OutsourcedPanelRow(
+                        outsourced_panel_table_id=panel_table.id,
+                        extraction_id=extraction_ids.get(_parse_int(source_row["extraction_id"]) or -1),
+                        row_index=_parse_int(source_row["row_index"]) or 0,
+                        col_1=_clean_text(source_row["col_1"]),
+                        col_2=_clean_text(source_row["col_2"]),
+                        col_3=_clean_text(source_row["col_3"]),
+                        col_4=_clean_text(source_row["col_4"]),
+                        col_5=_clean_text(source_row["col_5"]),
+                    )
+                )
+        imported += 1
+    db.flush()
+    return imported
+
+
+def _sqlite_has_table(sqlite_db: sqlite3.Connection, name: str) -> bool:
+    return (
+        sqlite_db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _ensure_import_user(db: Session) -> AppUser:

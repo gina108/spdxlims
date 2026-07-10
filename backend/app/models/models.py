@@ -267,6 +267,66 @@ class ReportItemSnapshot(Base):
     item_type_snapshot: Mapped[str] = mapped_column(String(16), nullable=False, default="test")
 
 
+class ReportOutsourcedRowSnapshot(Base):
+    """Immutable snapshot of outsourced-PDF panel rows captured when a report is finalized."""
+
+    __tablename__ = "report_outsourced_row_snapshot"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    report_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("report_snapshot.id", ondelete="CASCADE"), nullable=False)
+    panel_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_pdf_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    row_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    col_1: Mapped[str | None] = mapped_column(Text)
+    col_2: Mapped[str | None] = mapped_column(Text)
+    col_3: Mapped[str | None] = mapped_column(Text)
+    col_4: Mapped[str | None] = mapped_column(Text)
+    col_5: Mapped[str | None] = mapped_column(Text)
+
+
+class OutsourcedPanelTable(Base):
+    """Live (editable) outsourced-PDF panel extraction attached to an order."""
+
+    __tablename__ = "outsourced_panel_table"
+    __table_args__ = (UniqueConstraint("order_id", "panel_label", name="uq_outsourced_panel_table_order_label"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("lab_order.id", ondelete="CASCADE"), nullable=False)
+    panel_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_pdf_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class OutsourcedPanelExtraction(Base):
+    """One page-level extraction pass feeding an OutsourcedPanelTable."""
+
+    __tablename__ = "outsourced_panel_extraction"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    outsourced_panel_table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("outsourced_panel_table.id", ondelete="CASCADE"), nullable=False)
+    source_pdf_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    page_label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class OutsourcedPanelRow(Base):
+    """A single extracted row (up to five columns) inside an OutsourcedPanelTable."""
+
+    __tablename__ = "outsourced_panel_row"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    outsourced_panel_table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("outsourced_panel_table.id", ondelete="CASCADE"), nullable=False)
+    extraction_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("outsourced_panel_extraction.id", ondelete="SET NULL"))
+    row_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    col_1: Mapped[str | None] = mapped_column(Text)
+    col_2: Mapped[str | None] = mapped_column(Text)
+    col_3: Mapped[str | None] = mapped_column(Text)
+    col_4: Mapped[str | None] = mapped_column(Text)
+    col_5: Mapped[str | None] = mapped_column(Text)
+
+
 class Supplier(Base):
     __tablename__ = "supplier"
 
@@ -430,4 +490,4 @@ MonthEndClose.__table__.append_constraint(CheckConstraint("status in ('open','in
 MonthEndSnapshot.__table__.append_constraint(CheckConstraint("snapshot_type in ('billing','inventory','operations')", name="ck_month_end_snapshot_type"))
 
 ReportSnapshot.__table__.append_constraint(CheckConstraint("status in ('final')", name="ck_report_snapshot_status"))
-ReportItemSnapshot.__table__.append_constraint(CheckConstraint("item_type_snapshot in ('test','heading','comment')", name="ck_report_item_snapshot_type"))
+ReportItemSnapshot.__table__.append_constraint(CheckConstraint("item_type_snapshot in ('test','heading','comment','panel_meta')", name="ck_report_item_snapshot_type"))
