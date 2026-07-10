@@ -120,7 +120,14 @@ def import_lab_profile(sqlite_db: sqlite3.Connection, sqlite_path: Path, db: Ses
     row = sqlite_db.execute(
         """
         SELECT lab_name, address, phone, email, header_image_path, footer_signature_image_path,
-               logo_path, report_footer, director_name, director_license
+               logo_path, report_footer, director_name, director_license,
+               report_flag_style, keep_panels_together, report_font_family, report_font_size,
+               report_font_bold, report_abnormal_bold, report_subheading_font_family,
+               report_subheading_font_size, report_subheading_font_bold, report_footer_gap_mm,
+               report_sex_format, report_date_format, report_show_doctor, report_show_client,
+               report_show_sex, report_show_age, report_show_dob, report_show_ordered_at,
+               report_show_reported_at, report_doctor_col, report_client_col, report_sex_col,
+               report_age_col, report_dob_col, report_ordered_at_col, report_reported_at_col
         FROM lab_settings
         ORDER BY id ASC
         LIMIT 1
@@ -149,9 +156,53 @@ def import_lab_profile(sqlite_db: sqlite3.Connection, sqlite_path: Path, db: Ses
         row["footer_signature_image_path"],
         "lab_profile_footer_signature",
     )
+    profile.report_settings = _report_settings_from_row(row)
     db.add(profile)
     db.flush()
     return 1
+
+
+def _report_settings_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Mirror the desktop's get_report_layout_settings() dict for server rendering."""
+    keys = row.keys()
+
+    def _bool(name: str, default: bool) -> bool:
+        return _parse_bool(row[name], default=default) if name in keys else default
+
+    def _int(name: str, default: int) -> int:
+        return (_parse_int(row[name]) if name in keys else None) or default
+
+    def _text(name: str, default: str) -> str:
+        return (_clean_text(row[name]) if name in keys else None) or default
+
+    return {
+        "flag_display_mode": _text("report_flag_style", "arrows"),
+        "keep_panels_together": _bool("keep_panels_together", True),
+        "report_font_family": _text("report_font_family", "Segoe UI"),
+        "report_font_size": _int("report_font_size", 12),
+        "report_font_bold": _bool("report_font_bold", False),
+        "report_abnormal_bold": _bool("report_abnormal_bold", True),
+        "report_subheading_font_family": _text("report_subheading_font_family", "Segoe UI"),
+        "report_subheading_font_size": _int("report_subheading_font_size", 13),
+        "report_subheading_font_bold": _bool("report_subheading_font_bold", True),
+        "report_footer_gap_mm": _int("report_footer_gap_mm", 2),
+        "report_sex_format": _text("report_sex_format", "medium"),
+        "report_date_format": _text("report_date_format", "date_only"),
+        "report_show_doctor": _bool("report_show_doctor", True),
+        "report_show_client": _bool("report_show_client", True),
+        "report_show_sex": _bool("report_show_sex", True),
+        "report_show_age": _bool("report_show_age", True),
+        "report_show_dob": _bool("report_show_dob", False),
+        "report_show_ordered_at": _bool("report_show_ordered_at", False),
+        "report_show_reported_at": _bool("report_show_reported_at", True),
+        "report_doctor_col": _text("report_doctor_col", "left"),
+        "report_client_col": _text("report_client_col", "left"),
+        "report_sex_col": _text("report_sex_col", "left"),
+        "report_age_col": _text("report_age_col", "right"),
+        "report_dob_col": _text("report_dob_col", "right"),
+        "report_ordered_at_col": _text("report_ordered_at_col", "right"),
+        "report_reported_at_col": _text("report_reported_at_col", "right"),
+    }
 
 
 def import_patients(sqlite_db: sqlite3.Connection, db: Session, context: ImportContext) -> int:

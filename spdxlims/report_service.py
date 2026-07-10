@@ -55,13 +55,26 @@ class ReportService(ServiceBase):
         if self._is_local():
             return self.database.get_live_report_preview(int(order_id))
         preview = self.deployment_service.request_json('GET', f'/api/reports/orders/{order_id}/live-preview', allow_404=True)
-        return preview if isinstance(preview, dict) else None
+        return self._normalize_server_preview(preview)
 
     def get_saved_report_preview(self, order_id: int | str) -> dict[str, Any] | None:
         if self._is_local():
             return self.database.get_saved_report_preview(int(order_id))
         preview = self.deployment_service.request_json('GET', f'/api/reports/orders/{order_id}/saved-preview', allow_404=True)
-        return preview if isinstance(preview, dict) else None
+        return self._normalize_server_preview(preview)
+
+    @staticmethod
+    def _normalize_server_preview(preview: Any) -> dict[str, Any] | None:
+        """Flatten the server's nested report_settings into the top-level preview
+        dict so the shared report renderer (which reads styling keys at the top
+        level) works identically in local and server mode."""
+        if not isinstance(preview, dict):
+            return None
+        settings = preview.pop('report_settings', None)
+        if isinstance(settings, dict):
+            for key, value in settings.items():
+                preview.setdefault(key, value)
+        return preview
 
     def finalize_report(
         self,

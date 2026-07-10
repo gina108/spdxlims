@@ -136,6 +136,10 @@ class LabProfile(Base):
     report_footer: Mapped[str] = mapped_column(Text, nullable=False, default="")
     director_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     director_license: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # Report styling/layout preferences (fonts, flag style, shown columns, etc.).
+    # Mirrors the desktop's get_report_layout_settings() dict so server-rendered
+    # reports match the desktop exactly.
+    report_settings: Mapped[dict | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 

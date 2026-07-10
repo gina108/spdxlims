@@ -11,7 +11,22 @@ from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
 from app.db.session import get_db
-from app.models.models import LabOrder, LabProfile, OrderItem, Patient, Provider, ReportItemImageSnapshot, ReportItemSnapshot, ReportSnapshot, Result, ResultImage, TestCatalog
+from app.models.models import (
+    LabOrder,
+    LabProfile,
+    OrderItem,
+    OutsourcedPanelRow,
+    OutsourcedPanelTable,
+    Patient,
+    Provider,
+    ReportItemImageSnapshot,
+    ReportItemSnapshot,
+    ReportOutsourcedRowSnapshot,
+    ReportSnapshot,
+    Result,
+    ResultImage,
+    TestCatalog,
+)
 from app.routers.common import actor_from_header
 
 router = APIRouter()
@@ -56,6 +71,8 @@ class ReportPreviewOut(BaseModel):
     patient_name: str
     patient_sex: str | None = None
     patient_dob: str | None = None
+    patient_age_value: int | None = None
+    patient_age_unit: str | None = None
     doctor_name: str | None = None
     client_name: str | None = None
     lab_name: str = ""
@@ -69,6 +86,8 @@ class ReportPreviewOut(BaseModel):
     footer_signature_image_path: str = ""
     general_comments: str = ""
     items: list[ReportPreviewItemOut]
+    outsourced_panels: list[dict[str, Any]] = []
+    report_settings: dict[str, Any] = {}
 
 
 @router.get('/order-choices', response_model=list[ReportOrderChoiceOut])
@@ -231,6 +250,39 @@ def finalize_report(order_id: str, payload: FinalizeReportIn, request: Request, 
             )
         )
 
+    # Snapshot outsourced-PDF rows so finalized reports keep an immutable copy,
+    # independent of later edits to the live extraction workspace.
+    db.execute(delete(ReportOutsourcedRowSnapshot).where(ReportOutsourcedRowSnapshot.report_id == report.id))
+    live_outsourced = db.execute(
+        select(
+            OutsourcedPanelTable.panel_label,
+            OutsourcedPanelTable.source_pdf_path,
+            OutsourcedPanelRow.row_index,
+            OutsourcedPanelRow.col_1,
+            OutsourcedPanelRow.col_2,
+            OutsourcedPanelRow.col_3,
+            OutsourcedPanelRow.col_4,
+            OutsourcedPanelRow.col_5,
+        )
+        .join(OutsourcedPanelTable, OutsourcedPanelTable.id == OutsourcedPanelRow.outsourced_panel_table_id)
+        .where(OutsourcedPanelTable.order_id == parsed_order_id)
+        .order_by(OutsourcedPanelTable.panel_label.asc(), OutsourcedPanelRow.row_index.asc(), OutsourcedPanelRow.id.asc())
+    ).all()
+    for outsourced_row in live_outsourced:
+        db.add(
+            ReportOutsourcedRowSnapshot(
+                report_id=report.id,
+                panel_label=(outsourced_row.panel_label or '').strip(),
+                source_pdf_path=(outsourced_row.source_pdf_path or '').strip(),
+                row_index=outsourced_row.row_index or 0,
+                col_1=outsourced_row.col_1,
+                col_2=outsourced_row.col_2,
+                col_3=outsourced_row.col_3,
+                col_4=outsourced_row.col_4,
+                col_5=outsourced_row.col_5,
+            )
+        )
+
     order = db.get(LabOrder, parsed_order_id)
     if order is None:
         raise HTTPException(status_code=404, detail='order not found')
@@ -324,6 +376,8 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
         patient_name=context['patient_name'],
         patient_sex=context['patient_sex'],
         patient_dob=context['patient_dob'],
+        patient_age_value=context['patient_age_value'],
+        patient_age_unit=context['patient_age_unit'],
         doctor_name=context['doctor_name'],
         client_name=context['client_name'],
         lab_name=profile.lab_name or '',
@@ -337,6 +391,8 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
         footer_signature_image_path=_public_asset_url(profile.footer_signature_image_path, request),
         general_comments=context['notes'] or '',
         items=items,
+        outsourced_panels=_build_outsourced_sections(order_id, None, db),
+        report_settings=_report_settings(db),
     )
 
 
@@ -350,6 +406,9 @@ def _build_saved_preview(order_id: UUID, request: Request, db: Session) -> Repor
         .where(ReportItemSnapshot.report_id == report.id)
         .order_by(ReportItemSnapshot.sort_order.asc(), ReportItemSnapshot.id.asc())
     ).all()
+    # Prefer live patient age over the (age-less) snapshot so it reflects edits,
+    # matching the desktop's saved-preview behaviour.
+    patient = db.get(Patient, order.patient_id)
     return ReportPreviewOut(
         source='saved',
         report_status=report.status,
@@ -365,6 +424,8 @@ def _build_saved_preview(order_id: UUID, request: Request, db: Session) -> Repor
         patient_name=report.patient_snapshot_name,
         patient_sex=report.patient_snapshot_sex,
         patient_dob=report.patient_snapshot_dob,
+        patient_age_value=patient.age_value if patient is not None else None,
+        patient_age_unit=patient.age_unit if patient is not None else None,
         doctor_name=report.doctor_snapshot_name,
         client_name=report.client_snapshot_name,
         lab_name=report.lab_snapshot_name or '',
@@ -393,6 +454,8 @@ def _build_saved_preview(order_id: UUID, request: Request, db: Session) -> Repor
             )
             for item in items
         ],
+        outsourced_panels=_build_outsourced_sections(order.id, report.id, db),
+        report_settings=_report_settings(db),
     )
 
 
@@ -414,6 +477,8 @@ def _get_report_context(order_id: UUID, db: Session):
             Patient.middle_name,
             Patient.sex.label('patient_sex'),
             Patient.dob.label('patient_dob'),
+            Patient.age_value.label('patient_age_value'),
+            Patient.age_unit.label('patient_age_unit'),
             doctor_provider.legal_name.label('doctor_name'),
             client_provider.legal_name.label('client_name'),
         )
@@ -436,6 +501,8 @@ def _get_report_context(order_id: UUID, db: Session):
         'patient_name': _patient_name(row.first_name, row.last_name, row.middle_name),
         'patient_sex': row.patient_sex,
         'patient_dob': row.patient_dob.isoformat() if row.patient_dob else None,
+        'patient_age_value': row.patient_age_value,
+        'patient_age_unit': row.patient_age_unit,
         'doctor_name': row.doctor_name,
         'client_name': row.client_name,
     }
@@ -463,6 +530,80 @@ def _get_lab_profile(db: Session) -> LabProfile:
         db.add(profile)
         db.flush()
     return profile
+
+
+def _report_settings(db: Session) -> dict[str, Any]:
+    profile = _get_lab_profile(db)
+    settings = profile.report_settings
+    return dict(settings) if isinstance(settings, dict) else {}
+
+
+def _build_outsourced_sections(order_id: UUID, report_id: UUID | None, db: Session) -> list[dict[str, Any]]:
+    """Group outsourced-PDF rows into report sections, matching the desktop.
+
+    Prefers the live (editable) workspace for the order so edits show immediately;
+    falls back to the immutable snapshot captured when the report was finalized.
+    """
+    live_rows = db.execute(
+        select(
+            OutsourcedPanelTable.panel_label,
+            OutsourcedPanelTable.source_pdf_path,
+            OutsourcedPanelRow.col_1,
+            OutsourcedPanelRow.col_2,
+            OutsourcedPanelRow.col_3,
+            OutsourcedPanelRow.col_4,
+            OutsourcedPanelRow.col_5,
+        )
+        .join(OutsourcedPanelTable, OutsourcedPanelTable.id == OutsourcedPanelRow.outsourced_panel_table_id)
+        .where(OutsourcedPanelTable.order_id == order_id)
+        .order_by(OutsourcedPanelTable.panel_label.asc(), OutsourcedPanelRow.row_index.asc(), OutsourcedPanelRow.id.asc())
+    ).all()
+    if live_rows:
+        return _group_outsourced_rows(live_rows)
+
+    if report_id is None:
+        return []
+    snapshot_rows = db.execute(
+        select(
+            ReportOutsourcedRowSnapshot.panel_label,
+            ReportOutsourcedRowSnapshot.source_pdf_path,
+            ReportOutsourcedRowSnapshot.col_1,
+            ReportOutsourcedRowSnapshot.col_2,
+            ReportOutsourcedRowSnapshot.col_3,
+            ReportOutsourcedRowSnapshot.col_4,
+            ReportOutsourcedRowSnapshot.col_5,
+        )
+        .where(ReportOutsourcedRowSnapshot.report_id == report_id)
+        .order_by(ReportOutsourcedRowSnapshot.panel_label.asc(), ReportOutsourcedRowSnapshot.row_index.asc(), ReportOutsourcedRowSnapshot.id.asc())
+    ).all()
+    return _group_outsourced_rows(snapshot_rows)
+
+
+def _group_outsourced_rows(rows) -> list[dict[str, Any]]:
+    grouped: list[dict[str, Any]] = []
+    current_key: tuple[str, str] | None = None
+    current_section: dict[str, Any] | None = None
+    for row in rows:
+        panel_label = str(row.panel_label or '').strip()
+        source_pdf_path = str(row.source_pdf_path or '').strip()
+        key = (panel_label, source_pdf_path)
+        if current_key != key:
+            current_key = key
+            current_section = {'panel_label': panel_label, 'source_pdf_path': source_pdf_path, 'rows': []}
+            grouped.append(current_section)
+        # Renumber sequentially: each extraction restarts row_index at 0, so the
+        # stored value collides across pages. Insertion order gives the true sequence.
+        current_section['rows'].append(
+            {
+                'row_index': len(current_section['rows']),
+                'col_1': str(row.col_1 or ''),
+                'col_2': str(row.col_2 or ''),
+                'col_3': str(row.col_3 or ''),
+                'col_4': str(row.col_4 or ''),
+                'col_5': str(row.col_5 or ''),
+            }
+        )
+    return grouped
 
 
 def _public_asset_url(raw_path: str | None, request: Request) -> str:
