@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import base64
+from datetime import date
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
@@ -94,8 +95,15 @@ class ReportPreviewOut(BaseModel):
 
 
 @router.get('/order-choices', response_model=list[ReportOrderChoiceOut])
-def list_report_order_choices(db: Session = Depends(get_db), _actor: UUID | None = Depends(actor_from_header)):
-    rows = db.execute(
+def list_report_order_choices(
+    client_id: str | None = None,
+    test_id: str | None = None,
+    date_from: str = "",
+    date_to: str = "",
+    db: Session = Depends(get_db),
+    _actor: UUID | None = Depends(actor_from_header),
+):
+    stmt = (
         select(
             LabOrder.id,
             LabOrder.order_number,
@@ -116,7 +124,20 @@ def list_report_order_choices(db: Session = Depends(get_db), _actor: UUID | None
             Patient.middle_name,
         )
         .order_by(LabOrder.ordered_at.desc(), LabOrder.order_number.desc())
-    ).all()
+    )
+    if client_id:
+        stmt = stmt.where(LabOrder.client_id == _parse_uuid(client_id, field_name='client_id'))
+    if test_id:
+        match_item = aliased(OrderItem)
+        parsed_test = _parse_uuid(test_id, field_name='test_id')
+        stmt = stmt.where(
+            exists().where(match_item.order_id == LabOrder.id, match_item.test_id == parsed_test)
+        )
+    if date_from:
+        stmt = stmt.where(func.date(LabOrder.ordered_at) >= _parse_date_filter(date_from, field_name='date_from'))
+    if date_to:
+        stmt = stmt.where(func.date(LabOrder.ordered_at) <= _parse_date_filter(date_to, field_name='date_to'))
+    rows = db.execute(stmt).all()
     result: list[ReportOrderChoiceOut] = []
     for row in rows:
         patient_name = _patient_name(row.first_name, row.last_name, row.middle_name)
@@ -304,6 +325,33 @@ def finalize_report(order_id: str, payload: FinalizeReportIn, request: Request, 
     db.commit()
     db.refresh(report)
     return {'id': str(report.id), 'report_version': report.report_version, 'status': report.status}
+
+
+@router.delete('/orders/{order_id}')
+def delete_saved_report(order_id: str, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
+    parsed_order_id = _parse_uuid(order_id, field_name='order_id')
+    report = db.scalars(select(ReportSnapshot).where(ReportSnapshot.order_id == parsed_order_id)).first()
+    if report is None:
+        return {'status': 'not_found'}
+    before = _report_audit_payload(report, db)
+    report_id = report.id
+    # Children have ON DELETE CASCADE, but delete explicitly to be safe and clear.
+    db.execute(delete(ReportItemImageSnapshot).where(ReportItemImageSnapshot.report_id == report_id))
+    db.execute(delete(ReportOutsourcedRowSnapshot).where(ReportOutsourcedRowSnapshot.report_id == report_id))
+    db.execute(delete(ReportItemSnapshot).where(ReportItemSnapshot.report_id == report_id))
+    db.delete(report)
+    db.flush()
+    log_audit(
+        db,
+        actor_user_id=actor,
+        entity='report',
+        entity_id=str(report_id),
+        action='delete',
+        before_json=before,
+        after_json=None,
+    )
+    db.commit()
+    return {'status': 'ok'}
 
 
 def _build_live_preview(order_id: UUID, request: Request, db: Session) -> ReportPreviewOut | None:
@@ -537,6 +585,13 @@ def _iso_or_none(value) -> str | None:
 def _parse_uuid(raw_value: str, *, field_name: str) -> UUID:
     try:
         return UUID(str(raw_value))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f'invalid {field_name}') from exc
+
+
+def _parse_date_filter(raw: str, *, field_name: str) -> date:
+    try:
+        return date.fromisoformat(raw.strip()[:10])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f'invalid {field_name}') from exc
 

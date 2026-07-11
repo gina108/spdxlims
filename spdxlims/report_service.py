@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib import parse
 
 from spdxlims.service_base import ServiceBase
 
@@ -49,7 +50,27 @@ class ReportService(ServiceBase):
                 date_from=date_from,
                 date_to=date_to,
             )
-        raise RuntimeError('Filtered report generation is currently available only in local mode.')
+        query = parse.urlencode(
+            {
+                key: value
+                for key, value in (
+                    ("client_id", "" if client_id is None else str(client_id)),
+                    ("test_id", "" if test_id is None else str(test_id)),
+                    ("date_from", date_from or ""),
+                    ("date_to", date_to or ""),
+                )
+                if value
+            }
+        )
+        path = "/api/reports/order-choices" + (f"?{query}" if query else "")
+        payload = self.deployment_service.request_json("GET", path)
+        if not isinstance(payload, list):
+            return []
+        return [
+            (str(item.get("id") or ""), str(item.get("label") or ""))
+            for item in payload
+            if isinstance(item, dict) and item.get("id") and item.get("label")
+        ]
 
     def get_live_report_preview(self, order_id: int | str) -> dict[str, Any] | None:
         if self._is_local():
@@ -104,4 +125,4 @@ class ReportService(ServiceBase):
         if self._is_local():
             self.database.delete_saved_report(int(order_id))
             return
-        raise RuntimeError('Deleting saved reports is currently available only in local mode.')
+        self.deployment_service.request_json('DELETE', f'/api/reports/orders/{order_id}')
