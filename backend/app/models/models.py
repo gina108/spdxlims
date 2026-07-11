@@ -465,6 +465,47 @@ class MonthEndSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class InventoryStockItem(Base):
+    """Desktop-style stock item (single on-hand quantity, no lots)."""
+
+    __tablename__ = "inventory_stock_item"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sku: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    unit: Mapped[str | None] = mapped_column(String(32))
+    on_hand: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False, default=0)
+    reorder_level: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False, default=0)
+    unit_cost: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class InventorySupplier(Base):
+    __tablename__ = "inventory_supplier"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(40))
+    email: Mapped[str | None] = mapped_column(String(255))
+    tax_id: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class InventoryMovement(Base):
+    __tablename__ = "inventory_movement"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_stock_item.id", ondelete="CASCADE"), nullable=False)
+    supplier_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("inventory_supplier.id", ondelete="SET NULL"))
+    movement_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(14, 3), nullable=False, default=0)
+    unit_cost: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    movement_date: Mapped[date | None] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_event"
 

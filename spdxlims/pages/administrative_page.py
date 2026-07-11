@@ -54,7 +54,9 @@ from spdxlims.database import (
     ReceiptRecord,
     SupplierRecord,
 )
+from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
+from spdxlims.inventory_service import InventoryService
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pages.orders_page import ClientDialog, DoctorDialog
 from spdxlims.sat_catalogs import FORMA_PAGO_OPTIONS, METODO_PAGO_OPTIONS, USO_CFDI_OPTIONS
@@ -67,10 +69,16 @@ class AdministrativePage(DataAwarePage):
     def minimumSizeHint(self) -> QSize:
         return QSize(1, 1)
 
-    def __init__(self, database: Database, *, section_mode: str = 'full') -> None:
+    def __init__(self, database: Database, *, section_mode: str = 'full', deployment_service: DeploymentService | None = None) -> None:
         super().__init__()
         self.database = database
         self.section_mode = section_mode
+        # Inventory works in server mode via the API; other admin areas (invoices/
+        # CFDI) remain local for now. A missing deployment_service defaults to local.
+        if deployment_service is None:
+            deployment_service = DeploymentService(Path('deployment.json'))
+        self.deployment_service = deployment_service
+        self.inventory_service = InventoryService(database, deployment_service)
         self.billing_records: list[BillingCustomerRecord] = []
         self.filtered_billing_records: list[BillingCustomerRecord] = []
         self.billing_status_filter = 'active'
@@ -603,14 +611,14 @@ class AdministrativePage(DataAwarePage):
             if self.section_mode != 'collections':
                 self.doctor_records = self.database.list_doctors(status_filter='all')
         if hasattr(self, 'inventory_group'):
-            self.inventory_records = self.database.list_inventory_items()
+            self.inventory_records = self.inventory_service.list_inventory_items()
         if self.section_mode != 'inventory':
             self.invoice_records = self.database.list_invoices()
             self.receipt_records = self.database.list_receipts()
         if hasattr(self, 'supplier_group'):
-            self.supplier_records = self.database.list_suppliers()
+            self.supplier_records = self.inventory_service.list_suppliers()
         if hasattr(self, 'movement_group'):
-            self.movement_records = self.database.list_inventory_movements()
+            self.movement_records = self.inventory_service.list_inventory_movements()
         if self.section_mode != 'inventory':
             self.invoice_number.setText(self.database.next_invoice_number())
         self.refresh_choices()
@@ -646,9 +654,9 @@ class AdministrativePage(DataAwarePage):
             self.set_combo_items(self.invoice_order, [(label, order_id) for order_id, label in self.database.list_filtered_invoice_order_choices(client_id=self.invoice_filter_client.currentData(), date_from=self._filter_date_value(self.invoice_filter_date_from), date_to=self._filter_date_value(self.invoice_filter_date_to))], placeholder=tr('Select order'), selected_data=self.invoice_order.currentData())
             self.set_combo_items(self.receipt_order, [(label, order_id) for order_id, label in self.database.list_receipt_order_choices(client_id=self.invoice_filter_client.currentData(), date_from=self._filter_date_value(self.invoice_filter_date_from), date_to=self._filter_date_value(self.invoice_filter_date_to))], placeholder=tr('Select order for receipt'), selected_data=self.receipt_order.currentData())
         if hasattr(self, 'movement_inventory'):
-            self.set_combo_items(self.movement_inventory, [(label, item_id) for item_id, label in self.database.list_inventory_item_choices()], placeholder=tr('Select inventory item'), selected_data=self.movement_inventory.currentData())
+            self.set_combo_items(self.movement_inventory, [(label, item_id) for item_id, label in self.inventory_service.list_inventory_item_choices()], placeholder=tr('Select inventory item'), selected_data=self.movement_inventory.currentData())
         if hasattr(self, 'movement_supplier'):
-            self.set_combo_items(self.movement_supplier, [(label, supplier_id) for supplier_id, label in self.database.list_supplier_choices()], placeholder=tr('Select supplier'), selected_data=self.movement_supplier.currentData())
+            self.set_combo_items(self.movement_supplier, [(label, supplier_id) for supplier_id, label in self.inventory_service.list_supplier_choices()], placeholder=tr('Select supplier'), selected_data=self.movement_supplier.currentData())
         if self.section_mode != 'inventory':
             invoice_order_count = max(self.invoice_order.count() - 1, 0)
             receipt_order_count = max(self.receipt_order.count() - 1, 0)
@@ -840,9 +848,9 @@ class AdministrativePage(DataAwarePage):
                 'unit_cost': self._parse_decimal(self.inventory_cost.text()),
             }
             if self.editing_inventory_id is not None:
-                self.database.update_inventory_item(self.editing_inventory_id, payload)
+                self.inventory_service.update_inventory_item(self.editing_inventory_id, payload)
             else:
-                self.database.create_inventory_item(payload)
+                self.inventory_service.create_inventory_item(payload)
         except ValueError:
             QMessageBox.warning(self, tr('Invalid Data'), tr('Inventory quantities and cost must be numeric.'))
             return
@@ -877,13 +885,13 @@ class AdministrativePage(DataAwarePage):
         if self.editing_inventory_id is None:
             QMessageBox.warning(self, tr('Missing Selection'), tr('Select an inventory item first.'))
             return
-        if self.database.inventory_item_has_movements(self.editing_inventory_id):
+        if self.inventory_service.inventory_item_has_movements(self.editing_inventory_id):
             QMessageBox.warning(self, tr('Delete Failed'), tr('This item has stock movements and cannot be deleted.'))
             return
         confirm = QMessageBox.question(self, tr('Delete Inventory Item'), tr('Delete this inventory item?'), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        self.database.delete_inventory_item(self.editing_inventory_id)
+        self.inventory_service.delete_inventory_item(self.editing_inventory_id)
         self.clear_inventory_form()
         self.refresh_data()
         self.notify_data_changed()
@@ -900,9 +908,9 @@ class AdministrativePage(DataAwarePage):
         try:
             payload = {'name': self.supplier_name.text(), 'tax_id': self.supplier_tax_id.text(), 'phone': self.supplier_phone.text(), 'email': self.supplier_email.text()}
             if self.editing_supplier_id is not None:
-                self.database.update_supplier(self.editing_supplier_id, payload)
+                self.inventory_service.update_supplier(self.editing_supplier_id, payload)
             else:
-                self.database.create_supplier(payload)
+                self.inventory_service.create_supplier(payload)
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr('Save Failed'), str(exc))
             return
@@ -932,13 +940,13 @@ class AdministrativePage(DataAwarePage):
         if self.editing_supplier_id is None:
             QMessageBox.warning(self, tr('Missing Selection'), tr('Select a supplier first.'))
             return
-        if self.database.supplier_has_movements(self.editing_supplier_id):
+        if self.inventory_service.supplier_has_movements(self.editing_supplier_id):
             QMessageBox.warning(self, tr('Delete Failed'), tr('This supplier is used by stock movements and cannot be deleted.'))
             return
         confirm = QMessageBox.question(self, tr('Delete Supplier'), tr('Delete this supplier?'), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        self.database.delete_supplier(self.editing_supplier_id)
+        self.inventory_service.delete_supplier(self.editing_supplier_id)
         self.clear_supplier_form()
         self.refresh_data()
         self.notify_data_changed()
@@ -953,7 +961,7 @@ class AdministrativePage(DataAwarePage):
             QMessageBox.warning(self, tr('Missing Data'), tr('Select inventory item'))
             return
         try:
-            self.database.create_inventory_movement({'inventory_item_id': self.movement_inventory.currentData(), 'supplier_id': self.movement_supplier.currentData(), 'movement_type': self.movement_type.currentData(), 'quantity': self._parse_decimal(self.movement_quantity.text()), 'unit_cost': self._parse_decimal(self.movement_cost.text()), 'movement_date': self.movement_date.date().toString('yyyy-MM-dd'), 'notes': self.movement_notes.text()})
+            self.inventory_service.create_inventory_movement({'inventory_item_id': self.movement_inventory.currentData(), 'supplier_id': self.movement_supplier.currentData(), 'movement_type': self.movement_type.currentData(), 'quantity': self._parse_decimal(self.movement_quantity.text()), 'unit_cost': self._parse_decimal(self.movement_cost.text()), 'movement_date': self.movement_date.date().toString('yyyy-MM-dd'), 'notes': self.movement_notes.text()})
         except ValueError:
             QMessageBox.warning(self, tr('Invalid Data'), tr('Inventory quantities and cost must be numeric.'))
             return

@@ -167,8 +167,8 @@ class MainWindow(QMainWindow):
             ("addons", lambda: AddonsPage(addon_manager)),
             ("settings", lambda: SettingsPage(database, deployment_service)),
             ("admin_prices", lambda: PricesPage(database, deployment_service)),
-            ("admin_invoices", lambda: AdministrativePage(database, section_mode="collections")),
-            ("admin_inventory", lambda: AdministrativePage(database, section_mode="inventory")),
+            ("admin_invoices", lambda: AdministrativePage(database, section_mode="collections", deployment_service=deployment_service)),
+            ("admin_inventory", lambda: AdministrativePage(database, section_mode="inventory", deployment_service=deployment_service)),
             ("admin_reports", lambda: ReportsPage(database, deployment_service)),
             ("admin_marketing", lambda: MarketingListPage(database, deployment_service)),
         ]
@@ -314,8 +314,8 @@ class MainWindow(QMainWindow):
         for addon_id, addon in available_addons.items():
             if addon_id == "administrative_tools":
                 self.page_builders["admin_prices"] = lambda: PricesPage(self.database, self.deployment_service)
-                self.page_builders["admin_invoices"] = lambda: AdministrativePage(self.database, section_mode="collections")
-                self.page_builders["admin_inventory"] = lambda: AdministrativePage(self.database, section_mode="inventory")
+                self.page_builders["admin_invoices"] = lambda: AdministrativePage(self.database, section_mode="collections", deployment_service=self.deployment_service)
+                self.page_builders["admin_inventory"] = lambda: AdministrativePage(self.database, section_mode="inventory", deployment_service=self.deployment_service)
                 self.page_builders["admin_marketing"] = lambda: MarketingListPage(self.database, self.deployment_service)
                 self.nav_entries.append(("admin_inventory", "admin_inventory", "Inventario", ("administrative",)))
                 self.nav_entries.append(("admin_prices", "admin_prices", "Precios", ("administrative",)))

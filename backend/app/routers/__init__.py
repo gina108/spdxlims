@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.routers import auth, billing, inventory, lab_profile, month_close, operations, orders, outsourced, panels, patients, providers, reports, results, statistics, tests
+from app.routers import auth, billing, inventory, lab_profile, month_close, operations, orders, outsourced, panels, patients, providers, reports, results, statistics, stock, tests
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -18,5 +18,6 @@ api_router.include_router(month_close.router, prefix="/month-close", tags=["mont
 api_router.include_router(operations.router, prefix="/operations", tags=["operations"])
 api_router.include_router(outsourced.router, prefix="/outsourced", tags=["outsourced"])
 api_router.include_router(statistics.router, prefix="/statistics", tags=["statistics"])
+api_router.include_router(stock.router, prefix="/stock", tags=["stock"])
 
 
