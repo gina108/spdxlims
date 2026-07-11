@@ -2,9 +2,9 @@
 # Run this ONCE on a new PC to install the SPDXLIMS desktop app.
 #
 # HOW TO GET THIS FILE ONTO THE NEW PC (pick one):
-#   Option A — USB drive: copy this file to a USB drive, plug it in, right-click the
+#   Option A - USB drive: copy this file to a USB drive, plug it in, right-click the
 #              file and choose "Run with PowerShell".
-#   Option B — Download it directly on the new PC: open PowerShell and run:
+#   Option B - Download it directly on the new PC: open PowerShell and run:
 #              Invoke-WebRequest -Uri "https://raw.githubusercontent.com/gina108/spdxlims/main/scripts/setup-workstation.ps1" -OutFile "$env:USERPROFILE\Desktop\setup-workstation.ps1"
 #              Then right-click the file on the Desktop and choose "Run with PowerShell".
 
@@ -16,6 +16,16 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit
 }
 
+# Never let the (elevated) window vanish on an error before it can be read: catch
+# any terminating error, print it, and wait for the user instead of closing.
+trap {
+    Write-Host "`n  SETUP FAILED:" -ForegroundColor Red
+    Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+    if ($_.ScriptStackTrace) { Write-Host "`n  $($_.ScriptStackTrace)" -ForegroundColor DarkGray }
+    Read-Host "`n  Press Enter to close"
+    exit 1
+}
+
 $InstallDir = "C:\SPDXLIMS"
 $RepoUrl    = "https://github.com/gina108/spdxlims.git"
 $Branch     = "main"
@@ -23,6 +33,26 @@ $Branch     = "main"
 function Write-Step { param($msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-OK   { param($msg) Write-Host "    OK: $msg" -ForegroundColor Green }
 function Write-Warn { param($msg) Write-Host "    !! $msg" -ForegroundColor Yellow }
+
+function Find-RealPython {
+    # Returns a path to a WORKING python, skipping the Windows Store alias stub
+    # (under \WindowsApps\, which only opens the Store and breaks venv/pip). Tries
+    # the py launcher, PATH, and the standard winget install locations.
+    $candidates = @(
+        (Get-Command py     -ErrorAction SilentlyContinue).Source,
+        (Get-Command python -ErrorAction SilentlyContinue).Source,
+        "C:\Program Files\Python312\python.exe",
+        "C:\Program Files\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"
+    )
+    foreach ($c in $candidates) {
+        if ($c -and ($c -notlike "*\WindowsApps\*") -and (Test-Path $c)) {
+            try { $null = & $c --version 2>&1; if ($LASTEXITCODE -eq 0) { return $c } } catch { }
+        }
+    }
+    return $null
+}
 
 Write-Host ""
 Write-Host "  SPDXLIMS Workstation Setup" -ForegroundColor White
@@ -32,18 +62,22 @@ Write-Host "  ===========================" -ForegroundColor White
 # Python
 # ---------------------------------------------------------------------------
 Write-Step "Checking Python..."
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-if (-not $pythonCmd) {
+$pythonExe = Find-RealPython
+if (-not $pythonExe) {
     Write-Warn "Python not found. Installing via winget (this may take a few minutes)..."
-    winget install --id Python.Python.3.11 --source winget --accept-package-agreements --accept-source-agreements --silent
+    winget install --id Python.Python.3.11 --source winget --scope machine --accept-package-agreements --accept-source-agreements --silent
+    # winget updates the persisted PATH, not this process's; refresh it so we can
+    # find the freshly installed python without needing a new window.
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pythonCmd) {
-        Write-Host "`n  Python install failed. Please install Python 3.11 from https://python.org then re-run this script." -ForegroundColor Red
-        pause; exit 1
+    $pythonExe = Find-RealPython
+    if (-not $pythonExe) {
+        Write-Warn "Python was installed but this window can't see it yet."
+        Write-Host "  Please CLOSE this window and run setup-workstation.ps1 again." -ForegroundColor Yellow
+        Write-Host "  It will detect Python and continue the rest of the setup." -ForegroundColor Yellow
+        Read-Host "`n  Press Enter to close"
+        exit 1
     }
 }
-$pythonExe = $pythonCmd.Source
 Write-OK "Python: $pythonExe"
 
 # ---------------------------------------------------------------------------
@@ -75,7 +109,7 @@ Write-OK "Git: $gitExe"
 # ---------------------------------------------------------------------------
 Write-Step "Setting up app files in $InstallDir..."
 if (Test-Path (Join-Path $InstallDir ".git")) {
-    Write-Warn "$InstallDir already exists — pulling latest instead of cloning."
+    Write-Warn "$InstallDir already exists - pulling latest instead of cloning."
     & $gitExe -C $InstallDir pull
 } else {
     & $gitExe clone --branch $Branch $RepoUrl $InstallDir
