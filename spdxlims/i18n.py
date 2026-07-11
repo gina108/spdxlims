@@ -958,6 +958,7 @@ _TRANSLATIONS["es"].update(
         "PostgreSQL database": "Base de datos PostgreSQL",
         "Preview": "Vista previa",
         "Preview Capture": "Previsualizar captura",
+        "Preview Failed": "Falló la vista previa",
         "Preview Order Import": "Vista previa de importación de órdenes",
         "Preview Page": "Previsualizar página",
         "Print Failed": "Falló la impresión",

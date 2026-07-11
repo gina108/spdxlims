@@ -2336,7 +2336,14 @@ class ResultsPage(DataAwarePage):
         return None
 
     def preview_report(self, order_id: int) -> None:
-        preview = self.report_service.get_saved_report_preview(order_id) or self.report_service.get_live_report_preview(order_id)
+        try:
+            preview = self.report_service.get_saved_report_preview(order_id) or self.report_service.get_live_report_preview(order_id)
+        except RuntimeError as exc:
+            # In server mode the preview is fetched from the backend; a server/network
+            # error raises here. Surface it instead of letting it die inside the Qt
+            # slot (which made the button look like it did nothing).
+            QMessageBox.warning(self, tr("Preview Failed"), str(exc))
+            return
         if preview is None:
             QMessageBox.warning(self, tr("Missing Selection"), tr("No report could be generated for this order."))
             return
