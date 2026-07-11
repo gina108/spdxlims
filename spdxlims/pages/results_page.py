@@ -1088,7 +1088,7 @@ class ResultsPage(DataAwarePage):
             self._refresh_table()
 
     def refresh_on_show(self) -> None:
-        self.current_orders = self.database.list_results_workflow_orders()
+        self.current_orders = self.report_service.list_results_workflow_orders()
         if self.show_instruments:
             self._refresh_instrument_profile_choices()
             self._refresh_instrument_order_choices()
@@ -1314,7 +1314,7 @@ class ResultsPage(DataAwarePage):
             )
             return
         self._mark_instrument_capture_linked(capture_id, int(order_id))
-        self.current_orders = self.database.list_results_workflow_orders()
+        self.current_orders = self.report_service.list_results_workflow_orders()
         if self.show_review:
             self._refresh_table()
         self.refresh_instrument_captures()
@@ -1344,7 +1344,7 @@ class ResultsPage(DataAwarePage):
         imported_count = int(response.get("imported_count") or 0)
         unmatched_codes = [str(code) for code in response.get("unmatched_codes") or []]
         self._mark_instrument_capture_linked(capture_id, str(order_id))
-        self.current_orders = self.database.list_results_workflow_orders()
+        self.current_orders = self.report_service.list_results_workflow_orders()
         self._refresh_table()
         self.refresh_instrument_captures()
         detail = ""
@@ -1529,7 +1529,7 @@ class ResultsPage(DataAwarePage):
                 self._mark_instrument_capture_linked(capture_id, order_id)
                 imported_total += imported_count
         if imported_total > 0:
-            self.current_orders = self.database.list_results_workflow_orders()
+            self.current_orders = self.report_service.list_results_workflow_orders()
             if self.show_review:
                 self._refresh_table()
             self.refresh_instrument_captures()
@@ -1600,7 +1600,7 @@ class ResultsPage(DataAwarePage):
             if imported_count > 0:
                 self._mark_instrument_capture_linked(capture_id, order_id)
                 imported_total += imported_count
-        self.current_orders = self.database.list_results_workflow_orders()
+        self.current_orders = self.report_service.list_results_workflow_orders()
         if self.show_review:
             self._refresh_table()
         self.refresh_instrument_captures()
@@ -2080,7 +2080,7 @@ class ResultsPage(DataAwarePage):
             self._set_item(row_index, 3, order.client_name or "")
 
             approved = (
-                approvals.get(order.id) == int(order.report_version or 0)
+                approvals.get(str(order.id)) == int(order.report_version or 0)
                 and int(order.report_version or 0) > 0
                 and not int(order.report_outdated or 0)
             )
@@ -2214,22 +2214,25 @@ class ResultsPage(DataAwarePage):
             "}"
         )
 
-    def _approved_versions(self) -> dict[int, int]:
+    def _approved_versions(self) -> dict[str, int]:
+        # Keyed by str(order_id) so it works for both local integer ids and the
+        # server's UUID ids (int(uuid) would raise). Persisted keys are already
+        # stringified, so this is a no-op for existing local state.
         ui_state = self.database.get_ui_state()
         raw = ui_state.get(self.APPROVALS_KEY, {})
         if not isinstance(raw, dict):
             return {}
-        approvals: dict[int, int] = {}
+        approvals: dict[str, int] = {}
         for order_id, report_version in raw.items():
             try:
-                approvals[int(order_id)] = int(report_version)
+                approvals[str(order_id)] = int(report_version)
             except (TypeError, ValueError):
                 continue
         return approvals
 
     def _save_approved_version(self, order_id: int, report_version: int) -> None:
         approvals = self._approved_versions()
-        approvals[order_id] = report_version
+        approvals[str(order_id)] = report_version
         ui_state = self.database.get_ui_state()
         ui_state[self.APPROVALS_KEY] = {str(key): value for key, value in approvals.items()}
         self.database.save_ui_state(ui_state)
@@ -2355,7 +2358,7 @@ class ResultsPage(DataAwarePage):
         order = self._find_order(order_id)
         current_version = int(order.report_version or 0) if order is not None else int(preview.get("report_version") or 0)
         approved = (
-            self._approved_versions().get(order_id) == current_version
+            self._approved_versions().get(str(order_id)) == current_version
             and current_version > 0
             and not int((order.report_outdated if order is not None else 0) or 0)
         )

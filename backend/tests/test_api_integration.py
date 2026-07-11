@@ -145,6 +145,15 @@ def test_patient_order_result_report_happy_path(api_client):
     assert saved_response.status_code == 200, saved_response.text
     assert saved_response.json()["source"] == "saved"
 
+    workflow_response = api_client.get("/api/reports/results-workflow", headers=headers)
+    assert workflow_response.status_code == 200, workflow_response.text
+    workflow_row = next((row for row in workflow_response.json() if row["id"] == order_id), None)
+    assert workflow_row is not None, "finalized order missing from results-workflow list"
+    assert workflow_row["patient_name"] == "Ada Lovelace"
+    assert workflow_row["result_count"] == 1
+    assert workflow_row["completed_result_count"] == 1
+    assert workflow_row["report_version"] == 1
+
     with testing_session_local() as db:
         actions = [row.action for row in db.query(AuditEvent).order_by(AuditEvent.id).all()]
     assert "create" in actions

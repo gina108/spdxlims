@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete, exists, func, select
+from sqlalchemy import and_, case, delete, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
@@ -37,6 +37,22 @@ router = APIRouter()
 class ReportOrderChoiceOut(BaseModel):
     id: str
     label: str
+
+
+class ResultsWorkflowOrderOut(BaseModel):
+    id: str
+    order_number: str
+    order_date: str | None = None
+    patient_name: str
+    patient_phone: str | None = None
+    doctor_name: str | None = None
+    client_name: str | None = None
+    client_phone: str | None = None
+    report_version: int | None = None
+    report_finalized_at: str | None = None
+    result_count: int = 0
+    completed_result_count: int = 0
+    report_outdated: int = 0
 
 
 class ReportPreviewItemOut(BaseModel):
@@ -145,6 +161,102 @@ def list_report_order_choices(
             ReportOrderChoiceOut(
                 id=str(row.id),
                 label=f"{row.order_number} - {patient_name} ({int(row.item_count or 0)} tests, {row.status})",
+            )
+        )
+    return result
+
+
+# Panel heading/comment rows carry these sentinel test codes on the desktop; they
+# are layout, not billable/result-bearing tests, so they never count toward the
+# results-workflow progress totals.
+_PANEL_META_CODES = ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+
+
+@router.get('/results-workflow', response_model=list[ResultsWorkflowOrderOut])
+def list_results_workflow_orders(
+    db: Session = Depends(get_db),
+    _actor: UUID | None = Depends(actor_from_header),
+):
+    """Server-mode source for the Resultados workflow table. Mirrors the desktop's
+    Database.list_results_workflow_orders(): one row per active order with progress
+    counts (real, non-outsourced tests) and the latest report version.
+
+    report_outdated is always 0 here: unlike the desktop schema, the server's
+    lab_order/patient tables have no updated_at, so post-finalization edits can't
+    be detected server-side."""
+    doctor = aliased(Provider)
+    client = aliased(Provider)
+    countable = and_(
+        TestCatalog.code.notin_(_PANEL_META_CODES),
+        OrderItem.is_outsourced.is_(False),
+    )
+    completed = and_(
+        countable,
+        func.coalesce(
+            func.nullif(func.trim(Result.value_text), ''),
+            func.nullif(func.trim(TestCatalog.default_result_value), ''),
+        ).isnot(None),
+    )
+    stmt = (
+        select(
+            LabOrder.id,
+            LabOrder.order_number,
+            LabOrder.ordered_at,
+            Patient.first_name,
+            Patient.last_name,
+            Patient.middle_name,
+            Patient.phone.label('patient_phone'),
+            doctor.legal_name.label('doctor_name'),
+            client.legal_name.label('client_name'),
+            client.phone.label('client_phone'),
+            ReportSnapshot.report_version,
+            ReportSnapshot.finalized_at,
+            func.count(case((countable, 1))).label('result_count'),
+            func.count(case((completed, 1))).label('completed_result_count'),
+        )
+        .join(Patient, Patient.id == LabOrder.patient_id)
+        .outerjoin(doctor, doctor.id == LabOrder.doctor_id)
+        .outerjoin(client, client.id == LabOrder.client_id)
+        .outerjoin(ReportSnapshot, ReportSnapshot.order_id == LabOrder.id)
+        .outerjoin(OrderItem, OrderItem.order_id == LabOrder.id)
+        .outerjoin(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .outerjoin(Result, Result.order_item_id == OrderItem.id)
+        .where(func.coalesce(LabOrder.is_archived, False).is_(False))
+        .group_by(
+            LabOrder.id,
+            LabOrder.order_number,
+            LabOrder.ordered_at,
+            Patient.first_name,
+            Patient.last_name,
+            Patient.middle_name,
+            Patient.phone,
+            doctor.legal_name,
+            client.legal_name,
+            client.phone,
+            ReportSnapshot.report_version,
+            ReportSnapshot.finalized_at,
+        )
+        .order_by(LabOrder.ordered_at.desc(), LabOrder.order_number.desc())
+        .limit(100)
+    )
+    rows = db.execute(stmt).all()
+    result: list[ResultsWorkflowOrderOut] = []
+    for row in rows:
+        result.append(
+            ResultsWorkflowOrderOut(
+                id=str(row.id),
+                order_number=row.order_number,
+                order_date=_iso_or_none(row.ordered_at),
+                patient_name=_patient_name(row.first_name, row.last_name, row.middle_name),
+                patient_phone=row.patient_phone,
+                doctor_name=row.doctor_name,
+                client_name=row.client_name,
+                client_phone=row.client_phone,
+                report_version=row.report_version,
+                report_finalized_at=_iso_or_none(row.finalized_at),
+                result_count=int(row.result_count or 0),
+                completed_result_count=int(row.completed_result_count or 0),
+                report_outdated=0,
             )
         )
     return result

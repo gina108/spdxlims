@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import parse
 
+from spdxlims.database import ResultWorkflowRecord
 from spdxlims.service_base import ServiceBase
 
 
@@ -71,6 +72,38 @@ class ReportService(ServiceBase):
             for item in payload
             if isinstance(item, dict) and item.get("id") and item.get("label")
         ]
+
+    def list_results_workflow_orders(self) -> list[ResultWorkflowRecord]:
+        """Orders for the Resultados workflow table. Local mode reads SQLite; server
+        mode fetches from the backend so the rows carry the server's UUID order ids
+        (which the preview/finalize endpoints require)."""
+        if self._is_local():
+            return self.database.list_results_workflow_orders()
+        payload = self.deployment_service.request_json('GET', '/api/reports/results-workflow')
+        if not isinstance(payload, list):
+            return []
+        records: list[ResultWorkflowRecord] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            records.append(
+                ResultWorkflowRecord(
+                    id=str(item.get('id') or ''),
+                    order_number=str(item.get('order_number') or ''),
+                    order_date=str(item.get('order_date') or ''),
+                    patient_name=str(item.get('patient_name') or ''),
+                    patient_phone=item.get('patient_phone'),
+                    doctor_name=item.get('doctor_name'),
+                    client_name=item.get('client_name'),
+                    client_phone=item.get('client_phone'),
+                    report_version=item.get('report_version'),
+                    report_finalized_at=item.get('report_finalized_at'),
+                    result_count=int(item.get('result_count') or 0),
+                    completed_result_count=int(item.get('completed_result_count') or 0),
+                    report_outdated=int(item.get('report_outdated') or 0),
+                )
+            )
+        return records
 
     def get_live_report_preview(self, order_id: int | str) -> dict[str, Any] | None:
         if self._is_local():
