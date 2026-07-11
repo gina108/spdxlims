@@ -15,7 +15,7 @@ from pathlib import Path
 class PortalSettings:
     base_url: str = ""
     shared_secret: str = ""
-    poll_interval_seconds: int = 60
+    poll_interval_seconds: int = 300
     auto_import: bool = False
 
     def is_configured(self) -> bool:
@@ -42,7 +42,7 @@ class PortalStore:
         return PortalSettings(
             base_url=str(data.get("base_url") or ""),
             shared_secret=str(data.get("shared_secret") or ""),
-            poll_interval_seconds=int(data.get("poll_interval_seconds") or 60),
+            poll_interval_seconds=int(data.get("poll_interval_seconds") or 300),
             auto_import=bool(data.get("auto_import", False)),
         )
 
