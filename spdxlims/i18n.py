@@ -790,6 +790,7 @@ _TRANSLATIONS["es"].update(
         "Connection Test": "Analito de conexión",
         "Copy and paste this placeholder into a WhatsApp message template.": "Copie y pegue este marcador en una plantilla de WhatsApp.",
         "Could not export the invoice PDF: {error}": "No se pudo exportar el PDF de la factura: {error}",
+        "Could not load orders from the server: {error}": "No se pudieron cargar las órdenes del servidor: {error}",
         "Could not open WhatsApp.": "No se pudo abrir WhatsApp.",
         "Could not open the PDF extractor from this window.": "No se pudo abrir el extractor de PDF desde esta ventana.",
         "Could not parse engine response": "No se pudo interpretar la respuesta del motor",

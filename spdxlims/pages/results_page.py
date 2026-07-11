@@ -1087,8 +1087,26 @@ class ResultsPage(DataAwarePage):
             )
             self._refresh_table()
 
+    def _reload_workflow_orders(self) -> None:
+        """Load the workflow order list, tolerating server errors so navigating to
+        the page (and post-action refreshes) never break. In server mode this is a
+        network call; on failure the table is emptied and the reason is shown in the
+        review summary label instead of the exception bubbling out of the page-show
+        and aborting navigation."""
+        try:
+            self.current_orders = self.report_service.list_results_workflow_orders()
+        except RuntimeError as exc:
+            self.current_orders = []
+            if hasattr(self, "summary_label"):
+                self.summary_label.setText(
+                    tr("Could not load orders from the server: {error}", error=str(exc))
+                )
+            return
+        if hasattr(self, "summary_label"):
+            self.summary_label.setText(tr("Pending report approvals and WhatsApp delivery are managed here."))
+
     def refresh_on_show(self) -> None:
-        self.current_orders = self.report_service.list_results_workflow_orders()
+        self._reload_workflow_orders()
         if self.show_instruments:
             self._refresh_instrument_profile_choices()
             self._refresh_instrument_order_choices()
@@ -1314,7 +1332,7 @@ class ResultsPage(DataAwarePage):
             )
             return
         self._mark_instrument_capture_linked(capture_id, int(order_id))
-        self.current_orders = self.report_service.list_results_workflow_orders()
+        self._reload_workflow_orders()
         if self.show_review:
             self._refresh_table()
         self.refresh_instrument_captures()
@@ -1344,7 +1362,7 @@ class ResultsPage(DataAwarePage):
         imported_count = int(response.get("imported_count") or 0)
         unmatched_codes = [str(code) for code in response.get("unmatched_codes") or []]
         self._mark_instrument_capture_linked(capture_id, str(order_id))
-        self.current_orders = self.report_service.list_results_workflow_orders()
+        self._reload_workflow_orders()
         self._refresh_table()
         self.refresh_instrument_captures()
         detail = ""
@@ -1529,7 +1547,7 @@ class ResultsPage(DataAwarePage):
                 self._mark_instrument_capture_linked(capture_id, order_id)
                 imported_total += imported_count
         if imported_total > 0:
-            self.current_orders = self.report_service.list_results_workflow_orders()
+            self._reload_workflow_orders()
             if self.show_review:
                 self._refresh_table()
             self.refresh_instrument_captures()
@@ -1600,7 +1618,7 @@ class ResultsPage(DataAwarePage):
             if imported_count > 0:
                 self._mark_instrument_capture_linked(capture_id, order_id)
                 imported_total += imported_count
-        self.current_orders = self.report_service.list_results_workflow_orders()
+        self._reload_workflow_orders()
         if self.show_review:
             self._refresh_table()
         self.refresh_instrument_captures()
