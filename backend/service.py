@@ -35,8 +35,21 @@ def _load_env() -> dict[str, str]:
     return env
 
 
+def _python_exe() -> str:
+    """Return a real python.exe for launching uvicorn.
+
+    When this module runs inside the Windows service host, sys.executable is
+    pythonservice.exe, which cannot run "-m uvicorn". Prefer the backend venv's
+    python.exe so the service starts reliably regardless of the host process.
+    """
+    candidate = BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
+    if candidate.exists():
+        return str(candidate)
+    return sys.executable
+
+
 def _uvicorn_cmd() -> list[str]:
-    return [sys.executable, "-m", "uvicorn", "app.main:app",
+    return [_python_exe(), "-m", "uvicorn", "app.main:app",
             "--host", "0.0.0.0", "--port", str(DEFAULT_PORT)]
 
 
