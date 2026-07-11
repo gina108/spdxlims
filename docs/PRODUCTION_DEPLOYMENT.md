@@ -66,7 +66,7 @@ Run this against a disposable database before using the real production database
 
 ```powershell
 cd C:\SPDXLIMS
-.\scripts\server-smoke-test.ps1 -DatabaseUrl "postgresql+psycopg://spdxlims_test:SdxTest123!@localhost:5432/spdxlims_test"
+.\scripts\server-smoke-test.ps1 -DatabaseUrl "postgresql+psycopg://spdxlims_test:CHANGE_ME_TEST_PASSWORD@localhost:5432/spdxlims_test"
 ```
 
 The smoke test drops and recreates all tables in the target database. Never point it at production.
