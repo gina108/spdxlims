@@ -26,6 +26,7 @@ from spdxlims.database import Database
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
+from spdxlims.statistics_service import StatisticsService
 
 
 class StatisticsPage(DataAwarePage):
@@ -37,6 +38,7 @@ class StatisticsPage(DataAwarePage):
         super().__init__()
         self.database = database
         self.deployment_service = deployment_service
+        self.stats_service = StatisticsService(database, deployment_service)
         self._current_headers: list[str] = []
         self._current_rows: list[list[str]] = []
 
@@ -232,19 +234,19 @@ class StatisticsPage(DataAwarePage):
 
     # ----- report runners (return list[dict]) -----
     def _run_test_volume(self) -> list[dict[str, Any]]:
-        return self.database.report_test_volume(*self._date_args(), client_id=self.client_filter.currentData(), subjects=self._subjects())
+        return self.stats_service.report_test_volume(*self._date_args(), client_id=self.client_filter.currentData(), subjects=self._subjects())
 
     def _run_panel_volume(self) -> list[dict[str, Any]]:
-        return self.database.report_panel_volume(*self._date_args(), client_id=self.client_filter.currentData(), subjects=self._subjects())
+        return self.stats_service.report_panel_volume(*self._date_args(), client_id=self.client_filter.currentData(), subjects=self._subjects())
 
     def _run_client_volume(self) -> list[dict[str, Any]]:
-        return self.database.report_client_volume(*self._date_args(), subjects=self._subjects())
+        return self.stats_service.report_client_volume(*self._date_args(), subjects=self._subjects())
 
     def _run_doctor_volume(self) -> list[dict[str, Any]]:
-        return self.database.report_doctor_volume(*self._date_args(), subjects=self._subjects())
+        return self.stats_service.report_doctor_volume(*self._date_args(), subjects=self._subjects())
 
     def _run_inventory_usage(self) -> list[dict[str, Any]]:
-        return self.database.report_inventory_usage(*self._date_args())
+        return self.stats_service.report_inventory_usage(*self._date_args())
 
     # ----- ui plumbing -----
     def retranslate_ui(self) -> None:
@@ -280,7 +282,7 @@ class StatisticsPage(DataAwarePage):
     def refresh_choices(self) -> None:
         self.set_combo_items(
             self.client_filter,
-            [(label, client_id) for client_id, label in self.database.list_client_choices(active_only=True)],
+            [(label, client_id) for client_id, label in self.stats_service.list_client_choices(active_only=True)],
             placeholder=tr("All clients"),
             selected_data=self.client_filter.currentData(),
         )
@@ -299,13 +301,13 @@ class StatisticsPage(DataAwarePage):
 
     def _subject_options(self, kind: str | None) -> list[tuple[Any, str]]:
         if kind == "test":
-            return [(test_id, label) for test_id, label in self.database.list_test_choices()]
+            return [(test_id, label) for test_id, label in self.stats_service.list_test_choices()]
         if kind == "panel":
-            return [(forms, label) for forms, label in self.database.list_panel_filter_options()]
+            return [(forms, label) for forms, label in self.stats_service.list_panel_filter_options()]
         if kind == "doctor":
-            return [(doctor_id, label) for doctor_id, label in self.database.list_doctor_choices(active_only=True)]
+            return [(doctor_id, label) for doctor_id, label in self.stats_service.list_doctor_choices(active_only=True)]
         if kind == "client":
-            return [(client_id, label) for client_id, label in self.database.list_client_choices(active_only=True)]
+            return [(client_id, label) for client_id, label in self.stats_service.list_client_choices(active_only=True)]
         return []
 
     def _add_subject_from_combo(self, index: int) -> None:
