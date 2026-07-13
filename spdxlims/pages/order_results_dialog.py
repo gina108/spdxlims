@@ -497,16 +497,20 @@ class OrderResultsDialog(QDialog):
         current_value = entry.result_value or entry.default_result_value or ""
         if value == current_value:
             return
-        self.database.save_result_entry(
-            order_test_id=entry.order_test_id,
-            result_value=value,
-            unit=entry.unit or "",
-            lower_value=entry.lower_value,
-            upper_value=entry.upper_value,
-            reference_text=entry.reference_text or "",
-            comments=entry.comments or "",
-            result_kind=entry.result_kind,
-        )
+        try:
+            self.result_service.save_result_entry(
+                order_test_id=entry.order_test_id,
+                result_value=value,
+                unit=entry.unit or "",
+                lower_value=entry.lower_value,
+                upper_value=entry.upper_value,
+                reference_text=entry.reference_text or "",
+                comments=entry.comments or "",
+                result_kind=entry.result_kind,
+            )
+        except RuntimeError as exc:
+            QMessageBox.warning(self, tr("Save Failed"), str(exc))
+            return
         entry.result_value = value
         item = self.results_table.item(row, 1)
         if item is not None:
@@ -614,16 +618,20 @@ class OrderResultsDialog(QDialog):
         # For image results the value summary is maintained by the image manager;
         # the entry form only persists comments alongside it.
         result_value = self.current_entry.result_value or "" if is_image else self._current_result_value()
-        self.database.save_result_entry(
-            order_test_id=self.current_entry.order_test_id,
-            result_value=result_value,
-            unit="" if is_image else self.unit.text(),
-            lower_value=lower,
-            upper_value=upper,
-            reference_text="" if is_image else self.reference_text.toPlainText(),
-            comments=self.comments.toPlainText(),
-            result_kind=self.current_entry.result_kind,
-        )
+        try:
+            self.result_service.save_result_entry(
+                order_test_id=self.current_entry.order_test_id,
+                result_value=result_value,
+                unit="" if is_image else self.unit.text(),
+                lower_value=lower,
+                upper_value=upper,
+                reference_text="" if is_image else self.reference_text.toPlainText(),
+                comments=self.comments.toPlainText(),
+                result_kind=self.current_entry.result_kind,
+            )
+        except RuntimeError as exc:
+            QMessageBox.warning(self, tr("Save Failed"), str(exc))
+            return
         self.load_order()
         QMessageBox.information(self, tr("Saved"), tr("Result saved."))
 
@@ -700,7 +708,15 @@ class OrderResultsDialog(QDialog):
         return display_entries
 
     def _open_outsourced_panel_in_pdf(self, panel_label: str) -> None:
-        current_order_id = int(self.order_id)
+        try:
+            current_order_id = int(self.order_id)
+        except (TypeError, ValueError):
+            QMessageBox.warning(
+                self,
+                tr("Not Available"),
+                tr("Opening outsourced panels in the PDF extractor is not available in server mode yet."),
+            )
+            return
         candidates: list[QWidget] = []
         parent = self.parentWidget()
         while parent is not None:

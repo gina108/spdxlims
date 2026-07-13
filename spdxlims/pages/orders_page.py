@@ -1329,9 +1329,6 @@ class OrdersPage(DataAwarePage):
         return f"{sheet} row {row_number}" if sheet else f"Row {row_number}"
 
     def handle_recent_order_double_click(self, _row: int, _col: int) -> None:
-        if self.order_service.uses_server_backend():
-            self.open_selected_order_for_edit()
-            return
         self.open_order_results_dialog()
 
     def open_selected_order_for_edit(self) -> None:
