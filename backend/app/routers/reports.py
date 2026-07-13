@@ -68,6 +68,7 @@ class ReportPreviewItemOut(BaseModel):
     comments: str | None = None
     sort_order: int
     result_kind: str | None = None
+    source_label: str | None = None
     images: list[dict[str, Any]] = []
 
 
@@ -364,6 +365,7 @@ def finalize_report(order_id: str, payload: FinalizeReportIn, request: Request, 
                 comments_snapshot=item.comments,
                 sort_order=item.sort_order,
                 item_type_snapshot=item.item_type,
+                source_label_snapshot=item.source_label,
             )
         )
 
@@ -526,6 +528,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                 comments=row.comments,
                 sort_order=len(items),
                 result_kind=row.result_kind,
+                source_label=current_group_label or None,
                 images=_encode_images(live_images.get(row.order_item_id, [])),
             )
         )
@@ -630,6 +633,7 @@ def _build_saved_preview(order_id: UUID, request: Request, db: Session) -> Repor
                 comments=item.comments_snapshot,
                 sort_order=item.sort_order,
                 result_kind=result_kinds.get(item.order_item_id),
+                source_label=item.source_label_snapshot,
                 images=_encode_images(snapshot_images.get(item.order_item_id, [])),
             )
             for item in items

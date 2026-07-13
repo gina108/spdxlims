@@ -274,6 +274,7 @@ class ReportItemSnapshot(Base):
     comments_snapshot: Mapped[str | None] = mapped_column(Text)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     item_type_snapshot: Mapped[str] = mapped_column(String(16), nullable=False, default="test")
+    source_label_snapshot: Mapped[str | None] = mapped_column(String(255))
 
 
 class ReportOutsourcedRowSnapshot(Base):

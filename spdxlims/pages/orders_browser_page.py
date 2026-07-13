@@ -298,6 +298,15 @@ class OrdersBrowserPage(DataAwarePage):
         if QWebEnginePage is None:
             return None
         page = QWebEnginePage(self)
+        settings = page.settings()
+        web_attribute = getattr(settings, 'WebAttribute', None)
+        if web_attribute is not None:
+            local_access = getattr(web_attribute, 'LocalContentCanAccessFileUrls', None)
+            remote_access = getattr(web_attribute, 'LocalContentCanAccessRemoteUrls', None)
+            if local_access is not None:
+                settings.setAttribute(local_access, True)
+            if remote_access is not None:
+                settings.setAttribute(remote_access, True)
         loop = QEventLoop(self)
         timeout = QTimer(self)
         timeout.setSingleShot(True)
