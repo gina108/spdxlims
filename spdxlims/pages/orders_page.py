@@ -1858,7 +1858,10 @@ class OrdersPage(DataAwarePage):
         self.selected_stack.setCurrentIndex(1 if self.selected_panels else 0)
 
     def populate_next_order_number(self) -> None:
-        self.order_number.setText(self.order_service.next_order_number())
+        try:
+            self.order_number.setText(self.order_service.next_order_number())
+        except Exception:
+            self.order_number.setText("")
         self.order_number.setPlaceholderText(tr("Assigned automatically when saved."))
 
     def _set_test_row_visible(self, visible: bool) -> None:
