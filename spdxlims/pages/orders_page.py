@@ -766,14 +766,78 @@ class OrdersPage(DataAwarePage):
         dialog.exec()
 
     def open_order_labels_dialog(self) -> None:
-        order_id = self._selected_recent_order_id()
-        if order_id is None:
+        row = self.orders_table.currentRow()
+        if row < 0 or row >= len(self.recent_order_records):
             QMessageBox.warning(self, tr("Missing Selection"), tr("Select a recent order first."))
             return
+        record = self.recent_order_records[row]
         prefs = self.database.get_label_print_preferences()
+        printer_id = str(prefs.get("printer") or "niimbot:B1")
+
+        # Try to get full label rows from local DB first; fall back to a synthetic
+        # row built from the browser record (needed in server mode where order IDs
+        # are UUIDs that don't exist in local SQLite).
+        label_rows = self.database.get_order_label_entries(record.id)
+        if not label_rows:
+            label_rows = [{
+                "order_number": record.order_number,
+                "accession_id": None,
+                "sample_id": None,
+                "client_id": None,
+                "patient_name": record.patient_name,
+                "patient_sex": None,
+                "age_value": None,
+                "age_unit": None,
+                "test_name": "",
+                "specimen_type": "",
+                "test_code": "",
+                "item_type": "test",
+                "created_at": record.order_date,
+                "group_label": "",
+            }]
+
+        base_row = dict(label_rows[0])
+        base_row["test_name"] = ""
+        base_row["specimen_type"] = ""
+        base_row["group_label"] = ""
+        size_key = str(prefs.get("size") or "small_tall")
+        payload_key = str(prefs.get("payload") or "order_only")
+        copies = max(1, int(str(prefs.get("copies") or "1")))
+        density = max(1, min(5, int(str(prefs.get("density") or "4"))))
+        show_barcode = str(prefs.get("show_barcode") or "1") == "1"
+        show_patient_name = str(prefs.get("show_patient_name") or "1") == "1"
+        show_order_number_text = str(prefs.get("show_order_number_text") or "0") == "1"
+        show_datetime = str(prefs.get("show_datetime") or "0") == "1"
+        width_mm, height_mm = OrderLabelsDialog._niimbot_label_size(size_key)
+        token = OrderLabelsDialog._build_token(base_row, payload_key)
+        safe_token = "".join(c if c.isalnum() else "" for c in token.upper()) or token.upper()
+        text_lines: list[str] = []
+        if show_order_number_text:
+            v = str(base_row.get("order_number") or "").strip()
+            if v:
+                text_lines.append(v)
+        if show_patient_name:
+            v = str(base_row.get("patient_name") or "").strip()
+            if v:
+                text_lines.append(v)
+        if show_datetime:
+            v = str(base_row.get("created_at") or "").strip()
+            if v:
+                text_lines.append(v)
+
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self._print_order_label_silent(order_id, prefs, LabelPrinterClient(), str(prefs.get("printer") or "niimbot:B1"))
+            LabelPrinterClient().print_label(
+                printer_id=printer_id,
+                width_mm=width_mm,
+                height_mm=height_mm,
+                barcode_value=safe_token,
+                human_text=safe_token,
+                text_lines=text_lines,
+                show_barcode=show_barcode,
+                copies=copies,
+                density=density,
+            )
         except LabelPrinterError as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, tr("Print Failed"), str(exc))
