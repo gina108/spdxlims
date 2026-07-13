@@ -159,9 +159,10 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
         .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
         .outerjoin(Result, Result.order_item_id == OrderItem.id)
         .where(OrderItem.order_id == parsed_order_id)
-        .order_by(OrderItem.id.asc())
+        .order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())
     ).all()
     entries: list[ResultEntryOut] = []
+    current_group_label: str | None = None
     for row in rows:
         patient_age_days = _age_to_days(row.age_value, row.age_unit, row.dob)
         reference = _resolve_reference_range(db, row.test_id, row.sex, patient_age_days)
@@ -174,7 +175,7 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
         reference_text = row.reference_text or (reference.reference_text if reference is not None else None)
         flag = row.flag or _calculate_flag(result_kind, result_value or '', lower_value, upper_value)
         group_label = (row.group_label or '').strip()
-        if group_label and (not entries or entries[-1].item_type != 'heading' or entries[-1].test_name != group_label):
+        if group_label and group_label != current_group_label:
             entries.append(
                 ResultEntryOut(
                     order_test_id=f'heading:{row.order_item_id}',
@@ -200,6 +201,7 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
                     test_status='pending',
                 )
             )
+        current_group_label = group_label
         entries.append(
             ResultEntryOut(
                 order_test_id=str(row.order_item_id),

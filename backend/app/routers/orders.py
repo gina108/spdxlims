@@ -344,7 +344,7 @@ def _build_order_detail(order: LabOrder, db: Session) -> OrderDetailOut:
         select(OrderItem, TestCatalog)
         .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
         .where(OrderItem.order_id == order.id)
-        .order_by(OrderItem.id.asc())
+        .order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())
     ).all()
     return OrderDetailOut(
         id=str(order.id),
@@ -427,8 +427,8 @@ def update_order(order_id: str, payload: OrderCreateIn, db: Session = Depends(ge
 
     db.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
     db.flush()
-    for requested in requested_items:
-        db.add(OrderItem(order_id=order.id, test_id=requested['test_id'], group_label=requested['source'], priority='routine'))
+    for index, requested in enumerate(requested_items):
+        db.add(OrderItem(order_id=order.id, test_id=requested['test_id'], group_label=requested['source'], sort_order=index, priority='routine'))
 
     db.flush()
     log_audit(
@@ -476,8 +476,8 @@ def create_order(payload: OrderCreateIn, db: Session = Depends(get_db), actor: U
     db.add(order)
     db.flush()
 
-    for requested in requested_items:
-        db.add(OrderItem(order_id=order.id, test_id=requested["test_id"], group_label=requested["source"], priority="routine"))
+    for index, requested in enumerate(requested_items):
+        db.add(OrderItem(order_id=order.id, test_id=requested["test_id"], group_label=requested["source"], sort_order=index, priority="routine"))
 
     db.flush()
     log_audit(
@@ -530,7 +530,7 @@ def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str
 
 
 def _order_audit_payload(order: LabOrder, db: Session) -> dict[str, object]:
-    item_rows = db.execute(select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.id.asc())).scalars().all()
+    item_rows = db.execute(select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())).scalars().all()
     return {
         "order_number": order.order_number,
         "patient_id": str(order.patient_id) if order.patient_id else None,

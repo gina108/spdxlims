@@ -488,13 +488,14 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
         .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
         .outerjoin(Result, Result.order_item_id == OrderItem.id)
         .where(OrderItem.order_id == order_id)
-        .order_by(OrderItem.id.asc())
+        .order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())
     ).all()
     live_images = _live_images_by_order_item(order_id, db)
     items: list[ReportPreviewItemOut] = []
+    current_group_label: str | None = None
     for index, row in enumerate(item_rows):
         group_label = (row.group_label or '').strip()
-        if group_label and (not items or items[-1].item_type != 'heading' or items[-1].test_name != group_label):
+        if group_label and group_label != current_group_label:
             items.append(
                 ReportPreviewItemOut(
                     order_test_id=None,
@@ -510,6 +511,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                     sort_order=len(items),
                 )
             )
+        current_group_label = group_label
         items.append(
             ReportPreviewItemOut(
                 order_test_id=str(row.order_item_id),

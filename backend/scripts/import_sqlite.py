@@ -554,6 +554,7 @@ def import_orders(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
             db.flush()
 
         current_group_label: str | None = None
+        item_sort_order = 0
         for source_item in tests_by_order.get(int(row["id"]), []):
             local_order_test_id = int(source_item["id"])
             test_code = _clean_text(source_item["test_code"], fallback="")
@@ -572,6 +573,7 @@ def import_orders(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
                 order_id=order.id,
                 test_id=imported_test_id,
                 group_label=current_group_label,
+                sort_order=item_sort_order,
                 priority="routine",
                 is_outsourced=_parse_bool(source_item["is_outsourced"], default=False),
                 source_label=_clean_text(source_item["source_label"]),
@@ -579,6 +581,7 @@ def import_orders(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
             db.add(order_item)
             db.flush()
             context.order_item_ids[local_order_test_id] = order_item.id
+            item_sort_order += 1
 
         context.order_ids[int(row["id"])] = order.id
         imported += 1
