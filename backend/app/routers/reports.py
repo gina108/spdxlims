@@ -29,7 +29,14 @@ from app.models.models import (
     ResultImage,
     TestCatalog,
 )
-from app.routers.common import actor_from_header, age_to_days, resolve_reference_range
+from app.routers.common import (
+    actor_from_header,
+    age_to_days,
+    inject_panel_title_rows,
+    panel_catalog_structures,
+    resolve_reference_range,
+    restore_panel_catalog_structure,
+)
 
 router = APIRouter()
 
@@ -483,6 +490,8 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
     item_rows = db.execute(
         select(
             OrderItem.id.label('order_item_id'),
+            OrderItem.item_type,
+            OrderItem.display_name,
             TestCatalog.id.label('test_id'),
             TestCatalog.name.label('test_name'),
             TestCatalog.code.label('test_code'),
@@ -496,22 +505,54 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
             Result.comments,
             OrderItem.group_label,
         )
-        .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .outerjoin(TestCatalog, TestCatalog.id == OrderItem.test_id)
         .outerjoin(Result, Result.order_item_id == OrderItem.id)
         .where(OrderItem.order_id == order_id)
         .order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())
     ).all()
     live_images = _live_images_by_order_item(order_id, db)
+
+    raw_items: list[dict[str, Any]] = []
+    for row in item_rows:
+        item_type = row.item_type
+        if row.test_code in ('__PANEL_HEADING__', '__PANEL_COMMENT__'):
+            # Legacy import bug: __PANEL_COMMENT__ rows were imported as fake
+            # test items pointing at an inactive sentinel TestCatalog row.
+            item_type = 'heading' if row.test_code == '__PANEL_HEADING__' else 'comment'
+        raw_items.append(
+            {
+                'order_item_id': row.order_item_id,
+                'test_id': row.test_id if item_type == 'test' else None,
+                'item_type': item_type,
+                'display_name': row.display_name,
+                'test_name': row.test_name,
+                'test_code': row.test_code,
+                'result_kind': row.result_kind,
+                'value_text': row.value_text,
+                'unit': row.unit,
+                'reference_text': row.reference_text,
+                'lower_value_text': row.lower_value_text,
+                'upper_value_text': row.upper_value_text,
+                'flag': row.flag,
+                'comments': row.comments,
+                'source_label': row.group_label,
+            }
+        )
+
+    structures = panel_catalog_structures(db)
+    restored = restore_panel_catalog_structure(raw_items, structures)
+    final_items = inject_panel_title_rows(restored)
+
     items: list[ReportPreviewItemOut] = []
-    current_group_label: str | None = None
-    for index, row in enumerate(item_rows):
-        group_label = (row.group_label or '').strip()
-        if group_label and group_label != current_group_label:
+    for entry in final_items:
+        item_type = str(entry.get('item_type') or 'test')
+        source_label = entry.get('source_label') or None
+        if item_type in ('heading', 'comment'):
             items.append(
                 ReportPreviewItemOut(
                     order_test_id=None,
-                    item_type='heading',
-                    test_name=group_label,
+                    item_type=item_type,
+                    test_name=entry.get('display_name') or '',
                     result_value=None,
                     unit=None,
                     reference_text=None,
@@ -520,14 +561,16 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                     flag=None,
                     comments=None,
                     sort_order=len(items),
+                    source_label=source_label,
                 )
             )
-        current_group_label = group_label
-        unit = row.unit
-        lower_value = row.lower_value_text
-        upper_value = row.upper_value_text
-        reference_text = row.reference_text
-        reference = resolve_reference_range(db, row.test_id, patient_sex, patient_age_days)
+            continue
+        test_id = entry.get('test_id')
+        unit = entry.get('unit')
+        lower_value = entry.get('lower_value_text')
+        upper_value = entry.get('upper_value_text')
+        reference_text = entry.get('reference_text')
+        reference = resolve_reference_range(db, test_id, patient_sex, patient_age_days) if test_id is not None else None
         if reference is not None:
             if not unit:
                 unit = reference.unit
@@ -537,22 +580,23 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                 upper_value = reference.upper_value_text
             if not reference_text:
                 reference_text = reference.reference_text
+        order_item_id = entry.get('order_item_id')
         items.append(
             ReportPreviewItemOut(
-                order_test_id=str(row.order_item_id),
+                order_test_id=str(order_item_id) if order_item_id else None,
                 item_type='test',
-                test_name=f"{row.test_name} ({row.test_code})",
-                result_value=row.value_text,
+                test_name=f"{entry.get('test_name')} ({entry.get('test_code')})",
+                result_value=entry.get('value_text'),
                 unit=unit,
                 reference_text=reference_text,
                 lower_value=lower_value,
                 upper_value=upper_value,
-                flag=row.flag,
-                comments=row.comments,
+                flag=entry.get('flag'),
+                comments=entry.get('comments'),
                 sort_order=len(items),
-                result_kind=row.result_kind,
-                source_label=current_group_label or None,
-                images=_encode_images(live_images.get(row.order_item_id, [])),
+                result_kind=entry.get('result_kind'),
+                source_label=source_label,
+                images=_encode_images(live_images.get(order_item_id, [])) if order_item_id else [],
             )
         )
     profile = _get_lab_profile(db)

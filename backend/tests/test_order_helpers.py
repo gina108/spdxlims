@@ -28,7 +28,29 @@ def test_normalize_order_items_deduplicates_tests_and_preserves_source():
 
     result = _normalize_order_items(payload, db)
 
-    assert result == [{"test_id": test_id, "source": "Panel A"}]
+    assert result == [{"item_type": "test", "test_id": test_id, "label": None, "source": "Panel A"}]
+
+
+def test_normalize_order_items_keeps_heading_and_comment_items():
+    test_id = uuid4()
+    db = FakeDb({(CatalogModel, test_id): CatalogModel(id=test_id, code="CBC", name="CBC", active=True)})
+    payload = OrderCreateIn(
+        patient_id=str(uuid4()),
+        items=[
+            OrderItemIn(item_type="heading", label="Formula Roja", source="Panel A"),
+            OrderItemIn(test_id=str(test_id), source="Panel A"),
+            OrderItemIn(item_type="comment", label="Observaciones", source="Panel A"),
+            OrderItemIn(item_type="heading", label="  ", source="Panel A"),
+        ],
+    )
+
+    result = _normalize_order_items(payload, db)
+
+    assert result == [
+        {"item_type": "heading", "test_id": None, "label": "Formula Roja", "source": "Panel A"},
+        {"item_type": "test", "test_id": test_id, "label": None, "source": "Panel A"},
+        {"item_type": "comment", "test_id": None, "label": "Observaciones", "source": "Panel A"},
+    ]
 
 
 def test_normalize_order_items_rejects_missing_or_inactive_tests():

@@ -1461,7 +1461,8 @@ class OrdersPage(DataAwarePage):
             return
         panel_items = self.order_service.get_panel_order_items(panel_id)
         panel_detail = self.database.get_panel_detail(int(panel_id), include_inactive=True) if not self.order_service.uses_server_backend() else None
-        panel_name = str((panel_detail or {}).get("name") or panel_label).strip()
+        server_panel_name = str((panel_items[0] if panel_items else {}).get("panel_name") or "").strip()
+        panel_name = str((panel_detail or {}).get("name") or server_panel_name or panel_label).strip()
         if not panel_items:
             QMessageBox.warning(self, tr("Empty Panel"), tr("This panel does not have any tests."))
             return
@@ -1523,14 +1524,6 @@ class OrdersPage(DataAwarePage):
             return None
 
         if self.order_service.uses_server_backend():
-            unsupported_items = [item for item in self.selected_items if item.get("item_type") != "test"]
-            if unsupported_items:
-                QMessageBox.information(
-                    self,
-                    tr("Not Available Yet"),
-                    tr("Server mode currently supports direct test orders only."),
-                )
-                return None
             try:
                 doctor_id = self._resolve_doctor_id_from_input(create_if_missing=False)
             except RuntimeError as exc:
@@ -1879,6 +1872,12 @@ class OrdersPage(DataAwarePage):
             for item in panel.get("items") or []:
                 if not isinstance(item, dict):
                     continue
+                item_type = str(item.get("item_type") or "test")
+                if item_type != "test":
+                    item_payload = dict(item)
+                    item_payload["is_outsourced"] = is_outsourced
+                    items.append(item_payload)
+                    continue
                 test_id = item.get("test_id")
                 if test_id is None or test_id in seen_test_ids:
                     continue
@@ -1891,8 +1890,6 @@ class OrdersPage(DataAwarePage):
     def _load_selected_panels_from_items(self) -> None:
         grouped_panels: dict[str, dict[str, object]] = {}
         for item in self.selected_items:
-            if str(item.get("item_type") or "test") != "test":
-                continue
             source = str(item.get("source") or "").strip()
             if not source or source == tr("Test"):
                 continue

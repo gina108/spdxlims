@@ -54,6 +54,7 @@ class PanelOrderItemOut(BaseModel):
     heading_text: str | None = None
     sort_order: int
     label: str
+    panel_name: str = ""
 
 
 class ProviderChoiceOut(BaseModel):
@@ -62,7 +63,9 @@ class ProviderChoiceOut(BaseModel):
 
 
 class OrderItemIn(BaseModel):
-    test_id: str
+    item_type: str = "test"
+    test_id: str | None = None
+    label: str | None = None
     source: str | None = None
 
 
@@ -290,6 +293,7 @@ def panel_order_items(panel_id: str, db: Session = Depends(get_db)):
             heading_text=row.heading_text,
             sort_order=int(row.sort_order or 0),
             label=(f"{row.test_name} ({row.test_code})" if row.item_type == "test" and row.test_name else str(row.heading_text or "")),
+            panel_name=panel.name,
         )
         for row in rows
     ]
@@ -342,7 +346,7 @@ def unarchive_order(order_id: str, db: Session = Depends(get_db), actor: UUID | 
 def _build_order_detail(order: LabOrder, db: Session) -> OrderDetailOut:
     items = db.execute(
         select(OrderItem, TestCatalog)
-        .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .outerjoin(TestCatalog, TestCatalog.id == OrderItem.test_id)
         .where(OrderItem.order_id == order.id)
         .order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())
     ).all()
@@ -359,9 +363,9 @@ def _build_order_detail(order: LabOrder, db: Session) -> OrderDetailOut:
         is_preallocated=0,
         items=[
             OrderItemOut(
-                item_type="test",
-                test_id=str(test.id),
-                label=f"{test.name} ({test.code})",
+                item_type=_item.item_type,
+                test_id=str(test.id) if test is not None else None,
+                label=f"{test.name} ({test.code})" if test is not None else (_item.display_name or ""),
                 source=_item.group_label or "",
             )
             for _item, test in items
@@ -410,7 +414,7 @@ def update_order(order_id: str, payload: OrderCreateIn, db: Session = Depends(ge
     if db.get(Patient, patient_id) is None:
         raise HTTPException(status_code=404, detail='patient not found')
     requested_items = _normalize_order_items(payload, db)
-    if not requested_items:
+    if not any(requested['item_type'] == 'test' for requested in requested_items):
         raise HTTPException(status_code=400, detail='at least one test is required')
 
     doctor_id = _parse_provider_id(payload.doctor_id, field_name='doctor_id', expected_type='doctor', db=db)
@@ -428,7 +432,15 @@ def update_order(order_id: str, payload: OrderCreateIn, db: Session = Depends(ge
     db.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
     db.flush()
     for index, requested in enumerate(requested_items):
-        db.add(OrderItem(order_id=order.id, test_id=requested['test_id'], group_label=requested['source'], sort_order=index, priority='routine'))
+        db.add(OrderItem(
+            order_id=order.id,
+            test_id=requested['test_id'],
+            group_label=requested['source'],
+            sort_order=index,
+            priority='routine',
+            item_type=requested['item_type'],
+            display_name=requested.get('label'),
+        ))
 
     db.flush()
     log_audit(
@@ -452,7 +464,7 @@ def create_order(payload: OrderCreateIn, db: Session = Depends(get_db), actor: U
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid patient_id") from exc
     requested_items = _normalize_order_items(payload, db)
-    if not requested_items:
+    if not any(requested['item_type'] == 'test' for requested in requested_items):
         raise HTTPException(status_code=400, detail="at least one test is required")
 
     patient = db.get(Patient, patient_id)
@@ -477,7 +489,15 @@ def create_order(payload: OrderCreateIn, db: Session = Depends(get_db), actor: U
     db.flush()
 
     for index, requested in enumerate(requested_items):
-        db.add(OrderItem(order_id=order.id, test_id=requested["test_id"], group_label=requested["source"], sort_order=index, priority="routine"))
+        db.add(OrderItem(
+            order_id=order.id,
+            test_id=requested["test_id"],
+            group_label=requested["source"],
+            sort_order=index,
+            priority="routine",
+            item_type=requested["item_type"],
+            display_name=requested.get("label"),
+        ))
 
     db.flush()
     log_audit(
@@ -513,11 +533,18 @@ def _parse_uuid(raw_value: str, *, field_name: str) -> UUID:
         raise HTTPException(status_code=400, detail=f"invalid {field_name}") from exc
 
 
-def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str, UUID | str]]:
+def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str, object]]:
     raw_items = payload.items or [OrderItemIn(test_id=test_id, source="") for test_id in payload.test_ids]
-    normalized: list[dict[str, UUID | str]] = []
+    normalized: list[dict[str, object]] = []
     seen: set[UUID] = set()
     for item in raw_items:
+        item_type = (item.item_type or "test").strip() or "test"
+        if item_type in {"heading", "comment"}:
+            label = (item.label or "").strip()
+            if not label:
+                continue
+            normalized.append({"item_type": item_type, "test_id": None, "label": label, "source": (item.source or "").strip()})
+            continue
         test_id = _parse_uuid(item.test_id, field_name="test_id")
         if test_id in seen:
             continue
@@ -525,7 +552,7 @@ def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str
         if test is None or not test.active:
             raise HTTPException(status_code=404, detail="test not found")
         seen.add(test_id)
-        normalized.append({"test_id": test_id, "source": (item.source or "").strip()})
+        normalized.append({"item_type": "test", "test_id": test_id, "label": None, "source": (item.source or "").strip()})
     return normalized
 
 

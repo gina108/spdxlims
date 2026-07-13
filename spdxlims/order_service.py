@@ -8,6 +8,32 @@ from spdxlims.database import OrderBrowserRecord, OrderSummaryRecord
 from spdxlims.service_base import ServiceBase
 
 
+def _build_order_item_payload(items: list[dict[str, Any]] | None) -> list[dict[str, str | None]]:
+    payload_items: list[dict[str, str | None]] = []
+    for item in items or []:
+        item_type = str(item.get("item_type") or "test")
+        if item_type in ("heading", "comment"):
+            payload_items.append(
+                {
+                    "item_type": item_type,
+                    "label": str(item.get("label") or ""),
+                    "source": str(item.get("source") or ""),
+                }
+            )
+            continue
+        test_id = item.get("test_id")
+        if test_id is None:
+            continue
+        payload_items.append(
+            {
+                "item_type": "test",
+                "test_id": str(test_id),
+                "source": str(item.get("source") or ""),
+            }
+        )
+    return payload_items
+
+
 @dataclass(slots=True)
 class ServerOrderDetail:
     id: str
@@ -143,6 +169,7 @@ class OrderService(ServiceBase):
                     "heading_text": str(item.get("heading_text")) if item.get("heading_text") is not None else None,
                     "sort_order": int(item.get("sort_order") or 0),
                     "label": str(item.get("label") or ""),
+                    "panel_name": str(item.get("panel_name") or ""),
                 }
             )
         return items
@@ -183,11 +210,8 @@ class OrderService(ServiceBase):
             f"/api/orders/{order_id}",
             {
                 "patient_id": str(patient_id),
-                "test_ids": [str(test_id) for test_id in test_ids],
-                "items": [
-                    {"test_id": str(item.get("test_id")), "source": str(item.get("source") or "")}
-                    for item in (items or []) if item.get("test_id") is not None
-                ],
+                "test_ids": [str(test_id) for test_id in test_ids if test_id is not None],
+                "items": _build_order_item_payload(items),
                 "accession_id": accession_id,
                 "sample_id": sample_id,
                 "status": status,
@@ -218,11 +242,8 @@ class OrderService(ServiceBase):
             "/api/orders",
             {
                 "patient_id": str(patient_id),
-                "test_ids": [str(test_id) for test_id in test_ids],
-                "items": [
-                    {"test_id": str(item.get("test_id")), "source": str(item.get("source") or "")}
-                    for item in (items or []) if item.get("test_id") is not None
-                ],
+                "test_ids": [str(test_id) for test_id in test_ids if test_id is not None],
+                "items": _build_order_item_payload(items),
                 "accession_id": accession_id,
                 "sample_id": sample_id,
                 "status": status,

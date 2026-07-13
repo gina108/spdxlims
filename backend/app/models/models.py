@@ -165,7 +165,8 @@ class OrderItem(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("lab_order.id", ondelete="CASCADE"), nullable=False)
-    test_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("test_catalog.id"), nullable=False)
+    # NULL for heading/comment items, which are layout rows rather than real tests.
+    test_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("test_catalog.id"), nullable=True)
     group_label: Mapped[str | None] = mapped_column(String(255))
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     priority: Mapped[str] = mapped_column(String(16), nullable=False, default="routine")
@@ -173,6 +174,10 @@ class OrderItem(Base):
     # in-house results. source_label groups them into their outsourced panel.
     is_outsourced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source_label: Mapped[str | None] = mapped_column(String(255))
+    # 'test' (default) | 'heading' | 'comment'. Headings/comments are layout rows
+    # within a panel (e.g. "Formula Roja"); display_name holds their own text.
+    item_type: Mapped[str] = mapped_column(String(16), nullable=False, default="test")
+    display_name: Mapped[str | None] = mapped_column(String(255))
 
 
 class Sample(Base):

@@ -553,15 +553,30 @@ def import_orders(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
             order.status = _normalize_order_status(row["status"])
             db.flush()
 
-        current_group_label: str | None = None
         item_sort_order = 0
         for source_item in tests_by_order.get(int(row["id"]), []):
             local_order_test_id = int(source_item["id"])
             test_code = _clean_text(source_item["test_code"], fallback="")
             display_name = _clean_text(source_item["display_name"])
-            if test_code == "__PANEL_HEADING__":
-                current_group_label = display_name or _clean_text(source_item["test_name"])
-                context.order_item_ids[local_order_test_id] = None
+            source_label = _clean_text(source_item["source_label"])
+            is_outsourced = _parse_bool(source_item["is_outsourced"], default=False)
+
+            if test_code in ("__PANEL_HEADING__", "__PANEL_COMMENT__"):
+                order_item = OrderItem(
+                    order_id=order.id,
+                    test_id=None,
+                    group_label=source_label,
+                    sort_order=item_sort_order,
+                    priority="routine",
+                    is_outsourced=is_outsourced,
+                    source_label=source_label,
+                    item_type="heading" if test_code == "__PANEL_HEADING__" else "comment",
+                    display_name=display_name or _clean_text(source_item["test_name"]),
+                )
+                db.add(order_item)
+                db.flush()
+                context.order_item_ids[local_order_test_id] = order_item.id
+                item_sort_order += 1
                 continue
 
             imported_test_id = context.test_ids.get(_parse_int(source_item["test_id"]) or -1)
@@ -572,11 +587,12 @@ def import_orders(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
             order_item = OrderItem(
                 order_id=order.id,
                 test_id=imported_test_id,
-                group_label=current_group_label,
+                group_label=source_label,
                 sort_order=item_sort_order,
                 priority="routine",
-                is_outsourced=_parse_bool(source_item["is_outsourced"], default=False),
-                source_label=_clean_text(source_item["source_label"]),
+                is_outsourced=is_outsourced,
+                source_label=source_label,
+                item_type="test",
             )
             db.add(order_item)
             db.flush()

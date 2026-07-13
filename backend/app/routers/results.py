@@ -17,7 +17,14 @@ from sqlalchemy.orm import Session, aliased
 from app.core.audit import log_audit
 from app.db.session import get_db
 from app.models.models import LabOrder, OrderItem, Patient, Provider, Result, ResultImage, TestCatalog
-from app.routers.common import actor_from_header, age_to_days, resolve_reference_range
+from app.routers.common import (
+    actor_from_header,
+    age_to_days,
+    inject_panel_title_rows,
+    panel_catalog_structures,
+    resolve_reference_range,
+    restore_panel_catalog_structure,
+)
 
 router = APIRouter()
 
@@ -128,6 +135,8 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
     rows = db.execute(
         select(
             OrderItem.id.label('order_item_id'),
+            OrderItem.item_type,
+            OrderItem.display_name,
             LabOrder.id.label('order_id'),
             LabOrder.order_number,
             Patient.first_name,
@@ -162,39 +171,75 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
         .join(LabOrder, LabOrder.id == OrderItem.order_id)
         .join(Patient, Patient.id == LabOrder.patient_id)
         .outerjoin(doctor_provider, doctor_provider.id == LabOrder.doctor_id)
-        .join(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .outerjoin(TestCatalog, TestCatalog.id == OrderItem.test_id)
         .outerjoin(Result, Result.order_item_id == OrderItem.id)
         .where(OrderItem.order_id == parsed_order_id)
         .order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())
     ).all()
-    entries: list[ResultEntryOut] = []
-    current_group_label: str | None = None
+    if not rows:
+        return []
+
+    first = rows[0]
+    patient_name = ' '.join(part for part in [first.first_name or '', first.last_name or '', first.middle_name or ''] if part).strip()
+    patient_age_days = age_to_days(first.age_value, first.age_unit, first.dob)
+
+    raw_items: list[dict[str, Any]] = []
     for row in rows:
-        patient_age_days = age_to_days(row.age_value, row.age_unit, row.dob)
-        reference = resolve_reference_range(db, row.test_id, row.sex, patient_age_days)
-        result_kind = row.result_kind or 'text'
-        default_result_value = row.default_result_value
-        result_value = row.value_text or default_result_value
-        unit = row.unit or (reference.unit if reference is not None and reference.unit else None) or row.test_unit
-        lower_value = row.lower_value_text or (reference.lower_value_text if reference is not None else None)
-        upper_value = row.upper_value_text or (reference.upper_value_text if reference is not None else None)
-        reference_text = row.reference_text or (reference.reference_text if reference is not None else None)
-        flag = row.flag or _calculate_flag(result_kind, result_value or '', lower_value, upper_value)
-        group_label = (row.group_label or '').strip()
-        if group_label and group_label != current_group_label:
+        item_type = row.item_type
+        if row.test_code in ('__PANEL_HEADING__', '__PANEL_COMMENT__'):
+            # Legacy import bug: __PANEL_COMMENT__ rows were imported as fake
+            # test items pointing at an inactive sentinel TestCatalog row.
+            item_type = 'heading' if row.test_code == '__PANEL_HEADING__' else 'comment'
+        raw_items.append(
+            {
+                'order_item_id': row.order_item_id,
+                'test_id': row.test_id if item_type == 'test' else None,
+                'item_type': item_type,
+                'display_name': row.display_name,
+                'test_name': row.test_name,
+                'test_code': row.test_code,
+                'test_unit': row.test_unit,
+                'specimen_type': row.specimen_type,
+                'result_kind': row.result_kind,
+                'select_options': row.select_options,
+                'default_result_value': row.default_result_value,
+                'test_formula': row.test_formula,
+                'is_outsourced': row.is_outsourced,
+                'value_text': row.value_text,
+                'unit': row.unit,
+                'lower_value_text': row.lower_value_text,
+                'upper_value_text': row.upper_value_text,
+                'flag': row.flag,
+                'reference_text': row.reference_text,
+                'comments': row.comments,
+                'result_status': row.result_status,
+                'source_label': row.group_label,
+            }
+        )
+
+    structures = panel_catalog_structures(db)
+    restored = restore_panel_catalog_structure(raw_items, structures)
+    final_items = inject_panel_title_rows(restored)
+
+    entries: list[ResultEntryOut] = []
+    for entry in final_items:
+        item_type = str(entry.get('item_type') or 'test')
+        source_label = entry.get('source_label') or None
+        order_item_id = entry.get('order_item_id')
+        if item_type in ('heading', 'comment'):
             entries.append(
                 ResultEntryOut(
-                    order_test_id=f'heading:{row.order_item_id}',
-                    order_id=str(row.order_id),
-                    order_number=row.order_number,
-                    patient_name=' '.join(part for part in [row.first_name or '', row.last_name or '', row.middle_name or ''] if part).strip(),
-                    doctor_name=row.doctor_name,
-                    patient_sex=row.sex,
+                    order_test_id=str(order_item_id) if order_item_id else f'heading:{source_label or len(entries)}',
+                    order_id=str(first.order_id),
+                    order_number=first.order_number,
+                    patient_name=patient_name,
+                    doctor_name=first.doctor_name,
+                    patient_sex=first.sex,
                     patient_age_days=patient_age_days,
-                    test_id=str(row.test_id),
-                    test_name=group_label,
+                    test_id='',
+                    test_name=entry.get('display_name') or '',
                     specimen_type=None,
-                    item_type='heading',
+                    item_type=item_type,
                     result_kind='text',
                     select_options=None,
                     default_result_value=None,
@@ -206,36 +251,47 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
                     reference_text=None,
                     comments=None,
                     test_status='pending',
+                    source_label=source_label,
                 )
             )
-        current_group_label = group_label
+            continue
+        test_id = entry.get('test_id')
+        reference = resolve_reference_range(db, test_id, first.sex, patient_age_days) if test_id is not None else None
+        result_kind = entry.get('result_kind') or 'text'
+        default_result_value = entry.get('default_result_value')
+        result_value = entry.get('value_text') or default_result_value
+        unit = entry.get('unit') or (reference.unit if reference is not None and reference.unit else None) or entry.get('test_unit')
+        lower_value = entry.get('lower_value_text') or (reference.lower_value_text if reference is not None else None)
+        upper_value = entry.get('upper_value_text') or (reference.upper_value_text if reference is not None else None)
+        reference_text = entry.get('reference_text') or (reference.reference_text if reference is not None else None)
+        flag = entry.get('flag') or _calculate_flag(result_kind, result_value or '', lower_value, upper_value)
         entries.append(
             ResultEntryOut(
-                order_test_id=str(row.order_item_id),
-                order_id=str(row.order_id),
-                order_number=row.order_number,
-                patient_name=' '.join(part for part in [row.first_name or '', row.last_name or '', row.middle_name or ''] if part).strip(),
-                doctor_name=row.doctor_name,
-                patient_sex=row.sex,
+                order_test_id=str(order_item_id),
+                order_id=str(first.order_id),
+                order_number=first.order_number,
+                patient_name=patient_name,
+                doctor_name=first.doctor_name,
+                patient_sex=first.sex,
                 patient_age_days=patient_age_days,
-                test_id=str(row.test_id),
-                test_name=f"{row.test_name} ({row.test_code})",
-                specimen_type=row.specimen_type,
+                test_id=str(test_id),
+                test_name=f"{entry.get('test_name')} ({entry.get('test_code')})",
+                specimen_type=entry.get('specimen_type'),
                 item_type='test',
                 result_kind=result_kind,
-                select_options=row.select_options,
+                select_options=entry.get('select_options'),
                 default_result_value=default_result_value,
-                formula=row.test_formula,
+                formula=entry.get('test_formula'),
                 result_value=result_value,
                 unit=unit,
                 lower_value=lower_value,
                 upper_value=upper_value,
                 flag=flag,
                 reference_text=reference_text,
-                comments=row.comments,
-                test_status=row.result_status or 'pending',
-                is_outsourced=bool(row.is_outsourced),
-                source_label=row.source_label,
+                comments=entry.get('comments'),
+                test_status=entry.get('result_status') or 'pending',
+                is_outsourced=bool(entry.get('is_outsourced')),
+                source_label=source_label,
             )
         )
     return entries
