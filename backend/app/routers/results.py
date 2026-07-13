@@ -4,7 +4,7 @@ import ast as _ast
 import base64
 import operator as _operator
 import re as _re
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 from uuid import UUID
@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
 from app.db.session import get_db
-from app.models.models import LabOrder, OrderItem, Patient, Provider, Result, ResultImage, TestCatalog, TestReferenceRange
-from app.routers.common import actor_from_header
+from app.models.models import LabOrder, OrderItem, Patient, Provider, Result, ResultImage, TestCatalog
+from app.routers.common import actor_from_header, age_to_days, resolve_reference_range
 
 router = APIRouter()
 
@@ -164,8 +164,8 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
     entries: list[ResultEntryOut] = []
     current_group_label: str | None = None
     for row in rows:
-        patient_age_days = _age_to_days(row.age_value, row.age_unit, row.dob)
-        reference = _resolve_reference_range(db, row.test_id, row.sex, patient_age_days)
+        patient_age_days = age_to_days(row.age_value, row.age_unit, row.dob)
+        reference = resolve_reference_range(db, row.test_id, row.sex, patient_age_days)
         result_kind = row.result_kind or 'text'
         default_result_value = row.default_result_value
         result_value = row.value_text or default_result_value
@@ -465,57 +465,11 @@ def _parse_uuid(raw_value: str, *, field_name: str) -> UUID:
         raise HTTPException(status_code=400, detail=f'invalid {field_name}') from exc
 
 
-def _age_to_days(age_value: int | None, age_unit: str | None, dob: date | None = None) -> int | None:
-    if dob is not None:
-        return max((date.today() - dob).days, 0)
-    if age_value is None or not age_unit:
-        return None
-    unit = age_unit.strip().lower()
-    if unit == 'days':
-        return age_value
-    if unit == 'months':
-        return age_value * 30
-    if unit == 'years':
-        return age_value * 365
-    return None
-
-
 def _decimal_to_float(raw_value: str) -> float | None:
     try:
         return float(Decimal(raw_value))
     except (InvalidOperation, ValueError):
         return None
-
-
-def _resolve_reference_range(
-    db: Session,
-    test_id: UUID,
-    patient_sex: str | None,
-    patient_age_days: int | None,
-) -> TestReferenceRange | None:
-    rows = db.scalars(
-        select(TestReferenceRange)
-        .where(TestReferenceRange.test_id == test_id)
-        .order_by(
-            TestReferenceRange.sex.is_(None),
-            TestReferenceRange.age_min_days.is_(None),
-            TestReferenceRange.age_min_days.asc(),
-            TestReferenceRange.age_max_days.is_(None),
-            TestReferenceRange.age_max_days.asc(),
-        )
-    ).all()
-    for row in rows:
-        if row.sex and patient_sex and row.sex != patient_sex:
-            continue
-        if row.sex and not patient_sex:
-            continue
-        if patient_age_days is not None:
-            if row.age_min_days is not None and patient_age_days < row.age_min_days:
-                continue
-            if row.age_max_days is not None and patient_age_days > row.age_max_days:
-                continue
-        return row
-    return None
 
 
 def _calculate_flag(result_kind: str, result_value: str, lower_value: str | None, upper_value: str | None) -> str:

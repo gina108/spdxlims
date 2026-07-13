@@ -29,7 +29,7 @@ from app.models.models import (
     ResultImage,
     TestCatalog,
 )
-from app.routers.common import actor_from_header
+from app.routers.common import actor_from_header, age_to_days, resolve_reference_range
 
 router = APIRouter()
 
@@ -472,9 +472,18 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
     context = _get_report_context(order_id, db)
     if context is None:
         return None
+    order = db.get(LabOrder, order_id)
+    patient = db.get(Patient, order.patient_id) if order is not None else None
+    patient_age_days = age_to_days(
+        patient.age_value if patient is not None else None,
+        patient.age_unit if patient is not None else None,
+        patient.dob if patient is not None else None,
+    )
+    patient_sex = patient.sex if patient is not None else None
     item_rows = db.execute(
         select(
             OrderItem.id.label('order_item_id'),
+            TestCatalog.id.label('test_id'),
             TestCatalog.name.label('test_name'),
             TestCatalog.code.label('test_code'),
             TestCatalog.result_kind.label('result_kind'),
@@ -514,16 +523,30 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                 )
             )
         current_group_label = group_label
+        unit = row.unit
+        lower_value = row.lower_value_text
+        upper_value = row.upper_value_text
+        reference_text = row.reference_text
+        reference = resolve_reference_range(db, row.test_id, patient_sex, patient_age_days)
+        if reference is not None:
+            if not unit:
+                unit = reference.unit
+            if lower_value is None:
+                lower_value = reference.lower_value_text
+            if upper_value is None:
+                upper_value = reference.upper_value_text
+            if not reference_text:
+                reference_text = reference.reference_text
         items.append(
             ReportPreviewItemOut(
                 order_test_id=str(row.order_item_id),
                 item_type='test',
                 test_name=f"{row.test_name} ({row.test_code})",
                 result_value=row.value_text,
-                unit=row.unit,
-                reference_text=row.reference_text,
-                lower_value=row.lower_value_text,
-                upper_value=row.upper_value_text,
+                unit=unit,
+                reference_text=reference_text,
+                lower_value=lower_value,
+                upper_value=upper_value,
                 flag=row.flag,
                 comments=row.comments,
                 sort_order=len(items),
