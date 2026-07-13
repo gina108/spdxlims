@@ -32,6 +32,7 @@ class ResultEntryOut(BaseModel):
     patient_age_days: int | None = None
     test_id: str
     test_name: str
+    specimen_type: str | None = None
     item_type: str = "test"
     result_kind: str = "text"
     select_options: str | None = None
@@ -45,6 +46,8 @@ class ResultEntryOut(BaseModel):
     reference_text: str | None = None
     comments: str | None = None
     test_status: str
+    is_outsourced: bool = False
+    source_label: str | None = None
 
 
 class ResultEntryIn(BaseModel):
@@ -139,11 +142,14 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
             TestCatalog.name.label('test_name'),
             TestCatalog.code.label('test_code'),
             TestCatalog.unit.label('test_unit'),
+            TestCatalog.specimen_type,
             TestCatalog.result_kind,
             TestCatalog.select_options,
             TestCatalog.default_result_value,
             TestCatalog.formula.label('test_formula'),
             OrderItem.group_label,
+            OrderItem.is_outsourced,
+            OrderItem.source_label,
             Result.value_text,
             Result.unit,
             Result.lower_value_text,
@@ -187,6 +193,7 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
                     patient_age_days=patient_age_days,
                     test_id=str(row.test_id),
                     test_name=group_label,
+                    specimen_type=None,
                     item_type='heading',
                     result_kind='text',
                     select_options=None,
@@ -213,6 +220,7 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
                 patient_age_days=patient_age_days,
                 test_id=str(row.test_id),
                 test_name=f"{row.test_name} ({row.test_code})",
+                specimen_type=row.specimen_type,
                 item_type='test',
                 result_kind=result_kind,
                 select_options=row.select_options,
@@ -226,6 +234,8 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
                 reference_text=reference_text,
                 comments=row.comments,
                 test_status=row.result_status or 'pending',
+                is_outsourced=bool(row.is_outsourced),
+                source_label=row.source_label,
             )
         )
     return entries

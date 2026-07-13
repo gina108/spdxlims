@@ -30,6 +30,7 @@ class ResultService(ServiceBase):
                     patient_age_days=item.get('patient_age_days'),
                     test_id=str(item.get('test_id') or ''),
                     test_name=str(item.get('test_name') or ''),
+                    specimen_type=item.get('specimen_type'),
                     item_type=str(item.get('item_type') or 'test'),
                     result_kind=str(item.get('result_kind') or 'text'),
                     select_options=item.get('select_options'),
@@ -42,6 +43,8 @@ class ResultService(ServiceBase):
                     reference_text=item.get('reference_text'),
                     comments=item.get('comments'),
                     test_status=str(item.get('test_status') or 'pending'),
+                    is_outsourced=1 if item.get('is_outsourced') else 0,
+                    source_label=item.get('source_label'),
                     formula=item.get('formula'),
                 )
             )
