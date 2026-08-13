@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCore import QEventLoop, QMarginsF, QSizeF, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QEventLoop, QMarginsF, QSizeF, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QTextDocument
 from PySide6.QtGui import QPageLayout, QPageSize
 from PySide6.QtPrintSupport import QPrinter
@@ -237,6 +237,22 @@ class ReportPreviewDialog(QDialog):
     def current_preview(self) -> dict[str, object]:
         return dict(self._preview)
 
+    def reject(self) -> None:
+        # Edits only persist via "Approve and Export PDF" (or, for an
+        # already-approved report, the caller's re-finalize-on-close path).
+        # Closing any other way silently threw them away, so gate it here.
+        if self._preview_dirty and not self._approved_clicked and not self._approved:
+            response = QMessageBox.question(
+                self,
+                tr("Unsaved Changes"),
+                tr("This report has unsaved changes that will be lost if you close it now. Discard them?"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if response != QMessageBox.Yes:
+                return
+        super().reject()
+
     def _refresh_from_server(self) -> None:
         if self._reset_fetcher is None:
             return
@@ -409,6 +425,8 @@ class ReportEditorDialog(QDialog):
         layout.addLayout(table_actions)
 
         self.items_table = QTableWidget(0, len(self._ROW_COLUMNS))
+        self.items_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.items_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.items_table.setHorizontalHeaderLabels(
             [
                 tr("Item Type"),
@@ -428,6 +446,7 @@ class ReportEditorDialog(QDialog):
         self.items_table.setColumnWidth(5, 120)
         self.items_table.horizontalHeader().setStretchLastSection(True)
         self.items_table.verticalHeader().setDefaultSectionSize(44)
+        self.items_table.installEventFilter(self)
         layout.addWidget(self.items_table, 1)
 
         self._populate_items_table()
@@ -475,8 +494,19 @@ class ReportEditorDialog(QDialog):
         self.outsourced_table.setColumnWidth(0, 170)
         self.outsourced_table.horizontalHeader().setStretchLastSection(True)
         self.outsourced_table.verticalHeader().setDefaultSectionSize(40)
+        self.outsourced_table.installEventFilter(self)
         layout.addWidget(self.outsourced_table, 1)
         self._populate_outsourced_table()
+
+    def eventFilter(self, obj: object, event) -> bool:
+        if event.type() == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if obj is self.items_table:
+                self._remove_selected_row()
+                return True
+            if obj is self.outsourced_table:
+                self._remove_selected_outsourced_row()
+                return True
+        return super().eventFilter(obj, event)
 
     def _populate_outsourced_table(self) -> None:
         flat_rows: list[tuple[str, dict[str, object]]] = []

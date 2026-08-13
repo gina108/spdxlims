@@ -1508,10 +1508,10 @@ class OrdersPage(DataAwarePage):
         self._rebuild_selected_items_from_panels()
         self._refresh_selected_table()
 
-    def _save_current_order(self) -> tuple[int, int | None, str] | None:
+    def _save_current_order(self) -> tuple[int, int | None, str, str | None] | None:
         """Validate and persist the current form.
 
-        Returns (patient_id, order_id, message) on success.
+        Returns (patient_id, order_id, message, order_number) on success.
         order_id is None for server-created orders where no local ID is available.
         Returns None and shows an error dialog on failure.
         """
@@ -1544,7 +1544,7 @@ class OrdersPage(DataAwarePage):
                         client_id=self.client_combo.currentData(),
                     )
                     message = tr("Order updated: {order_number}").format(order_number=updated.order_number)
-                    return (patient_id, int(self.edit_order_id), message)
+                    return (patient_id, int(self.edit_order_id), message, None)
                 else:
                     created = self.order_service.create_simple_order(
                         patient_id=patient_id,
@@ -1558,7 +1558,7 @@ class OrdersPage(DataAwarePage):
                         client_id=self.client_combo.currentData(),
                     )
                     message = tr("Order created: {order_number}").format(order_number=created.get("order_number") or "")
-                    return (patient_id, None, message)
+                    return (patient_id, None, message, created.get("order_number") or "")
             except RuntimeError as exc:
                 QMessageBox.critical(self, tr("Save Failed"), str(exc))
                 return None
@@ -1598,7 +1598,7 @@ class OrdersPage(DataAwarePage):
                         notes="",
                     )
                     message = tr("Order updated.")
-                return (patient_id, int(self.edit_order_id), message)
+                return (patient_id, int(self.edit_order_id), message, None)
             else:
                 order_id = self.database.create_order(
                     order_number=None,
@@ -1611,7 +1611,7 @@ class OrdersPage(DataAwarePage):
                     status=self.status.currentData(),
                     notes="",
                 )
-                return (patient_id, order_id, tr("Order created."))
+                return (patient_id, order_id, tr("Order created."), None)
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
             return None
@@ -1645,8 +1645,8 @@ class OrdersPage(DataAwarePage):
             result = self._save_current_order()
             if result is None:
                 return
-            patient_id, order_id, message = result
-            self._maybe_broadcast_order(patient_id, order_id)
+            patient_id, order_id, message, order_number = result
+            self._maybe_broadcast_order(patient_id, order_id, order_number_override=order_number)
             self.clear_order_form()
             self.refresh_recent_orders()
             self.notify_data_changed()
@@ -1657,8 +1657,8 @@ class OrdersPage(DataAwarePage):
             result = self._save_current_order()
             if result is None:
                 return
-            patient_id, order_id, _message = result
-            self._maybe_broadcast_order(patient_id, order_id)
+            patient_id, order_id, _message, order_number = result
+            self._maybe_broadcast_order(patient_id, order_id, order_number_override=order_number)
             self.clear_order_form()
             self.refresh_recent_orders()
             self.notify_data_changed()
@@ -1674,11 +1674,11 @@ class OrdersPage(DataAwarePage):
             result = self._save_current_order()
             if result is None:
                 return
-            patient_id, order_id, _message = result
+            patient_id, order_id, _message, order_number = result
             if order_id is None:
                 QMessageBox.warning(self, tr("Not Available"), tr("Receipt printing is not available for server-mode orders."))
                 return
-            self._maybe_broadcast_order(patient_id, order_id)
+            self._maybe_broadcast_order(patient_id, order_id, order_number_override=order_number)
             self.clear_order_form()
             self.refresh_recent_orders()
             self.notify_data_changed()
@@ -1752,6 +1752,7 @@ class OrdersPage(DataAwarePage):
         *,
         order_items: list | None = None,
         doctor_name_override: str | None = None,
+        order_number_override: str | None = None,
     ) -> None:
         """Send order to any bidirectional-enabled instrument profiles, silently on error.
 
@@ -1778,8 +1779,8 @@ class OrdersPage(DataAwarePage):
             )
 
             # Resolve the order number — used as sample_id for ASTM analyzers.
-            order_number = ""
-            if order_id is not None:
+            order_number = order_number_override or ""
+            if not order_number and order_id is not None:
                 try:
                     rec = self.database.get_order_edit_record(order_id)
                     if rec:

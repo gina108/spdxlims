@@ -245,7 +245,7 @@ def list_results_workflow_orders(
             ReportSnapshot.finalized_at,
         )
         .order_by(LabOrder.ordered_at.desc(), LabOrder.order_number.desc())
-        .limit(100)
+        .limit(1000)
     )
     rows = db.execute(stmt).all()
     result: list[ResultsWorkflowOrderOut] = []

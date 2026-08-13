@@ -370,18 +370,24 @@ class ResultsMixin:
                 _seen_src_by_name[name] = src
         # Headings/comments carry no order_test_id (they are injected from the
         # panel structure), so manual subtitle edits captured in the snapshot are
-        # matched back positionally among same-typed rows.
-        saved_by_type: dict[str, list[dict[str, Any]]] = {"heading": [], "comment": []}
-        for saved_item in saved_items:
+        # matched back by the order_test_id of the nearest following anchored
+        # item, rather than by raw position -- a plain position counter drifts
+        # out of sync whenever some headings *do* have a real order_test_id
+        # (e.g. panel sub-headings) interleaved with anchorless ones (e.g.
+        # injected panel-title rows), since only the anchorless ones advance it.
+        saved_anchors = cls._next_anchor_order_test_ids(saved_items)
+        saved_by_type_and_anchor: dict[tuple[str, Any], list[dict[str, Any]]] = {}
+        for saved_item, anchor in zip(saved_items, saved_anchors):
             saved_type = str(saved_item.get("item_type") or "")
-            if saved_type in saved_by_type:
-                saved_by_type[saved_type].append(saved_item)
-        type_counters = {"heading": 0, "comment": 0}
+            if saved_type in {"heading", "comment"}:
+                saved_by_type_and_anchor.setdefault((saved_type, anchor), []).append(saved_item)
+        live_anchors = cls._next_anchor_order_test_ids(live_items)
+        anchor_positions: dict[tuple[str, Any], int] = {}
         # Iterate live_items so the current panel structure (injected headings,
         # panel_meta rows) is always present, even when the saved snapshot was
         # captured from a stale preview that was missing those rows.
         merged: list[dict[str, Any]] = []
-        for live_item in live_items:
+        for live_index, live_item in enumerate(live_items):
             item = dict(live_item)
             order_test_id = item.get("order_test_id")
             item_type = str(item.get("item_type") or "")
@@ -401,10 +407,11 @@ class ResultsMixin:
                 # Re-apply a manual subtitle edit, but let a stale catalog form
                 # (e.g. "Quimica Clinica (CHEM) - 1 tests") refresh to the current
                 # panel name. Both stale and current normalize to the same label.
-                saved_list = saved_by_type.get(item_type, [])
-                position = type_counters[item_type]
-                type_counters[item_type] += 1
-                saved_item = saved_list[position] if position < len(saved_list) else None
+                key = (item_type, live_anchors[live_index])
+                candidates = saved_by_type_and_anchor.get(key) or []
+                position = anchor_positions.get(key, 0)
+                anchor_positions[key] = position + 1
+                saved_item = candidates[position] if position < len(candidates) else None
                 if saved_item is not None:
                     saved_name = str(saved_item.get("test_name") or "").strip()
                     if saved_name and (
@@ -414,6 +421,28 @@ class ResultsMixin:
                         item["test_name"] = saved_item.get("test_name")
             merged.append(item)
         return merged
+
+    @staticmethod
+    def _next_anchor_order_test_ids(items: list[dict[str, Any]]) -> list[Any]:
+        """For each item, the order_test_id of the nearest following non-heading/comment item.
+
+        Heading/comment rows can carry a synthetic order_test_id in a saved snapshot
+        (they get persisted as ``__PANEL_HEADING__`` / ``__PANEL_COMMENT__`` order_tests
+        by some order-creation flows) while the live structure leaves the very same
+        headings anchorless. If those synthetic ids were allowed to anchor, a panel
+        title and its first sub-heading -- which share one anchor in the live list --
+        would land in different anchor buckets in the saved list, and the heading merge
+        would mismatch them (e.g. printing "FORMULA ROJA" in place of the panel title
+        "BIOMETRIA HEMATICA"). Excluding heading/comment ids keeps both lists aligned."""
+        anchors: list[Any] = [None] * len(items)
+        next_anchor: Any = None
+        for index in range(len(items) - 1, -1, -1):
+            anchors[index] = next_anchor
+            item_type = str(items[index].get("item_type") or "")
+            order_test_id = items[index].get("order_test_id")
+            if order_test_id is not None and item_type not in {"heading", "comment"}:
+                next_anchor = order_test_id
+        return anchors
 
     def _restore_panel_catalog_structure(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         structures = self._panel_catalog_structures()

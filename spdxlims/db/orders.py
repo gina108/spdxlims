@@ -17,9 +17,25 @@ from spdxlims.db.records import (
 class OrdersMixin:
     def next_order_number(self) -> str:
         with self.connect() as connection:
-            row = connection.execute("SELECT id FROM orders ORDER BY id DESC LIMIT 1").fetchone()
-        next_id = (int(row["id"]) + 1) if row is not None else 1
-        return f"{next_id:06d}"
+            return self._next_order_number(connection)
+
+    def _next_order_number(self, connection: sqlite3.Connection, prefix: str = "") -> str:
+        # Highest numeric tail *within* the given prefix, aggregated in SQL so the
+        # whole orders table never crosses into Python. An empty prefix matches
+        # only all-digit order numbers, so prefixed batches keep their own series.
+        tail_start = len(prefix) + 1
+        row = connection.execute(
+            """
+            SELECT MAX(CAST(SUBSTR(order_number, ?) AS INTEGER)) AS highest
+            FROM orders
+            WHERE SUBSTR(order_number, 1, ?) = ?
+              AND SUBSTR(order_number, ?) GLOB '[0-9]*'
+              AND SUBSTR(order_number, ?) NOT GLOB '*[^0-9]*'
+            """,
+            (tail_start, len(prefix), prefix, tail_start, tail_start),
+        ).fetchone()
+        highest = int(row["highest"] or 0) if row is not None else 0
+        return f"{highest + 1:06d}"
 
     def _normalize_order_items(self, order_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         unique_items: list[dict[str, Any]] = []
@@ -77,14 +93,37 @@ class OrdersMixin:
                 (order_id, test_id, outsourced_value, source_label, display_name, index),
             )
 
+    def _delete_order_test_row(self, connection: sqlite3.Connection, order_test_id: int) -> None:
+        """Delete an order_tests row together with every row that references it.
+
+        Four tables carry a FK to order_tests (results, result_images,
+        report_items, report_item_images); leaving any of them behind makes the
+        delete fail with 'FOREIGN KEY constraint failed'.
+        """
+        connection.execute("DELETE FROM results WHERE order_test_id = ?", (order_test_id,))
+        connection.execute("DELETE FROM result_images WHERE order_test_id = ?", (order_test_id,))
+        connection.execute("DELETE FROM report_item_images WHERE order_test_id = ?", (order_test_id,))
+        connection.execute("DELETE FROM report_items WHERE order_test_id = ?", (order_test_id,))
+        connection.execute("DELETE FROM order_tests WHERE id = ?", (order_test_id,))
+
     def create_order(self, order_number: str | None, accession_id: str | None, sample_id: str | None, patient_id: int, doctor_id: int | None, client_id: int | None, order_items: list[dict[str, Any]], status: str, notes: str) -> int:
         unique_items = self._normalize_order_items(order_items)
+        explicit_order_number = (order_number or "").strip()
         with self.connect() as connection:
-            resolved_order_number = (order_number or "").strip() or self.next_order_number()
-            cursor = connection.execute(
-                "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, ?)",
-                (resolved_order_number, (accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None),
-            )
+            resolved_order_number = explicit_order_number or self._next_order_number(connection)
+            attempts_left = 1 if explicit_order_number else 5
+            while True:
+                try:
+                    cursor = connection.execute(
+                        "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, ?)",
+                        (resolved_order_number, (accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None),
+                    )
+                    break
+                except sqlite3.IntegrityError as exc:
+                    attempts_left -= 1
+                    if attempts_left <= 0 or "orders.order_number" not in str(exc):
+                        raise
+                    resolved_order_number = self._next_order_number(connection)
             order_id = int(cursor.lastrowid)
             self._save_order_items(connection, order_id, unique_items)
         return order_id
@@ -94,14 +133,24 @@ class OrdersMixin:
         normalized_prefix = (batch_prefix or '').strip().upper()
         with self.connect() as connection:
             placeholder_patient_id = self._get_or_create_preallocated_patient(connection)
-            row = connection.execute("SELECT id FROM orders ORDER BY id DESC LIMIT 1").fetchone()
-            next_id = (int(row["id"]) + 1) if row is not None else 1
-            for offset in range(count):
-                order_number = f"{normalized_prefix}{next_id + offset:06d}"
-                cursor = connection.execute(
-                    "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes) VALUES (?, NULL, NULL, ?, NULL, ?, 'draft', 1, CURRENT_TIMESTAMP, ?)",
-                    (order_number, placeholder_patient_id, client_id, 'Preprinted barcode batch'),
-                )
+            next_number = int(self._next_order_number(connection, normalized_prefix))
+            for _ in range(count):
+                order_number = f"{normalized_prefix}{next_number:06d}"
+                attempts_left = 5
+                while True:
+                    try:
+                        cursor = connection.execute(
+                            "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes) VALUES (?, NULL, NULL, ?, NULL, ?, 'draft', 1, CURRENT_TIMESTAMP, ?)",
+                            (order_number, placeholder_patient_id, client_id, 'Preprinted barcode batch'),
+                        )
+                        break
+                    except sqlite3.IntegrityError as exc:
+                        attempts_left -= 1
+                        if attempts_left <= 0 or "orders.order_number" not in str(exc):
+                            raise
+                        next_number += 1
+                        order_number = f"{normalized_prefix}{next_number:06d}"
+                next_number += 1
                 order_id = int(cursor.lastrowid)
                 created_row = connection.execute("SELECT created_at FROM orders WHERE id = ?", (order_id,)).fetchone()
                 labels.append({
@@ -171,7 +220,8 @@ class OrdersMixin:
                 "UPDATE orders SET accession_id = ?, sample_id = ?, patient_id = ?, doctor_id = ?, client_id = ?, status = ?, is_preallocated = 0, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 ((accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None, order_id),
             )
-            connection.execute("DELETE FROM order_tests WHERE order_id = ?", (order_id,))
+            for existing_row in connection.execute("SELECT id FROM order_tests WHERE order_id = ?", (order_id,)).fetchall():
+                self._delete_order_test_row(connection, int(existing_row["id"]))
             self._save_order_items(connection, order_id, unique_items)
 
     def update_order(self, order_id: int, accession_id: str | None, sample_id: str | None, patient_id: int, doctor_id: int | None, client_id: int | None, order_items: list[dict[str, Any]], status: str, notes: str) -> None:
@@ -192,11 +242,11 @@ class OrdersMixin:
             if report_row is not None:
                 report_id = int(report_row["id"])
                 connection.execute("DELETE FROM report_items WHERE report_id = ?", (report_id,))
+                connection.execute("DELETE FROM report_item_images WHERE report_id = ?", (report_id,))
                 connection.execute("DELETE FROM report_outsourced_rows WHERE report_id = ?", (report_id,))
                 connection.execute("DELETE FROM reports WHERE id = ?", (report_id,))
             heading_test_id = self._ensure_panel_heading_test(connection)
             comment_test_id = self._ensure_panel_comment_test(connection)
-            structural_ids = (heading_test_id, comment_test_id)
             # New set of real test IDs
             new_test_ids = {
                 item["test_id"] for item in unique_items if item.get("item_type") == "test"
@@ -211,30 +261,39 @@ class OrdersMixin:
                 tid = int(r["test_id"])
                 ot_id = int(r["id"])
                 if tid not in new_test_ids:
-                    # Test removed — safe to delete its results
-                    connection.execute("DELETE FROM results WHERE order_test_id = ?", (ot_id,))
-                    connection.execute("DELETE FROM order_tests WHERE id = ?", (ot_id,))
+                    # Test removed — drop it along with everything hanging off it
+                    self._delete_order_test_row(connection, ot_id)
                 else:
                     existing_map[tid] = ot_id
-            # Headings and comments carry no results — delete and re-insert freely
-            connection.execute(
-                "DELETE FROM order_tests WHERE order_id = ? AND test_id IN (?, ?)",
+            # Headings and comments are matched to the incoming list by label so a
+            # re-save reuses the same row.  Panel comments keep their typed text in
+            # `results` (e.g. "Piocitos: 10 %"), so deleting and re-inserting these
+            # rows would both trip the results → order_tests FK and lose the text.
+            structural_pool: dict[tuple[int, str], list[int]] = {}
+            for structural_row in connection.execute(
+                "SELECT id, test_id, display_name FROM order_tests WHERE order_id = ? AND test_id IN (?, ?) ORDER BY sort_order, id",
                 (order_id, heading_test_id, comment_test_id),
-            )
+            ).fetchall():
+                key = (int(structural_row["test_id"]), str(structural_row["display_name"] or ""))
+                structural_pool.setdefault(key, []).append(int(structural_row["id"]))
             # Reconcile each item in the new list
             for index, item in enumerate(unique_items):
                 outsourced = 1 if item.get("is_outsourced") else 0
                 source = str(item.get("source") or "").strip() or None
-                if item["item_type"] == "heading":
-                    connection.execute(
-                        "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
-                        (order_id, heading_test_id, outsourced, source, item["label"], index),
-                    )
-                elif item["item_type"] == "comment":
-                    connection.execute(
-                        "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
-                        (order_id, comment_test_id, outsourced, source, item["label"], index),
-                    )
+                if item["item_type"] in {"heading", "comment"}:
+                    structural_test_id = heading_test_id if item["item_type"] == "heading" else comment_test_id
+                    label = item["label"]
+                    reusable = structural_pool.get((structural_test_id, str(label or "")))
+                    if reusable:
+                        connection.execute(
+                            "UPDATE order_tests SET sort_order = ?, is_outsourced = ?, source_label = ? WHERE id = ?",
+                            (index, outsourced, source, reusable.pop(0)),
+                        )
+                    else:
+                        connection.execute(
+                            "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
+                            (order_id, structural_test_id, outsourced, source, label, index),
+                        )
                 else:
                     test_id = int(item["test_id"])
                     if test_id in existing_map:
@@ -251,6 +310,10 @@ class OrdersMixin:
                             "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', ?, ?, ?, ?)",
                             (order_id, test_id, outsourced, source, display_name, index),
                         )
+            # Headings/comments the new list no longer contains
+            for leftover_ids in structural_pool.values():
+                for leftover_id in leftover_ids:
+                    self._delete_order_test_row(connection, leftover_id)
 
     def set_order_archived(self, order_id: int, archived: bool) -> None:
         with self.connect() as connection:
@@ -355,7 +418,7 @@ class OrdersMixin:
                   AND COALESCE(o.is_archived, 0) = 0
                 GROUP BY o.id, o.order_number, order_date, patient_name, p.phone, d.full_name, c.name, c.phone, r.report_version, r.finalized_at, p.updated_at, o.updated_at
                 ORDER BY COALESCE(o.ordered_at, o.created_at) DESC, o.id DESC
-                LIMIT 100
+                LIMIT 1000
                 """
             ).fetchall()
         return [ResultWorkflowRecord(**dict(row)) for row in rows]

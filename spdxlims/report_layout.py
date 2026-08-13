@@ -149,6 +149,19 @@ def build_report_html(preview: dict[str, object]) -> str:
             row_html = f'<tr><td colspan="5" class="panel-meta">{meta_value}</td></tr>'
             rows.append((row_html, 0.8 + _estimated_line_units(meta_value, chars_per_line=110), "panel_meta", panel_group))
             continue
+        if str(item.get("result_kind") or "") == "observation":
+            observation_value = result_value or comments
+            if not observation_value:
+                continue
+            observation_html = observation_value.replace("\n", "<br>")
+            row_html = f'<tr><td colspan="5" class="comment"><strong>{test_name}</strong><br>{observation_html}</td></tr>'
+            observation_units = _estimated_line_units(test_name + " " + observation_value.replace("\n", " ")) + 0.6 * observation_value.count("\n")
+            rows.append((row_html, 1.4 + observation_units, "comment", panel_group))
+            if comments and comments != observation_value:
+                subcomment_html = comments.replace("\n", "<br>")
+                subcomment_units = _estimated_line_units(comments.replace("\n", " ")) + 0.6 * comments.count("\n")
+                rows.append((f'<tr><td colspan="5" class="subcomment">{subcomment_html}</td></tr>', 0.8 + subcomment_units, "subcomment", panel_group))
+            continue
         if str(item.get("result_kind") or "") == "image":
             images = list(item.get("images") or [])
             rows.append((
@@ -836,19 +849,18 @@ def _stabilize_page_boundary(
     if _row_kind(right_page[0]) == "panel_meta":
         _move_previous_row_with_panel_meta(left_page, right_page)
         return
-    if _row_kind(left_page[-1]) != "heading":
-        return
-    left_units = _page_row_units(left_page)
-    moved_rows = 0
-    while right_page and _row_kind(right_page[0]) != "heading":
-        next_row = right_page[0]
-        if left_units + _row_units(next_row) > page_limit:
-            break
-        left_page.append(right_page.pop(0))
-        left_units += _row_units(next_row)
-        moved_rows += 1
-    if moved_rows == 0:
-        right_page.insert(0, left_page.pop())
+    while left_page and right_page and _row_kind(left_page[-1]) == "heading":
+        left_units = _page_row_units(left_page)
+        moved_rows = 0
+        while right_page and _row_kind(right_page[0]) != "heading":
+            next_row = right_page[0]
+            if left_units + _row_units(next_row) > page_limit:
+                break
+            left_page.append(right_page.pop(0))
+            left_units += _row_units(next_row)
+            moved_rows += 1
+        if moved_rows == 0:
+            right_page.insert(0, left_page.pop())
 
 
 def _move_previous_row_with_panel_meta(

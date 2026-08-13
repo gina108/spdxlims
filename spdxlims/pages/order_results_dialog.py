@@ -257,6 +257,10 @@ class OrderResultsDialog(QDialog):
             self.result_value_comment.setPlainText(value)
             self.result_value_stack.setCurrentWidget(self.result_value_comment)
             return
+        if entry is not None and entry.item_type != "heading" and entry.result_kind == "observation":
+            self.result_value_comment.setPlainText(value)
+            self.result_value_stack.setCurrentWidget(self.result_value_comment)
+            return
         if entry is not None and entry.item_type != "heading" and entry.result_kind == "image":
             count = len(self.database.list_result_images(entry.order_test_id))
             self.result_value_image_button.setText(tr("Manage Images") + f" ({count})")
@@ -311,6 +315,7 @@ class OrderResultsDialog(QDialog):
         self._install_inline_result_widgets()
         self._apply_heading_visibility()
         self._style_heading_rows()
+        self._apply_observation_row_spans()
         if self.current_entries:
             first = self.current_entries[0]
             doctor_text = tr(" | Doctor: {doctor_name}", doctor_name=first.doctor_name) if getattr(first, "doctor_name", None) else ""
@@ -412,6 +417,17 @@ class OrderResultsDialog(QDialog):
             widget = self.results_table.cellWidget(row_index, 1)
             if widget is not None:
                 widget.hide()
+
+    def _apply_observation_row_spans(self) -> None:
+        # Observation-kind entries have no unit/range/flag, so merge those
+        # columns into the Result column for a two-column (name + wide text) look.
+        for row_index, display_entry in enumerate(self.display_entries):
+            if display_entry.get("kind") != "entry":
+                self.results_table.setSpan(row_index, 1, 1, 1)
+                continue
+            entry = display_entry["entry"]
+            is_observation = entry.item_type not in {"heading", "comment"} and entry.result_kind == "observation"
+            self.results_table.setSpan(row_index, 1, 1, 4 if is_observation else 1)
 
     def _install_inline_result_widgets(self) -> None:
         for row_index, display_entry in enumerate(self.display_entries):
@@ -590,15 +606,17 @@ class OrderResultsDialog(QDialog):
         is_outsourced = bool(getattr(entry, "is_outsourced", 0))
         is_formula = bool(getattr(entry, "formula", None))
         is_image = entry.item_type not in {"heading", "comment"} and entry.result_kind == "image"
+        is_observation = entry.item_type not in {"heading", "comment"} and entry.result_kind == "observation"
+        hide_range_fields = is_image or is_observation
         result_value = "" if is_heading else entry.result_value or entry.default_result_value or ""
         self._set_result_editor_value(entry, result_value)
-        self.unit.setText("" if is_heading or is_comment or is_outsourced or is_image else entry.unit or "")
-        self.lower_value.setText("" if is_heading or is_comment or is_outsourced or is_image or entry.lower_value is None else entry.lower_value)
-        self.upper_value.setText("" if is_heading or is_comment or is_outsourced or is_image or entry.upper_value is None else entry.upper_value)
-        self.reference_text.setPlainText("" if is_heading or is_comment or is_outsourced or is_image else entry.reference_text or "")
+        self.unit.setText("" if is_heading or is_comment or is_outsourced or hide_range_fields else entry.unit or "")
+        self.lower_value.setText("" if is_heading or is_comment or is_outsourced or hide_range_fields or entry.lower_value is None else entry.lower_value)
+        self.upper_value.setText("" if is_heading or is_comment or is_outsourced or hide_range_fields or entry.upper_value is None else entry.upper_value)
+        self.reference_text.setPlainText("" if is_heading or is_comment or is_outsourced or hide_range_fields else entry.reference_text or "")
         self.comments.setPlainText("" if is_heading else entry.comments or "")
-        self.flag_preview.setText("" if is_heading or is_comment or is_outsourced or is_image else entry.flag or "")
-        self._set_entry_fields_enabled(not is_heading, is_comment=is_comment, is_outsourced=is_outsourced, is_formula=is_formula, is_image=is_image)
+        self.flag_preview.setText("" if is_heading or is_comment or is_outsourced or hide_range_fields else entry.flag or "")
+        self._set_entry_fields_enabled(not is_heading, is_comment=is_comment, is_outsourced=is_outsourced, is_formula=is_formula, is_image=hide_range_fields)
 
     def save_result(self) -> None:
         if self.current_entry is None:
@@ -669,6 +687,8 @@ class OrderResultsDialog(QDialog):
         is_formula: bool = False,
         is_image: bool = False,
     ) -> None:
+        # `is_image` also covers 'observation' kind entries, which hide the same
+        # range/unit/flag fields as image results (see load_selected_entry).
         result_editable = enabled and not is_formula
         self.result_value_text.setEnabled(result_editable)
         self.result_value_select.setEnabled(result_editable)

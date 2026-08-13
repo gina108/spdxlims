@@ -84,6 +84,7 @@ class TestDialog(QDialog):
         self.result_kind.addItem(tr("Numeric"), "numeric")
         self.result_kind.addItem(tr("Text"), "text")
         self.result_kind.addItem(tr("Selectable"), "select")
+        self.result_kind.addItem(tr("Observation"), "observation")
         self.result_kind.currentIndexChanged.connect(self._update_select_fields_visibility)
         self.select_options = QTextEdit()
         self.select_options.setFixedHeight(90)
@@ -1261,8 +1262,8 @@ class CatalogPage(DataAwarePage):
             if not code or not name:
                 errors.append(f"{self._sheet_row_label(row, row_number)}: code and name are required.")
                 continue
-            if result_kind not in {"numeric", "text", "select"}:
-                errors.append(f"{self._sheet_row_label(row, row_number)}: result_kind must be numeric, text, or select.")
+            if result_kind not in {"numeric", "text", "select", "observation"}:
+                errors.append(f"{self._sheet_row_label(row, row_number)}: result_kind must be numeric, text, select, or observation.")
                 continue
             select_options = self._split_options(row.get("select_options", ""))
             default_result = row.get("default_result", "").strip()

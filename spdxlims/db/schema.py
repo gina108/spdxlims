@@ -197,7 +197,7 @@ class SchemaMixin:
                     category_id INTEGER,
                     specimen_type TEXT,
                     method TEXT,
-                    result_kind TEXT NOT NULL CHECK (result_kind IN ('numeric', 'text', 'select', 'image')),
+                    result_kind TEXT NOT NULL CHECK (result_kind IN ('numeric', 'text', 'select', 'image', 'observation')),
                     select_options TEXT,
                     default_result_value TEXT,
                     price REAL NOT NULL DEFAULT 0,
@@ -299,7 +299,6 @@ class SchemaMixin:
                     source_label TEXT,
                     display_name TEXT,
                     sort_order INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE (order_id, test_id),
                     FOREIGN KEY (order_id) REFERENCES orders(id),
                     FOREIGN KEY (test_id) REFERENCES tests(id)
                 );
@@ -526,6 +525,7 @@ class SchemaMixin:
             self._migrate_lab_settings_table(connection)
             self._migrate_tests_table(connection)
             self._migrate_tests_result_kind_image(connection)
+            self._migrate_tests_result_kind_observation(connection)
             self._repair_tests_legacy_references(connection)
             self._migrate_result_images_tables(connection)
             self._migrate_client_test_prices_table(connection)
@@ -583,16 +583,20 @@ class SchemaMixin:
         return self._resolve_report_order_test_id(connection, order_id, int(item.get("sort_order") or 0))
 
     def _ensure_report_placeholder_order_test(self, connection: sqlite3.Connection, order_id: int, item_type: str, label: str, sort_order: int) -> int:
+        # Every heading/comment in an order shares one placeholder test_id, so the
+        # lookup must also match on the label text -- otherwise every distinct
+        # heading collapses onto whichever placeholder row is found first.
         test_id = self._ensure_panel_heading_test(connection) if item_type == "heading" else self._ensure_panel_comment_test(connection)
+        normalized_label = label.strip() or item_type.title()
         row = connection.execute(
-            "SELECT id FROM order_tests WHERE order_id = ? AND test_id = ? ORDER BY id LIMIT 1",
-            (order_id, test_id),
+            "SELECT id FROM order_tests WHERE order_id = ? AND test_id = ? AND display_name = ? ORDER BY id LIMIT 1",
+            (order_id, test_id, normalized_label),
         ).fetchone()
         if row is not None:
             return int(row["id"])
         cursor = connection.execute(
             "INSERT INTO order_tests (order_id, test_id, status, is_outsourced, source_label, display_name, sort_order) VALUES (?, ?, 'pending', 0, NULL, ?, ?)",
-            (order_id, test_id, label.strip() or item_type.title(), sort_order),
+            (order_id, test_id, normalized_label, sort_order),
         )
         return int(cursor.lastrowid)
 
@@ -636,6 +640,66 @@ class SchemaMixin:
             connection.execute("ALTER TABLE order_tests ADD COLUMN is_outsourced INTEGER NOT NULL DEFAULT 0")
         if "source_label" not in order_test_columns:
             connection.execute("ALTER TABLE order_tests ADD COLUMN source_label TEXT")
+        self._migrate_order_tests_unique_constraint(connection)
+
+    def _migrate_order_tests_unique_constraint(self, connection: sqlite3.Connection) -> None:
+        """Drop the legacy UNIQUE(order_id, test_id) constraint.
+
+        Panel headings and comments all share one placeholder test_id
+        (see _ensure_panel_heading_test / _ensure_panel_comment_test), so a
+        second heading or comment on the same order violated this constraint.
+        Real-test duplicates are already prevented in _normalize_order_items.
+        """
+        has_constraint = False
+        for index_row in connection.execute("PRAGMA index_list(order_tests)").fetchall():
+            if not index_row["unique"]:
+                continue
+            index_name = index_row["name"]
+            index_columns = [info_row["name"] for info_row in connection.execute(f"PRAGMA index_info('{index_name}')").fetchall()]
+            if index_columns == ["order_id", "test_id"]:
+                has_constraint = True
+                break
+        if not has_constraint:
+            return
+        # Rebuild via a temp table that is renamed INTO place, per the official
+        # SQLite procedure and matching _migrate_tests_result_kind_image. Renaming
+        # the live `order_tests` out of the way would make SQLite rewrite the FKs
+        # of results/result_images/report_items/report_item_images to point at the
+        # temp name, and dropping the temp table would then leave those children
+        # dangling. `PRAGMA foreign_keys` is ignored while a transaction is open,
+        # so commit before toggling it.
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE IF EXISTS order_tests_new")
+        connection.execute(
+            """
+            CREATE TABLE order_tests_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                test_id INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'entered', 'validated', 'reported')),
+                is_outsourced INTEGER NOT NULL DEFAULT 0,
+                source_label TEXT,
+                display_name TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (order_id) REFERENCES orders(id),
+                FOREIGN KEY (test_id) REFERENCES tests(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO order_tests_new (id, order_id, test_id, status, is_outsourced, source_label, display_name, sort_order)
+            SELECT id, order_id, test_id, status, is_outsourced, source_label, display_name, sort_order
+            FROM order_tests
+            """
+        )
+        connection.execute("DROP TABLE order_tests")
+        connection.execute("ALTER TABLE order_tests_new RENAME TO order_tests")
+        # Commit the rebuild while enforcement is still off, then restore it for
+        # the remaining migrations (pragma changes are ignored mid-transaction).
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
 
     def _migrate_reports_table(self, connection: sqlite3.Connection) -> None:
         report_item_columns = {row["name"] for row in connection.execute("PRAGMA table_info(report_items)").fetchall()}
@@ -1009,6 +1073,56 @@ class SchemaMixin:
         connection.execute("ALTER TABLE tests_new RENAME TO tests")
         # Commit the rebuild while enforcement is still off, then restore it for
         # the remaining migrations (pragma changes are ignored mid-transaction).
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    def _migrate_tests_result_kind_observation(self, connection: sqlite3.Connection) -> None:
+        # Same rebuild as _migrate_tests_result_kind_image, for the 'observation' kind.
+        table_sql_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tests'"
+        ).fetchone()
+        table_sql = (table_sql_row["sql"] or "") if table_sql_row is not None else ""
+        if not table_sql or "result_kind" not in table_sql:
+            return
+        if "'observation'" in table_sql:
+            return
+        legacy_columns = [row["name"] for row in connection.execute("PRAGMA table_info(tests)").fetchall()]
+        new_columns = [
+            "id", "code", "name", "category_id", "specimen_type", "method",
+            "result_kind", "select_options", "default_result_value", "price",
+            "result_multiplier", "is_active", "sort_order", "formula",
+        ]
+        shared_columns = [column for column in new_columns if column in legacy_columns]
+        column_list = ", ".join(shared_columns)
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE IF EXISTS tests_new")
+        connection.execute(
+            """
+            CREATE TABLE tests_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                category_id INTEGER,
+                specimen_type TEXT,
+                method TEXT,
+                result_kind TEXT NOT NULL CHECK (result_kind IN ('numeric', 'text', 'select', 'image', 'observation')),
+                select_options TEXT,
+                default_result_value TEXT,
+                price REAL NOT NULL DEFAULT 0,
+                result_multiplier REAL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                formula TEXT,
+                FOREIGN KEY (category_id) REFERENCES test_categories(id)
+            )
+            """
+        )
+        connection.execute(
+            f"INSERT INTO tests_new ({column_list}) SELECT {column_list} FROM tests"
+        )
+        connection.execute("DROP TABLE tests")
+        connection.execute("ALTER TABLE tests_new RENAME TO tests")
         connection.commit()
         connection.execute("PRAGMA foreign_keys = ON")
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -107,9 +107,17 @@ class ReportEditorDialog(QDialog):
         self.items_table.setColumnWidth(5, 120)
         self.items_table.horizontalHeader().setStretchLastSection(True)
         self.items_table.verticalHeader().setDefaultSectionSize(44)
+        self.items_table.installEventFilter(self)
         layout.addWidget(self.items_table, 1)
 
         self._populate_items_table()
+
+    def eventFilter(self, obj: object, event) -> bool:
+        if obj is self.items_table and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self._remove_selected_row()
+                return True
+        return super().eventFilter(obj, event)
 
     @property
     def edited_preview(self) -> dict[str, object]:
