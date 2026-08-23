@@ -22,12 +22,14 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStackedWidget,
     QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from spdxlims.database import Database, ResultEntryRecord
+from spdxlims.db.panels import GRAM_NEGATIVE, GRAM_POSITIVE
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
@@ -43,6 +45,9 @@ class OrderResultsDialog(QDialog):
         self.current_entries: list[ResultEntryRecord] = []
         self.display_entries: list[dict[str, object]] = []
         self.current_entry: ResultEntryRecord | None = None
+        # Guards the culture editor's change signals while it is being populated.
+        self._culture_loading = False
+        self._culture_code = ""
         self.collapsed_headings_by_order: dict[int, set[int]] = self._load_collapsed_headings()
 
         self.setModal(True)
@@ -147,7 +152,59 @@ class OrderResultsDialog(QDialog):
             """
         )
         layout.addWidget(self.results_table)
+        layout.addWidget(self._build_culture_group())
         return self.order_group
+
+    def _build_culture_group(self) -> QWidget:
+        """Gram choice and the free-form organism rows for a cultivo panel.
+
+        These are not test results -- they live in order_culture_data -- so they
+        need their own editor rather than a row in the results table. The whole
+        group stays hidden unless the order actually contains a cultivo panel.
+        """
+        self.culture_group = QGroupBox(tr("Culture"))
+        self.culture_group.setVisible(False)
+        layout = QVBoxLayout(self.culture_group)
+        layout.setSpacing(6)
+
+        gram_row = QHBoxLayout()
+        gram_row.setSpacing(8)
+        self.culture_gram_combo = QComboBox()
+        self.culture_gram_combo.addItem(tr("Gram positive"), GRAM_POSITIVE)
+        self.culture_gram_combo.addItem(tr("Gram negative"), GRAM_NEGATIVE)
+        self.culture_gram_combo.currentIndexChanged.connect(self._save_culture_data)
+        gram_row.addWidget(QLabel(tr("Gram")))
+        gram_row.addWidget(self.culture_gram_combo)
+        gram_row.addStretch(1)
+        self.culture_add_row_button = QPushButton(tr("Add Row"))
+        self.culture_add_row_button.clicked.connect(self._add_culture_row)
+        self.culture_remove_row_button = QPushButton(tr("Remove Row"))
+        self.culture_remove_row_button.clicked.connect(self._remove_culture_row)
+        gram_row.addWidget(self.culture_add_row_button)
+        gram_row.addWidget(self.culture_remove_row_button)
+        layout.addLayout(gram_row)
+
+        self.culture_helper = QLabel(
+            tr("Type the organisms searched and their result. Empty rows are left off the report.")
+        )
+        self.culture_helper.setWordWrap(True)
+        self.culture_helper.setStyleSheet("color: #6b7480;")
+        layout.addWidget(self.culture_helper)
+
+        self.culture_table = QTableWidget(0, 2)
+        self.culture_table.setHorizontalHeaderLabels([tr("Organism"), tr("Result")])
+        self.culture_table.verticalHeader().setVisible(False)
+        self.culture_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.culture_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.culture_table.setMinimumHeight(140)
+        # The report prints these columns at 1/3 and 2/3; mirror that here so the
+        # entry screen reads the same way as the printed result.
+        header = self.culture_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        self.culture_table.setColumnWidth(0, 200)
+        self.culture_table.itemChanged.connect(self._on_culture_item_changed)
+        layout.addWidget(self.culture_table)
+        return self.culture_group
 
     def _build_entry_form(self) -> QWidget:
         self.entry_group = QGroupBox(tr("Result Entry"))
@@ -315,6 +372,7 @@ class OrderResultsDialog(QDialog):
         self._install_inline_result_widgets()
         self._apply_heading_visibility()
         self._style_heading_rows()
+        self._refresh_culture_section()
         self._apply_observation_row_spans()
         if self.current_entries:
             first = self.current_entries[0]
@@ -365,30 +423,131 @@ class OrderResultsDialog(QDialog):
 
 
 
+    # --- cultivo panel: gram choice + free-form organism rows ---
+
+    def _culture_panel_code(self) -> str:
+        """Panel code of the cultivo panel on this order, or '' if there is none.
+
+        Culture data is stored locally per order, so this is skipped in server
+        mode (where order_id is a UUID and the local helpers are unavailable).
+        """
+        lookup = getattr(self.database, "get_culture_panel_codes_by_name", None)
+        if not callable(lookup):
+            return ""
+        try:
+            int(self.order_id)
+        except (TypeError, ValueError):
+            return ""
+        codes = lookup()
+        if not codes:
+            return ""
+        # Order items carry labels like "NAME (CODE) - 3 tests"; normalize to the
+        # bare panel name the same way the report pipeline does.
+        normalize = getattr(self.database, "_normalize_report_panel_label", None)
+        for entry in self.current_entries:
+            raw = str(getattr(entry, "source_label", "") or "")
+            label = (normalize(raw) if callable(normalize) else raw).strip().casefold()
+            if label in codes:
+                return codes[label]
+        return ""
+
+    def _refresh_culture_section(self) -> None:
+        code = self._culture_panel_code()
+        self._culture_code = code
+        self.culture_group.setVisible(bool(code))
+        if not code:
+            return
+        data = self.database.get_order_culture_data(int(self.order_id), code)
+        index = self.culture_gram_combo.findData(data["gram"] or GRAM_POSITIVE)
+        self._culture_loading = True
+        try:
+            self.culture_gram_combo.setCurrentIndex(index if index >= 0 else 0)
+            rows = data["rows"] or []
+            # Always leave one empty row so there is somewhere to type without
+            # having to click Add Row first.
+            self.culture_table.setRowCount(len(rows) + 1)
+            for row_index, entry in enumerate(rows):
+                self.culture_table.setItem(row_index, 0, QTableWidgetItem(entry["label"]))
+                self.culture_table.setItem(row_index, 1, QTableWidgetItem(entry["value"]))
+            self.culture_table.setItem(len(rows), 0, QTableWidgetItem(""))
+            self.culture_table.setItem(len(rows), 1, QTableWidgetItem(""))
+        finally:
+            self._culture_loading = False
+
+    def _collect_culture_rows(self) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for row_index in range(self.culture_table.rowCount()):
+            label_item = self.culture_table.item(row_index, 0)
+            value_item = self.culture_table.item(row_index, 1)
+            rows.append(
+                {
+                    "label": (label_item.text() if label_item else "").strip(),
+                    "value": (value_item.text() if value_item else "").strip(),
+                }
+            )
+        return rows
+
+    def _save_culture_data(self) -> None:
+        if getattr(self, "_culture_loading", False) or not getattr(self, "_culture_code", ""):
+            return
+        self.database.save_order_culture_data(
+            int(self.order_id),
+            self._culture_code,
+            str(self.culture_gram_combo.currentData() or GRAM_POSITIVE),
+            self._collect_culture_rows(),
+        )
+
+    def _on_culture_item_changed(self, _item: QTableWidgetItem) -> None:
+        if getattr(self, "_culture_loading", False):
+            return
+        self._save_culture_data()
+        # Keep a spare blank row at the bottom as the tech fills the last one in.
+        last = self.culture_table.rowCount() - 1
+        if last < 0:
+            return
+        label_item = self.culture_table.item(last, 0)
+        value_item = self.culture_table.item(last, 1)
+        if (label_item and label_item.text().strip()) or (value_item and value_item.text().strip()):
+            self._add_culture_row()
+
+    def _add_culture_row(self) -> None:
+        self._culture_loading = True
+        try:
+            row_index = self.culture_table.rowCount()
+            self.culture_table.setRowCount(row_index + 1)
+            self.culture_table.setItem(row_index, 0, QTableWidgetItem(""))
+            self.culture_table.setItem(row_index, 1, QTableWidgetItem(""))
+        finally:
+            self._culture_loading = False
+
+    def _remove_culture_row(self) -> None:
+        row_index = self.culture_table.currentRow()
+        if row_index < 0:
+            return
+        self.culture_table.removeRow(row_index)
+        if self.culture_table.rowCount() == 0:
+            self._add_culture_row()
+        self._save_culture_data()
+
     def _load_collapsed_headings(self) -> dict[int, set[int]]:
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get("collapsed_headings_by_order", {})
-        if not isinstance(raw, dict):
+        # Only this dialog's own order is ever consulted, so read just that row
+        # instead of loading every order's collapsed state.
+        values = self.database.get_order_ui_value("collapsed_headings", self.order_id)
+        if not isinstance(values, list):
             return {}
-        collapsed: dict[int, set[int]] = {}
-        for order_id, values in raw.items():
-            try:
-                normalized_order_id = int(order_id)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(values, list):
-                continue
-            collapsed[normalized_order_id] = {int(value) for value in values if isinstance(value, int) or isinstance(value, str) and str(value).isdigit()}
-        return collapsed
+        normalized = {
+            int(value)
+            for value in values
+            if isinstance(value, int) or (isinstance(value, str) and str(value).isdigit())
+        }
+        return {self.order_id: normalized}
 
     def _save_collapsed_headings(self) -> None:
-        ui_state = self.database.get_ui_state()
-        ui_state["collapsed_headings_by_order"] = {
-            str(order_id): sorted(values)
-            for order_id, values in self.collapsed_headings_by_order.items()
-            if values
-        }
-        self.database.save_ui_state(ui_state)
+        values = sorted(self.collapsed_headings_by_order.get(self.order_id, set()))
+        if values:
+            self.database.set_order_ui_value("collapsed_headings", self.order_id, values)
+        else:
+            self.database.delete_order_ui_value("collapsed_headings", self.order_id)
 
     def _collapsed_headings(self) -> set[int]:
         return self.collapsed_headings_by_order.setdefault(self.order_id, set())

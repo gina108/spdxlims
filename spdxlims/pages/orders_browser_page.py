@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import astuple
 from pathlib import Path
 
 from PySide6.QtCore import QEventLoop, QMarginsF, Qt, QTimer, QUrl
@@ -38,12 +39,21 @@ except ImportError:
 
 
 class OrdersBrowserPage(DataAwarePage):
+    # Extra rows built above and below the viewport so a short scroll never
+    # lands on a row whose status indicator is missing.
+    _ROW_WIDGET_BUFFER = 8
+
     def __init__(self, database: Database, deployment_service: DeploymentService) -> None:
         super().__init__()
         self.database = database
         self.order_service = OrderService(database, deployment_service)
         self.report_service = ReportService(database, deployment_service)
         self.current_records: list[OrderBrowserRecord] = []
+        # Signature of the records the table was last built from, so the 5s
+        # auto-refresh can skip the rebuild when nothing actually changed.
+        self._table_signature: tuple | None = None
+        # Rows whose status-indicator widget has been built (see _populate_visible_rows).
+        self._rows_with_widgets: set[int] = set()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -93,6 +103,11 @@ class OrdersBrowserPage(DataAwarePage):
         self.table.itemSelectionChanged.connect(self._update_report_buttons)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
+        # Status widgets are built lazily, so newly exposed rows need filling in
+        # as the user scrolls or the viewport is resized.
+        scrollbar = self.table.verticalScrollBar()
+        scrollbar.valueChanged.connect(self._populate_visible_rows)
+        scrollbar.rangeChanged.connect(lambda _min, _max: self._populate_visible_rows())
         layout.addWidget(self.table, 1)
 
         action_row = QHBoxLayout()
@@ -152,12 +167,26 @@ class OrdersBrowserPage(DataAwarePage):
             )
         except RuntimeError:
             self.current_records = []
+        # The auto-refresh tick runs every 5s whether or not anything changed.
+        # Rebuilding the table is the expensive half, so do it only when the
+        # rows actually differ; this also leaves the user's scroll position and
+        # selection alone while they are reading the list.
+        signature = self._records_signature(self.current_records)
+        if signature == self._table_signature:
+            return
+        self._table_signature = signature
         self._refresh_table()
         if selected_id is not None:
             for row_index, record in enumerate(self.current_records):
                 if record.id == selected_id:
                     self.table.selectRow(row_index)
                     break
+
+    @staticmethod
+    def _records_signature(records: list[OrderBrowserRecord]) -> tuple:
+        # Every field on OrderBrowserRecord is rendered, so any change to any of
+        # them should force a rebuild.
+        return tuple(astuple(record) for record in records)
 
     def _auto_refresh_tick(self) -> None:
         # Skip while a menu or modal dialog is open so the table isn't rebuilt
@@ -177,7 +206,9 @@ class OrdersBrowserPage(DataAwarePage):
         self._auto_refresh_timer.stop()
 
     def _refresh_table(self) -> None:
-        self.table.clearContents()
+        # setRowCount(0) first so Qt destroys the previous rows' status widgets;
+        # clearContents() alone only drops the items and would leak them.
+        self.table.setRowCount(0)
         self.table.setRowCount(len(self.current_records))
         self.table.setColumnWidth(0, 130)
         self.table.setColumnWidth(1, 250)
@@ -186,6 +217,7 @@ class OrdersBrowserPage(DataAwarePage):
         self.table.setColumnWidth(4, 52)
         self.table.setColumnWidth(5, 150)
 
+        self._rows_with_widgets = set()
         muted = QColor("#7f8a98")
         for row_index, record in enumerate(self.current_records):
             archived = bool(record.is_archived)
@@ -193,8 +225,42 @@ class OrdersBrowserPage(DataAwarePage):
             self._set_item(row_index, 1, record.patient_name, muted if archived else None)
             self._set_item(row_index, 2, record.client_name or "", muted if archived else None)
             self._set_item(row_index, 3, record.doctor_name or "", muted if archived else None)
-            self.table.setCellWidget(row_index, 4, self.build_order_status_indicator(record.status, all_results_entered=record.all_results_entered))
             self._set_item(row_index, 5, self._format_order_date(record.order_date), muted if archived else None)
+
+        # Column 4 holds a real widget per row, which dominates the rebuild cost.
+        # Build only the rows near the viewport; the rest fill in on scroll.
+        self._populate_visible_rows()
+
+    def _visible_row_range(self) -> tuple[int, int]:
+        total = self.table.rowCount()
+        if total == 0:
+            return (0, -1)
+        first = self.table.rowAt(0)
+        if first < 0:
+            first = self.table.verticalScrollBar().value()
+        first = max(0, min(first, total - 1))
+        row_height = max(1, self.table.verticalHeader().defaultSectionSize())
+        viewport_height = self.table.viewport().height()
+        # Before the first layout the viewport reports no height, so fall back to
+        # a screenful rather than building nothing and showing empty status cells.
+        span = (viewport_height // row_height) + 2 if viewport_height > 0 else self._ROW_WIDGET_BUFFER
+        last = min(total - 1, first + max(1, span) + self._ROW_WIDGET_BUFFER)
+        return (max(0, first - self._ROW_WIDGET_BUFFER), last)
+
+    def _populate_visible_rows(self) -> None:
+        if not self.current_records:
+            return
+        first, last = self._visible_row_range()
+        for row_index in range(first, last + 1):
+            if row_index in self._rows_with_widgets or row_index >= len(self.current_records):
+                continue
+            record = self.current_records[row_index]
+            self.table.setCellWidget(
+                row_index,
+                4,
+                self.build_order_status_indicator(record.status, all_results_entered=record.all_results_entered),
+            )
+            self._rows_with_widgets.add(row_index)
 
     def _set_item(self, row: int, column: int, value: str, color: QColor | None = None) -> None:
         item = QTableWidgetItem(value)

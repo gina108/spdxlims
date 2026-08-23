@@ -10,6 +10,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from spdxlims.db.panels import GRAM_NEGATIVE
 from spdxlims.db.records import TestReferenceRangeRecord
 from spdxlims.i18n import tr
 
@@ -101,7 +102,15 @@ class ResultsMixin:
             })
         return labels
 
-    def get_live_report_preview(self, order_id: int) -> dict[str, Any] | None:
+    def get_live_report_preview(self, order_id: int, *, apply_culture_layout: bool = True) -> dict[str, Any] | None:
+        """Build the live preview.
+
+        `apply_culture_layout=False` is used by get_saved_report_preview, which
+        needs the raw rows (with their order_test_ids intact) as the scaffold to
+        merge snapshot values onto. Culture rows carry no order_test_id, so
+        collapsing them before that merge would make a finalized report render
+        current values instead of its frozen snapshot.
+        """
         context = self._get_report_context(order_id)
         if context is None:
             return None
@@ -165,11 +174,20 @@ class ResultsMixin:
             "client_footer_signature_image_path": context.get("client_footer_signature_image_path") or "",
             "general_comments": context["notes"],
             "outsourced_panels": self.get_outsourced_panel_preview_sections(order_id),
-            "items": self._inject_panel_title_rows(
-                self._restore_panel_catalog_structure(preview_items),
-                self.get_panel_report_metadata_by_name(),
+            "items": self._maybe_apply_culture_layout(
+                self._inject_panel_title_rows(
+                    self._restore_panel_catalog_structure(preview_items),
+                    self.get_panel_report_metadata_by_name(),
+                ),
+                apply_culture_layout,
+                order_id,
             ),
         }
+
+    def _maybe_apply_culture_layout(
+        self, items: list[dict[str, Any]], enabled: bool, order_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        return self._apply_culture_layout(items, order_id) if enabled else items
 
     def get_saved_report_preview(self, order_id: int) -> dict[str, Any] | None:
         current_settings = self.get_lab_settings()
@@ -268,7 +286,9 @@ class ResultsMixin:
             }
             for row in item_rows
         ]
-        live_preview = self.get_live_report_preview(int(report_row["order_id"]))
+        live_preview = self.get_live_report_preview(
+            int(report_row["order_id"]), apply_culture_layout=False
+        )
         rendered_items = self._merge_saved_result_values_into_live_items(
             saved_items,
             list((live_preview or {}).get("items") or []),
@@ -316,7 +336,13 @@ class ResultsMixin:
             "client_footer_signature_image_path": live_ctx.get("client_footer_signature_image_path") or "",
             "general_comments": report_row["general_comments"],
             "outsourced_panels": self.get_outsourced_panel_preview_sections(order_id),
-            "items": rendered_items,
+            # Applied last, once snapshot values are merged onto the raw rows.
+            # The report version selects the frozen culture rows for this report.
+            "items": self._apply_culture_layout(
+                rendered_items,
+                int(report_row["order_id"]),
+                int(report_row["report_version"] or 0),
+            ),
         }
 
     @classmethod
@@ -558,6 +584,194 @@ class ResultsMixin:
                 if normalized_key:
                     structures[normalized_key.casefold()] = structure
         return structures
+
+    def _apply_culture_layout(
+        self,
+        items: list[dict[str, Any]],
+        order_id: int | None = None,
+        report_version: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Rewrite culture panels' rows into the banded microbiology layout.
+
+        Runs after _inject_panel_title_rows, so a culture panel arrives here as
+        its injected `heading` row followed by its test rows. Those are replaced
+        by culture_* rows that report_layout renders as bands and name/value
+        pairs. Panels that are not culture panels pass through untouched.
+        """
+        culture_panels = self.get_culture_panels_by_name()
+        frotis_panels = self.get_frotis_panels_by_name()
+        if not culture_panels and not frotis_panels:
+            return items
+        culture_codes = self.get_culture_panel_codes_by_name()
+
+        def config_for(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+            label = self._normalize_report_panel_label(str(item.get("source_label") or ""))
+            if not label:
+                return None
+            key = label.casefold()
+            if key in culture_panels:
+                return ("cultivo", culture_panels[key])
+            if key in frotis_panels:
+                return ("frotis", frotis_panels[key])
+            return None
+
+        rendered: list[dict[str, Any]] = []
+        index = 0
+        sort_order = 0
+
+        def emit(item_type: str, name: str, value: str = "") -> None:
+            nonlocal sort_order
+            rendered.append(
+                {
+                    "order_test_id": None,
+                    "test_id": None,
+                    "item_type": item_type,
+                    "test_name": name,
+                    "result_value": value,
+                    "unit": "",
+                    "reference_text": "",
+                    "lower_value": "",
+                    "upper_value": "",
+                    "flag": "",
+                    "comments": "",
+                    "sort_order": sort_order,
+                }
+            )
+            sort_order += 1
+
+        def emit_triple(item_type: str, name: str, value: str, third: str) -> None:
+            # The third column rides in `unit`, which every preview item already has.
+            nonlocal sort_order
+            rendered.append(
+                {
+                    "order_test_id": None,
+                    "test_id": None,
+                    "item_type": item_type,
+                    "test_name": name,
+                    "result_value": value,
+                    "unit": third,
+                    "reference_text": "",
+                    "lower_value": "",
+                    "upper_value": "",
+                    "flag": "",
+                    "comments": "",
+                    "sort_order": sort_order,
+                }
+            )
+            sort_order += 1
+
+        while index < len(items):
+            item = items[index]
+            matched = config_for(item)
+            if matched is None:
+                # _inject_panel_title_rows emits the panel-name heading without a
+                # source_label, so it would otherwise survive as a duplicate of
+                # the title band that replaces it.
+                if str(item.get("item_type") or "") == "heading" and not str(item.get("source_label") or "").strip():
+                    heading_name = str(item.get("test_name") or "").strip().casefold()
+                    if heading_name in culture_panels or heading_name in frotis_panels:
+                        index += 1
+                        continue
+                normalized = dict(item)
+                normalized["sort_order"] = sort_order
+                rendered.append(normalized)
+                sort_order += 1
+                index += 1
+                continue
+            kind, config = matched
+
+            # Collect the whole run of rows belonging to this culture panel.
+            label = self._normalize_report_panel_label(str(item.get("source_label") or ""))
+            block: list[dict[str, Any]] = []
+            while index < len(items):
+                candidate = items[index]
+                candidate_label = self._normalize_report_panel_label(str(candidate.get("source_label") or ""))
+                if candidate_label.casefold() != label.casefold():
+                    break
+                block.append(candidate)
+                index += 1
+
+            by_name = {
+                str(row.get("test_name") or "").strip().casefold(): row
+                for row in block
+                if str(row.get("item_type") or "test") == "test"
+            }
+
+            def value_of(name: str) -> str:
+                row = by_name.get(str(name).strip().casefold())
+                return str((row or {}).get("result_value") or "").strip()
+
+            emit("culture_title", config["title"] or label)
+
+            if kind == "cultivo":
+                panel_code = culture_codes.get(label.casefold(), "")
+                culture_data = (
+                    self.get_order_culture_data(order_id, panel_code, report_version)
+                    if order_id is not None and panel_code
+                    else {"gram": "", "rows": []}
+                )
+                if config["pathogens_heading"]:
+                    emit("culture_section", config["pathogens_heading"])
+                # Free-form rows typed by the tech. Blank rows are dropped so the
+                # printed report never shows empty lines.
+                for entry in culture_data["rows"]:
+                    if entry["label"] or entry["value"]:
+                        emit("culture_pair", entry["label"], entry["value"])
+
+                if config["isolate_name"]:
+                    emit("culture_isolate", config["isolate_label"], value_of(config["isolate_name"]))
+
+                for name in config["extra_names"]:
+                    row = by_name.get(name.strip().casefold()) or {}
+                    emit("culture_pair", name, f"{value_of(name)} {str(row.get('unit') or '').strip()}".strip())
+
+                gram = culture_data["gram"]
+                if gram == GRAM_NEGATIVE:
+                    antibiotics = config["antibiotic_names_negative"]
+                    gram_label = config["gram_label_negative"]
+                else:
+                    antibiotics = config["antibiotic_names_positive"]
+                    gram_label = config["gram_label_positive"]
+                if antibiotics:
+                    if config["susceptibility_heading"]:
+                        emit("culture_section", config["susceptibility_heading"])
+                    if gram_label:
+                        emit("culture_subheading", gram_label)
+                    emit_triple(
+                        "culture_table_header",
+                        config["antibiogram_col_1"],
+                        config["antibiogram_col_2"],
+                        config["antibiogram_col_3"],
+                    )
+                    concentrations = config["antibiotic_concentrations"]
+                    for name in antibiotics:
+                        emit_triple(
+                            "culture_triple",
+                            name,
+                            value_of(name),
+                            str(concentrations.get(name, "")).strip(),
+                        )
+
+                if config["method_note"]:
+                    emit("culture_note", config["method_note"])
+                continue
+
+            if kind == "frotis":
+                # Labelled narrative blocks: "Serie roja: <prose>". Falls back to
+                # every test row in the panel when no sections are configured, so
+                # a frotis panel still renders something useful before setup.
+                names = config["section_names"] or [
+                    str(row.get("test_name") or "").strip()
+                    for row in block
+                    if str(row.get("item_type") or "test") == "test"
+                ]
+                for name in names:
+                    emit("frotis_block", name, value_of(name))
+                if config["method_note"]:
+                    emit("culture_note", config["method_note"])
+                continue
+
+        return rendered
 
     def _inject_panel_title_rows(self, items: list[dict[str, Any]], panel_metadata: dict[str, dict[str, str]] | None = None) -> list[dict[str, Any]]:
         panel_counts: dict[str, int] = {}
@@ -843,6 +1057,10 @@ class ResultsMixin:
                 "UPDATE orders SET status = 'finalized', reported_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (order_id,),
             )
+        # Freeze the culture rows against this version. They live outside
+        # report_items (they are not test results), so they need their own
+        # snapshot for the finalized report to keep rendering what was signed.
+        self.snapshot_order_culture_data(order_id, next_version)
         return report_id
 
     def delete_saved_report(self, order_id: int) -> None:

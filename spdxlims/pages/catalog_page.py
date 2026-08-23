@@ -46,11 +46,17 @@ from spdxlims.catalog_excel import (
     write_test_import_template,
 )
 from spdxlims.database import Database, PanelRecord, TestRecord
+from spdxlims.db.panels import (
+    PANEL_KIND_CULTIVO,
+    PANEL_KIND_FROTIS,
+    PANEL_KIND_RESULTADO,
+)
 from spdxlims.deployment import DeploymentService
 from spdxlims.panel_service import PanelService
 from spdxlims.i18n import tr
 from spdxlims.test_service import TestService
 from spdxlims.pages.base_page import DataAwarePage
+from spdxlims.pages.panel_layout_dialog import PanelLayoutDialog
 
 
 class TestDialog(QDialog):
@@ -570,6 +576,31 @@ class PanelDialog(QDialog):
         meta_row.addWidget(self.panel_method, 1)
         root.addLayout(meta_row)
 
+        # Report layout for this panel. 'resultado' is the standard
+        # ESTUDIO/RESULTADO/UNIDAD/REFERENCIA grid; the other two render the
+        # banded microbiology layouts (see report_layout.py).
+        kind_row = QHBoxLayout()
+        kind_row.setSpacing(12)
+        self.panel_kind_combo = QComboBox()
+        self.panel_kind_combo.addItem(tr("Resultado"), PANEL_KIND_RESULTADO)
+        self.panel_kind_combo.addItem(tr("Cultivo"), PANEL_KIND_CULTIVO)
+        self.panel_kind_combo.addItem(tr("Frotis"), PANEL_KIND_FROTIS)
+        self.panel_kind_combo.currentIndexChanged.connect(self._update_kind_help)
+        self.panel_kind_help = QLabel()
+        self.panel_kind_help.setWordWrap(True)
+        self.panel_kind_help.setStyleSheet("color: #6b7480;")
+        self.configure_layout_button = QPushButton(tr("Configure Layout..."))
+        self.configure_layout_button.clicked.connect(self.open_layout_dialog)
+        kind_row.addWidget(QLabel(tr("Report Type")))
+        kind_row.addWidget(self.panel_kind_combo)
+        kind_row.addWidget(self.configure_layout_button)
+        kind_row.addWidget(self.panel_kind_help, 1)
+        root.addLayout(kind_row)
+        # Layout config is edited in the dialog and held here until save, so a
+        # cancelled panel edit does not leave a half-written config behind.
+        self._pending_layout_config: dict[str, Any] | None = None
+        self._update_kind_help()
+
         content = QHBoxLayout()
 
         available_group = QGroupBox(tr("Available Tests"))
@@ -657,9 +688,114 @@ class PanelDialog(QDialog):
             self.panel_method.setText(detail.get("method") or "")
             self.pending_items = [dict(item) for item in detail.get("items", [])]
             self.archive_panel_button.setText(tr("Unarchive Panel") if not detail.get("is_active") else tr("Archive Panel"))
+            get_kind = getattr(self.database, "get_panel_kind", None)
+            if callable(get_kind):
+                try:
+                    kind_index = self.panel_kind_combo.findData(get_kind(int(self.panel_id)))
+                except (TypeError, ValueError):
+                    kind_index = -1
+                if kind_index >= 0:
+                    self.panel_kind_combo.setCurrentIndex(kind_index)
+            self._update_kind_help()
 
         self._load_test_choices()
         self._refresh_panel_items()
+
+    def _update_kind_help(self) -> None:
+        helps = {
+            PANEL_KIND_RESULTADO: tr("Standard table: study, result, unit, and reference range."),
+            PANEL_KIND_CULTIVO: tr("Culture layout: pathogens searched, isolated agent, and antibiogram."),
+            PANEL_KIND_FROTIS: tr("Smear layout: a title band followed by narrative sections."),
+        }
+        kind = self.selected_panel_kind()
+        self.panel_kind_help.setText(helps.get(kind, ""))
+        # Only the banded layouts have anything to configure.
+        self.configure_layout_button.setEnabled(kind != PANEL_KIND_RESULTADO)
+
+    def _panel_test_names(self) -> list[str]:
+        """Bare test names of the panel's items, in panel order."""
+        names: list[str] = []
+        for item in self.pending_items:
+            if str(item.get("item_type") or "test") != "test":
+                continue
+            label = self._display_test_label(str(item.get("label") or ""))
+            if label and label not in names:
+                names.append(label)
+        return names
+
+    def _current_layout_config(self) -> dict[str, Any]:
+        if self._pending_layout_config is not None:
+            return self._pending_layout_config
+        get_config = getattr(self.database, "get_panel_layout_config", None)
+        if self.panel_id is not None and callable(get_config):
+            try:
+                return get_config(int(self.panel_id)) or {}
+            except (TypeError, ValueError):
+                return {}
+        return {}
+
+    def open_layout_dialog(self) -> None:
+        kind = self.selected_panel_kind()
+        if kind == PANEL_KIND_RESULTADO:
+            return
+        names = self._panel_test_names()
+        if not names:
+            QMessageBox.warning(
+                self,
+                tr("Missing Data"),
+                tr("Add the panel's tests first, then configure the layout."),
+            )
+            return
+        dialog = PanelLayoutDialog(
+            kind,
+            self._current_layout_config(),
+            names,
+            panel_name=self.panel_name.text().strip(),
+            parent=self,
+        )
+        if dialog.exec() == QDialog.Accepted:
+            self._pending_layout_config = dialog.result_config()
+
+    def selected_panel_kind(self) -> str:
+        return str(self.panel_kind_combo.currentData() or PANEL_KIND_RESULTADO)
+
+    def _apply_panel_kind(self, panel_id: int | str | None) -> None:
+        """Persist the chosen report layout after the panel row exists.
+
+        create_panel/update_panel do not carry the kind, so it is written in a
+        second step. Only local (non-server) panels have a layout to set.
+        """
+        if panel_id is None:
+            return
+        setter = getattr(self.database, "set_panel_kind", None)
+        if not callable(setter):
+            return
+        kind = self.selected_panel_kind()
+        if self._pending_layout_config is not None:
+            existing = dict(self._pending_layout_config)
+        else:
+            existing = {}
+            get_config = getattr(self.database, "get_panel_layout_config", None)
+            if callable(get_config):
+                try:
+                    existing = get_config(int(panel_id)) or {}
+                except (TypeError, ValueError):
+                    existing = {}
+        # Seed the title from the panel name so a new cultivo/frotis panel
+        # renders its band immediately, before any further configuration.
+        if kind != PANEL_KIND_RESULTADO and not existing.get("title"):
+            existing = {**existing, "title": self.panel_name.text().strip()}
+        try:
+            setter(int(panel_id), kind, existing if kind != PANEL_KIND_RESULTADO else None)
+        except (TypeError, ValueError):
+            pass
+
+    def _resolve_saved_panel_id(self) -> int | str | None:
+        """create_panel returns nothing, so look the new panel up by its code."""
+        lookup = getattr(self.database, "get_panel_id_by_code", None)
+        if not callable(lookup):
+            return None
+        return lookup(self.panel_code.text().strip())
 
     def _list_test_choices(self) -> list[tuple[str, str]] | list[tuple[int, str]]:
         if self.panel_service is not None:
@@ -813,12 +949,15 @@ class PanelDialog(QDialog):
         try:
             if self.panel_id is None:
                 self._create_panel(self.panel_code.text(), self.panel_name.text(), self.pending_items, self.panel_specimen_type.text(), self.panel_method.text())
+                saved_id = self._resolve_saved_panel_id()
             else:
                 self._update_panel(self.panel_id, self.panel_code.text(), self.panel_name.text(), self.pending_items, self.panel_specimen_type.text(), self.panel_method.text())
+                saved_id = self.panel_id
         except sqlite3.IntegrityError as exc:
             QMessageBox.critical(self, tr("Save Failed"), str(exc))
             return
 
+        self._apply_panel_kind(saved_id)
         self.accept()
 
 

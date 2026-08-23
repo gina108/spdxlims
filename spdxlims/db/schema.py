@@ -544,6 +544,115 @@ class SchemaMixin:
             self._migrate_inventory_items_table(connection)
             self._migrate_invoices_table(connection)
             self._migrate_suppliers_table(connection)
+            self._migrate_order_ui_state_table(connection)
+            self._migrate_culture_panels(connection)
+
+    # Per-order UI state used to live as nested dicts inside the single
+    # lab_settings.ui_state JSON blob. That blob grew with every order (it had
+    # reached ~485KB / 7k entries), and every read re-parsed all of it, so a
+    # page that consulted it per row paid for the whole history each time.
+    # These maps now live in a keyed table that supports single-row lookups.
+    ORDER_UI_STATE_SCOPES = {
+        "results_report_approvals": "approval",
+        "results_report_headers": "header",
+        "results_report_footers": "footer",
+        "results_linked_instrument_captures": "instrument_capture",
+        "collapsed_headings_by_order": "collapsed_headings",
+    }
+
+    def _migrate_order_ui_state_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_ui_state (
+                scope TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (scope, entity_id)
+            )
+            """
+        )
+        row = connection.execute("SELECT ui_state FROM lab_settings WHERE id = 1").fetchone()
+        if row is None:
+            return
+        try:
+            ui_state = json.loads(row["ui_state"] or "{}")
+        except json.JSONDecodeError:
+            return
+        if not isinstance(ui_state, dict):
+            return
+
+        moved = False
+        for legacy_key, scope in self.ORDER_UI_STATE_SCOPES.items():
+            raw = ui_state.get(legacy_key)
+            if not isinstance(raw, dict):
+                continue
+            for entity_id, value in raw.items():
+                connection.execute(
+                    "INSERT OR REPLACE INTO order_ui_state (scope, entity_id, value) VALUES (?, ?, ?)",
+                    (scope, str(entity_id), json.dumps(value, ensure_ascii=False)),
+                )
+            ui_state.pop(legacy_key, None)
+            moved = True
+
+        # WhatsApp sends were nested one level deeper: {recipient: {order_id: version}}.
+        whatsapp_raw = ui_state.get("results_whatsapp_sent")
+        if isinstance(whatsapp_raw, dict):
+            for recipient in ("patient", "client"):
+                recipient_raw = whatsapp_raw.get(recipient)
+                if not isinstance(recipient_raw, dict):
+                    continue
+                for entity_id, version in recipient_raw.items():
+                    connection.execute(
+                        "INSERT OR REPLACE INTO order_ui_state (scope, entity_id, value) VALUES (?, ?, ?)",
+                        (f"whatsapp_{recipient}", str(entity_id), json.dumps(version, ensure_ascii=False)),
+                    )
+            ui_state.pop("results_whatsapp_sent", None)
+            moved = True
+
+        if moved:
+            connection.execute(
+                "UPDATE lab_settings SET ui_state = ? WHERE id = 1",
+                (json.dumps(ui_state, ensure_ascii=False),),
+            )
+
+    # Culture (microbiology) panels render as a banded layout instead of the
+    # standard ESTUDIO/RESULTADO/UNIDAD/REFERENCIA grid: a title band, an
+    # optional "pathogens searched" block, an isolated-organism line, and an
+    # antibiogram. `panel_kind` marks the panel; `culture_config` describes the
+    # layout only -- what gets ordered and entered still comes from
+    # test_panel_items, so order expansion and result entry are unchanged.
+    def _migrate_culture_panels(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(test_panels)").fetchall()}
+        if not columns:
+            return
+        if "panel_kind" not in columns:
+            connection.execute(
+                "ALTER TABLE test_panels ADD COLUMN panel_kind TEXT NOT NULL DEFAULT 'resultado'"
+            )
+        if "culture_config" not in columns:
+            connection.execute("ALTER TABLE test_panels ADD COLUMN culture_config TEXT")
+        # Values written before the resultado/cultivo/frotis choice existed.
+        connection.execute("UPDATE test_panels SET panel_kind = 'resultado' WHERE panel_kind = 'standard'")
+        connection.execute("UPDATE test_panels SET panel_kind = 'cultivo' WHERE panel_kind = 'culture'")
+        # Per-order culture data that is not a test result: the gram selection
+        # (which decides the antibiogram list) and the free-form two-column rows
+        # the tech types into the "pathogens searched" block. report_version 0 is
+        # the live/editable copy; finalizing snapshots it to that version number
+        # so a finalized report keeps rendering what it was signed with.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_culture_data (
+                order_id INTEGER NOT NULL,
+                panel_code TEXT NOT NULL,
+                report_version INTEGER NOT NULL DEFAULT 0,
+                gram TEXT NOT NULL DEFAULT '',
+                rows_json TEXT NOT NULL DEFAULT '[]',
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (order_id, panel_code, report_version)
+            )
+            """
+        )
 
     def _get_report_context(self, order_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:

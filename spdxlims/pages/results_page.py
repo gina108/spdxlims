@@ -887,11 +887,12 @@ class ReportEditorDialog(QDialog):
 
 
 class ResultsPage(DataAwarePage):
-    APPROVALS_KEY = "results_report_approvals"
-    ORDER_HEADERS_KEY = "results_report_headers"
-    ORDER_FOOTERS_KEY = "results_report_footers"
-    WHATSAPP_SENT_KEY = "results_whatsapp_sent"
-    LINKED_INSTRUMENT_CAPTURES_KEY = "results_linked_instrument_captures"
+    # Per-order state lives in the order_ui_state table, not the ui_state blob.
+    # Scope names are defined by SchemaMixin.ORDER_UI_STATE_SCOPES, which also
+    # migrates the legacy blob keys these constants used to name.
+    # Extra rows built above and below the viewport so a short scroll or a
+    # keyboard row-step never lands on a row whose action buttons are missing.
+    _ROW_WIDGET_BUFFER = 8
 
     def __init__(
         self,
@@ -920,6 +921,11 @@ class ResultsPage(DataAwarePage):
         self.engine_url = "http://127.0.0.1:9088"
         # {profile_id: {NORM_CODE: {qualifier_prefix: display_label}}}
         self._profile_semiquant_maps: dict[str, dict[str, dict[str, str]]] = {}
+        # Backing state for the lazily-built action columns in the review table.
+        self._filtered_orders: list[ResultWorkflowRecord] = []
+        self._rows_with_widgets: set[int] = set()
+        self._row_approvals: dict[str, int] = {}
+        self._row_sent_versions: dict[str, dict[int, int]] = {}
 
         if self.show_instruments:
             outer = QHBoxLayout(self)
@@ -1051,7 +1057,13 @@ class ResultsPage(DataAwarePage):
         self.review_search = QLineEdit()
         self.review_search.setPlaceholderText(tr("Search by order number or patient name"))
         self.review_search.setClearButtonEnabled(True)
-        self.review_search.textChanged.connect(self._refresh_table)
+        # Rebuilding this table is expensive, so coalesce keystrokes instead of
+        # rebuilding once per character (same debounce as OrdersBrowserPage).
+        self._review_search_timer = QTimer(self)
+        self._review_search_timer.setSingleShot(True)
+        self._review_search_timer.setInterval(250)
+        self._review_search_timer.timeout.connect(self._refresh_table)
+        self.review_search.textChanged.connect(lambda _: self._review_search_timer.start())
         layout.addWidget(self.review_search)
 
         self.orders_table = QTableWidget(0, 8)
@@ -1072,6 +1084,13 @@ class ResultsPage(DataAwarePage):
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         header.setSectionResizeMode(6, QHeaderView.Fixed)
         header.setSectionResizeMode(7, QHeaderView.Fixed)
+        # Action-column widgets are built lazily, so newly exposed rows need to
+        # be filled in as the user scrolls or the viewport is resized.
+        # rangeChanged covers resize and row-count changes; valueChanged covers
+        # scrolling. Both are cheap no-ops once a row already has its widgets.
+        scrollbar = self.orders_table.verticalScrollBar()
+        scrollbar.valueChanged.connect(self._populate_visible_rows)
+        scrollbar.rangeChanged.connect(lambda _min, _max: self._populate_visible_rows())
         layout.addWidget(self.orders_table, 1)
         return self.queue_group
 
@@ -1885,11 +1904,11 @@ class ResultsPage(DataAwarePage):
             raise RuntimeError(tr("Instrument engine returned invalid JSON.")) from exc
 
     def _linked_instrument_captures(self) -> dict[str, dict]:
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.LINKED_INSTRUMENT_CAPTURES_KEY, {})
-        if not isinstance(raw, dict):
-            return {}
-        return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+        return {
+            str(k): v
+            for k, v in self.database.get_order_ui_scope("instrument_capture").items()
+            if isinstance(v, dict)
+        }
 
     def _linked_instrument_capture_ids(self) -> set[str]:
         return set(self._linked_instrument_captures().keys())
@@ -1897,12 +1916,11 @@ class ResultsPage(DataAwarePage):
     def _mark_instrument_capture_linked(self, capture_id: str, order_id: int) -> None:
         if not capture_id:
             return
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.LINKED_INSTRUMENT_CAPTURES_KEY, {})
-        linked = dict(raw) if isinstance(raw, dict) else {}
-        linked[capture_id] = {"order_id": order_id, "linked_at": datetime.now().isoformat(timespec="seconds")}
-        ui_state[self.LINKED_INSTRUMENT_CAPTURES_KEY] = linked
-        self.database.save_ui_state(ui_state)
+        self.database.set_order_ui_value(
+            "instrument_capture",
+            capture_id,
+            {"order_id": order_id, "linked_at": datetime.now().isoformat(timespec="seconds")},
+        )
 
     @staticmethod
     def _capture_preview(capture: dict[str, object]) -> str:
@@ -2109,7 +2127,9 @@ class ResultsPage(DataAwarePage):
             or query in (o.order_number or "").casefold()
             or query in (o.patient_name or "").casefold()
         ]
-        self.orders_table.clearContents()
+        # setRowCount(0) first so Qt destroys the previous rows' cell widgets;
+        # clearContents() alone only drops the items and would leak them.
+        self.orders_table.setRowCount(0)
         self.orders_table.setRowCount(len(filtered_orders))
         self.orders_table.setColumnWidth(0, 104)
         self.orders_table.setColumnWidth(1, 74)
@@ -2120,46 +2140,92 @@ class ResultsPage(DataAwarePage):
         self.orders_table.setColumnWidth(6, 104)
         self.orders_table.setColumnWidth(7, 104)
 
-        approvals = self._approved_versions()
+        # Read the WhatsApp send log and approvals once per rebuild, not twice
+        # per row. Each _sent_versions() call opens a connection and JSON-parses
+        # the whole ui_state blob, so leaving it in the loop cost ~4.6ms x 2 x
+        # row count. Both are cached for the lazy row builds below.
+        self._filtered_orders = filtered_orders
+        self._row_approvals = self._approved_versions()
+        self._row_sent_versions = self._sent_versions()
+        self._rows_with_widgets = set()
+
         for row_index, order in enumerate(filtered_orders):
             self._set_item(row_index, 0, self._format_order_date(order.order_date))
             self._set_item(row_index, 1, order.order_number)
             self._set_item(row_index, 2, order.patient_name)
             self._set_item(row_index, 3, order.client_name or "")
 
-            approved = (
-                approvals.get(str(order.id)) == int(order.report_version or 0)
-                and int(order.report_version or 0) > 0
-                and not int(order.report_outdated or 0)
-            )
-            ready = int(order.result_count or 0) > 0 and int(order.completed_result_count or 0) >= int(order.result_count or 0)
+        # Columns 4-7 hold real widgets (buttons and the status dot), which cost
+        # ~2ms per row to build. Only the rows near the viewport get them; the
+        # rest are built on demand as the user scrolls. See _populate_visible_rows.
+        self._populate_visible_rows()
 
-            preview_button = QPushButton(tr("Preview Report"))
-            preview_button.setStyleSheet(self._results_action_button_style())
-            preview_button.clicked.connect(lambda _checked=False, order_id=order.id: self.preview_report(order_id))
-            self.orders_table.setCellWidget(row_index, 4, self._build_centered_cell_widget(preview_button))
+    def _visible_row_range(self) -> tuple[int, int]:
+        table = self.orders_table
+        total = table.rowCount()
+        if total == 0:
+            return (0, -1)
+        first = table.rowAt(0)
+        if first < 0:
+            first = table.verticalScrollBar().value()
+        first = max(0, min(first, total - 1))
+        row_height = max(1, table.verticalHeader().defaultSectionSize())
+        viewport_height = table.viewport().height()
+        # Before the first layout the viewport reports no height, so fall back to
+        # a screenful rather than building nothing and showing empty action cells.
+        span = (viewport_height // row_height) + 2 if viewport_height > 0 else self._ROW_WIDGET_BUFFER
+        last = min(total - 1, first + max(1, span) + self._ROW_WIDGET_BUFFER)
+        return (max(0, first - self._ROW_WIDGET_BUFFER), last)
 
-            self.orders_table.setCellWidget(row_index, 5, self._build_status_indicator(approved, order.id in self.previewed_orders, ready))
+    def _populate_visible_rows(self) -> None:
+        if not getattr(self, "_filtered_orders", None):
+            return
+        first, last = self._visible_row_range()
+        for row_index in range(first, last + 1):
+            if row_index in self._rows_with_widgets:
+                continue
+            if row_index >= len(self._filtered_orders):
+                break
+            self._build_row_widgets(row_index, self._filtered_orders[row_index])
+            self._rows_with_widgets.add(row_index)
 
-            send_patient_button = QPushButton(tr("Send Patient"))
-            send_patient_button.setEnabled(approved and bool((order.patient_phone or "").strip()))
-            send_patient_button.setToolTip(tr("Send the approved report notification to the patient via WhatsApp."))
-            if self._was_whatsapp_sent(order.id, "patient", int(order.report_version or 0)):
-                send_patient_button.setStyleSheet(self._sent_action_button_style())
-            else:
-                send_patient_button.setStyleSheet(self._results_action_button_style())
-            send_patient_button.clicked.connect(lambda _checked=False, order_id=order.id: self.send_to_patient(order_id))
-            self.orders_table.setCellWidget(row_index, 6, self._build_centered_cell_widget(send_patient_button))
+    def _build_row_widgets(self, row_index: int, order: ResultWorkflowRecord) -> None:
+        approvals = self._row_approvals
+        sent_versions = self._row_sent_versions
 
-            send_client_button = QPushButton(tr("Send Client"))
-            send_client_button.setEnabled(approved and bool((order.client_phone or "").strip()))
-            send_client_button.setToolTip(tr("Send the approved report notification to the client via WhatsApp."))
-            if self._was_whatsapp_sent(order.id, "client", int(order.report_version or 0)):
-                send_client_button.setStyleSheet(self._sent_action_button_style())
-            else:
-                send_client_button.setStyleSheet(self._results_action_button_style())
-            send_client_button.clicked.connect(lambda _checked=False, order_id=order.id: self.send_to_client(order_id))
-            self.orders_table.setCellWidget(row_index, 7, self._build_centered_cell_widget(send_client_button))
+        approved = (
+            approvals.get(str(order.id)) == int(order.report_version or 0)
+            and int(order.report_version or 0) > 0
+            and not int(order.report_outdated or 0)
+        )
+        ready = int(order.result_count or 0) > 0 and int(order.completed_result_count or 0) >= int(order.result_count or 0)
+
+        preview_button = QPushButton(tr("Preview Report"))
+        preview_button.setStyleSheet(self._results_action_button_style())
+        preview_button.clicked.connect(lambda _checked=False, order_id=order.id: self.preview_report(order_id))
+        self.orders_table.setCellWidget(row_index, 4, self._build_centered_cell_widget(preview_button))
+
+        self.orders_table.setCellWidget(row_index, 5, self._build_status_indicator(approved, order.id in self.previewed_orders, ready))
+
+        send_patient_button = QPushButton(tr("Send Patient"))
+        send_patient_button.setEnabled(approved and bool((order.patient_phone or "").strip()))
+        send_patient_button.setToolTip(tr("Send the approved report notification to the patient via WhatsApp."))
+        if self._was_whatsapp_sent(order.id, "patient", int(order.report_version or 0), sent_versions):
+            send_patient_button.setStyleSheet(self._sent_action_button_style())
+        else:
+            send_patient_button.setStyleSheet(self._results_action_button_style())
+        send_patient_button.clicked.connect(lambda _checked=False, order_id=order.id: self.send_to_patient(order_id))
+        self.orders_table.setCellWidget(row_index, 6, self._build_centered_cell_widget(send_patient_button))
+
+        send_client_button = QPushButton(tr("Send Client"))
+        send_client_button.setEnabled(approved and bool((order.client_phone or "").strip()))
+        send_client_button.setToolTip(tr("Send the approved report notification to the client via WhatsApp."))
+        if self._was_whatsapp_sent(order.id, "client", int(order.report_version or 0), sent_versions):
+            send_client_button.setStyleSheet(self._sent_action_button_style())
+        else:
+            send_client_button.setStyleSheet(self._results_action_button_style())
+        send_client_button.clicked.connect(lambda _checked=False, order_id=order.id: self.send_to_client(order_id))
+        self.orders_table.setCellWidget(row_index, 7, self._build_centered_cell_widget(send_client_button))
 
     def _set_item(self, row: int, column: int, value: str) -> None:
         item = QTableWidgetItem(value)
@@ -2266,12 +2332,8 @@ class ResultsPage(DataAwarePage):
         # Keyed by str(order_id) so it works for both local integer ids and the
         # server's UUID ids (int(uuid) would raise). Persisted keys are already
         # stringified, so this is a no-op for existing local state.
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.APPROVALS_KEY, {})
-        if not isinstance(raw, dict):
-            return {}
         approvals: dict[str, int] = {}
-        for order_id, report_version in raw.items():
+        for order_id, report_version in self.database.get_order_ui_scope("approval").items():
             try:
                 approvals[str(order_id)] = int(report_version)
             except (TypeError, ValueError):
@@ -2279,19 +2341,12 @@ class ResultsPage(DataAwarePage):
         return approvals
 
     def _save_approved_version(self, order_id: int, report_version: int) -> None:
-        approvals = self._approved_versions()
-        approvals[str(order_id)] = report_version
-        ui_state = self.database.get_ui_state()
-        ui_state[self.APPROVALS_KEY] = {str(key): value for key, value in approvals.items()}
-        self.database.save_ui_state(ui_state)
+        self.database.set_order_ui_value("approval", order_id, int(report_version))
 
     def _selected_header_for_order(self, order_id: int, preview: dict[str, object]) -> str:
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.ORDER_HEADERS_KEY, {})
-        if isinstance(raw, dict):
-            stored = raw.get(str(order_id))
-            if isinstance(stored, str):
-                return stored
+        stored = self.database.get_order_ui_value("header", order_id)
+        if isinstance(stored, str):
+            return stored
         branding = self.database.get_report_branding_options()
         preview_header = str(preview.get("header_image_path") or "").strip()
         if preview_header:
@@ -2299,24 +2354,12 @@ class ResultsPage(DataAwarePage):
         return str(branding.get("selected_header") or "")
 
     def _save_selected_header_for_order(self, order_id: int, header_path: str) -> None:
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.ORDER_HEADERS_KEY, {})
-        mappings = dict(raw) if isinstance(raw, dict) else {}
-        mappings[str(order_id)] = header_path.strip()
-        ui_state[self.ORDER_HEADERS_KEY] = mappings
-        self.database.save_ui_state(ui_state)
+        self.database.set_order_ui_value("header", order_id, header_path.strip())
 
     def _sent_versions(self) -> dict[str, dict[int, int]]:
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.WHATSAPP_SENT_KEY, {})
-        if not isinstance(raw, dict):
-            return {"patient": {}, "client": {}}
         normalized: dict[str, dict[int, int]] = {"patient": {}, "client": {}}
         for recipient in ("patient", "client"):
-            recipient_raw = raw.get(recipient, {})
-            if not isinstance(recipient_raw, dict):
-                continue
-            for order_id, report_version in recipient_raw.items():
+            for order_id, report_version in self.database.get_order_ui_scope(f"whatsapp_{recipient}").items():
                 try:
                     normalized[recipient][int(order_id)] = int(report_version)
                 except (TypeError, ValueError):
@@ -2324,20 +2367,19 @@ class ResultsPage(DataAwarePage):
         return normalized
 
     def _save_sent_version(self, order_id: int, recipient: str, report_version: int) -> None:
-        sent_versions = self._sent_versions()
-        recipient_versions = sent_versions.setdefault(recipient, {})
-        recipient_versions[order_id] = report_version
-        ui_state = self.database.get_ui_state()
-        ui_state[self.WHATSAPP_SENT_KEY] = {
-            key: {str(order_key): version for order_key, version in values.items()}
-            for key, values in sent_versions.items()
-        }
-        self.database.save_ui_state(ui_state)
+        self.database.set_order_ui_value(f"whatsapp_{recipient}", order_id, int(report_version))
 
-    def _was_whatsapp_sent(self, order_id: int, recipient: str, report_version: int) -> bool:
+    def _was_whatsapp_sent(
+        self,
+        order_id: int,
+        recipient: str,
+        report_version: int,
+        sent_versions: dict[str, dict[int, int]] | None = None,
+    ) -> bool:
         if report_version <= 0:
             return False
-        return self._sent_versions().get(recipient, {}).get(order_id) == report_version
+        versions = self._sent_versions() if sent_versions is None else sent_versions
+        return versions.get(recipient, {}).get(order_id) == report_version
 
     def _header_options(self) -> list[tuple[str, str]]:
         branding = self.database.get_report_branding_options()
@@ -2360,12 +2402,9 @@ class ResultsPage(DataAwarePage):
         return options
 
     def _selected_footer_for_order(self, order_id: int, preview: dict[str, object]) -> str:
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.ORDER_FOOTERS_KEY, {})
-        if isinstance(raw, dict):
-            stored = raw.get(str(order_id))
-            if isinstance(stored, str):
-                return stored
+        stored = self.database.get_order_ui_value("footer", order_id)
+        if isinstance(stored, str):
+            return stored
         branding = self.database.get_report_branding_options()
         preview_footer = str(preview.get("footer_signature_image_path") or "").strip()
         if preview_footer:
@@ -2373,12 +2412,7 @@ class ResultsPage(DataAwarePage):
         return str(branding.get("selected_footer") or "")
 
     def _save_selected_footer_for_order(self, order_id: int, footer_path: str) -> None:
-        ui_state = self.database.get_ui_state()
-        raw = ui_state.get(self.ORDER_FOOTERS_KEY, {})
-        mappings = dict(raw) if isinstance(raw, dict) else {}
-        mappings[str(order_id)] = footer_path.strip()
-        ui_state[self.ORDER_FOOTERS_KEY] = mappings
-        self.database.save_ui_state(ui_state)
+        self.database.set_order_ui_value("footer", order_id, footer_path.strip())
 
     def _find_order(self, order_id: int) -> ResultWorkflowRecord | None:
         for order in self.current_orders:
@@ -2417,11 +2451,7 @@ class ResultsPage(DataAwarePage):
                 self.report_service.delete_saved_report(order_id)
             except Exception:
                 pass
-            approvals = self._approved_versions()
-            approvals.pop(order_id, None)
-            ui_state = self.database.get_ui_state()
-            ui_state[self.APPROVALS_KEY] = {str(k): v for k, v in approvals.items()}
-            self.database.save_ui_state(ui_state)
+            self.database.delete_order_ui_value("approval", order_id)
             live = self.report_service.get_live_report_preview(order_id)
             if live is None:
                 return None
@@ -2461,11 +2491,7 @@ class ResultsPage(DataAwarePage):
             except Exception as exc:
                 QMessageBox.critical(self, tr("Save Failed"), str(exc))
                 return
-            approvals = self._approved_versions()
-            approvals.pop(order_id, None)
-            ui_state = self.database.get_ui_state()
-            ui_state[self.APPROVALS_KEY] = {str(k): v for k, v in approvals.items()}
-            self.database.save_ui_state(ui_state)
+            self.database.delete_order_ui_value("approval", order_id)
             self.refresh_on_show()
             self.notify_data_changed()
             QMessageBox.information(

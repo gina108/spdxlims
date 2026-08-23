@@ -149,6 +149,70 @@ def build_report_html(preview: dict[str, object]) -> str:
             row_html = f'<tr><td colspan="5" class="panel-meta">{meta_value}</td></tr>'
             rows.append((row_html, 0.8 + _estimated_line_units(meta_value, chars_per_line=110), "panel_meta", panel_group))
             continue
+        # --- microbiology (culture) panel layout ---
+        # These arrive from Database._apply_culture_layout and render as bands
+        # and name/value pairs rather than the 5-column results grid.
+        if item_type == "culture_title":
+            row_html = f'<tr><td colspan="5" class="culture-title">{test_name}</td></tr>'
+            rows.append((row_html, 1.5, "heading", panel_group))
+            continue
+        if item_type == "culture_section":
+            row_html = f'<tr><td colspan="5" class="culture-section">{test_name}</td></tr>'
+            rows.append((row_html, 1.3, "heading", panel_group))
+            continue
+        if item_type == "culture_subheading":
+            row_html = f'<tr><td colspan="5" class="culture-subheading">{test_name}</td></tr>'
+            rows.append((row_html, 1.1, "heading", panel_group))
+            continue
+        if item_type == "culture_isolate":
+            row_html = (
+                f'<tr><td colspan="5" class="culture-isolate">'
+                f'<span class="culture-isolate-label">{test_name}</span>'
+                f'<span class="culture-isolate-value">{result_value}</span></td></tr>'
+            )
+            rows.append((row_html, 1.3 + _estimated_line_units(raw_test_name + " " + result_value), "test", panel_group))
+            continue
+        if item_type == "culture_pair":
+            # Nested fixed-layout table so the two columns are exactly 1/3 and
+            # 2/3; the outer results grid's colgroup cannot express that split.
+            row_html = (
+                f'<tr><td colspan="5" class="culture-pair-cell">'
+                f'<table class="culture-pair-table"><tr>'
+                f'<td class="culture-pair-name">{test_name}</td>'
+                f'<td class="culture-pair-value">{result_value}</td>'
+                f'</tr></table></td></tr>'
+            )
+            rows.append((row_html, 1.0 + _estimated_line_units(result_value, chars_per_line=72), "test", panel_group))
+            continue
+        if item_type in {"culture_triple", "culture_table_header"}:
+            # Antibiogram: ANTIBIOTICO | INHIBICION | CONCENTRACION, each a third.
+            # Nested fixed table for the same reason as culture_pair.
+            is_header = item_type == "culture_table_header"
+            cell_class = "culture-th" if is_header else "culture-td"
+            row_html = (
+                f'<tr><td colspan="5" class="culture-pair-cell">'
+                f'<table class="culture-pair-table"><tr>'
+                f'<td class="{cell_class} culture-col-1">{test_name}</td>'
+                f'<td class="{cell_class} culture-col-2">{result_value}</td>'
+                f'<td class="{cell_class} culture-col-3">{unit}</td>'
+                f'</tr></table></td></tr>'
+            )
+            rows.append((row_html, 1.1 if is_header else 1.0, "heading" if is_header else "test", panel_group))
+            continue
+        if item_type == "frotis_block":
+            # Free prose under a bold label; wraps across the full page width.
+            block_html = result_value.replace("\n", "<br>")
+            label_html = f'<span class="frotis-label">{test_name}:</span> ' if raw_test_name.strip() else ""
+            row_html = f'<tr><td colspan="5" class="frotis-block">{label_html}{block_html}</td></tr>'
+            block_units = _estimated_line_units(
+                raw_test_name + " " + result_value.replace("\n", " "), chars_per_line=110
+            ) + 0.6 * result_value.count("\n")
+            rows.append((row_html, 1.0 + block_units, "test", panel_group))
+            continue
+        if item_type == "culture_note":
+            row_html = f'<tr><td colspan="5" class="culture-note">{test_name}</td></tr>'
+            rows.append((row_html, 0.9 + _estimated_line_units(raw_test_name, chars_per_line=110), "panel_meta", panel_group))
+            continue
         if str(item.get("result_kind") or "") == "observation":
             observation_value = result_value or comments
             if not observation_value:
@@ -427,6 +491,25 @@ def build_report_html(preview: dict[str, object]) -> str:
         .comment {{ background: #f7f9fc; color: #314153; font-size: 13px; line-height: 1.1; }}
         .panel-meta {{ color: #4e5e72; font-size: 9px !important; line-height: 1.05 !important; font-style: italic; padding-top: 3px !important; padding-bottom: 3px !important; }}
         .subcomment {{ color: #4e5e72; font-size: 9px; line-height: 1.05; }}
+        .results-body td.culture-title {{ background: #d9d9d9; color: #20242b; text-align: center; font-weight: 700; font-size: {subheading_font_size}px !important; padding: 6px 10px !important; line-height: 1.15; }}
+        .results-body td.culture-section {{ background: #eef1f5; color: #223145; text-align: center; font-family: {subheading_font_family} !important; font-weight: 700 !important; font-size: {report_font_size}px !important; padding: 4px 10px !important; line-height: 1.15; }}
+        .results-body td.culture-subheading {{ color: #223145; font-weight: 700; font-size: {report_font_size}px !important; padding-top: 5px !important; padding-bottom: 2px !important; line-height: 1.1; border-bottom: 0; }}
+        .results-body td.culture-isolate {{ font-weight: 700; font-size: {report_font_size}px !important; padding-top: 6px !important; padding-bottom: 4px !important; line-height: 1.15; }}
+        .culture-isolate-value {{ padding-left: 10px; font-weight: 700; }}
+        .results-body td.culture-pair-cell {{ padding: 0 !important; border-bottom: 1px solid #dde3ea; }}
+        .culture-pair-table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
+        .culture-pair-table td.culture-pair-name {{ width: 33.33%; padding: 4px 8px 4px 18px; font-size: {report_font_size}px; line-height: 1.15; vertical-align: top; word-wrap: break-word; border: 0; }}
+        .culture-pair-table td.culture-pair-value {{ width: 66.67%; padding: 4px 8px; text-align: left; font-size: {report_font_size}px; line-height: 1.15; vertical-align: top; word-wrap: break-word; white-space: normal; border: 0; }}
+        .culture-pair-table td.culture-col-1 {{ width: 33.33%; }}
+        .culture-pair-table td.culture-col-2 {{ width: 33.33%; }}
+        .culture-pair-table td.culture-col-3 {{ width: 33.34%; }}
+        .culture-pair-table td.culture-th {{ background: #e1e5ea; color: #2c323a; font-weight: 700; font-size: {report_font_size}px; padding: 4px 8px; line-height: 1.15; border: 0; border-bottom: 1px solid #c8d0da; text-align: left; }}
+        .culture-pair-table td.culture-th.culture-col-1 {{ padding-left: 18px; }}
+        .culture-pair-table td.culture-td {{ font-size: {report_font_size}px; padding: 4px 8px; line-height: 1.15; vertical-align: top; word-wrap: break-word; border: 0; text-align: left; }}
+        .culture-pair-table td.culture-td.culture-col-1 {{ padding-left: 18px; }}
+        .results-body td.frotis-block {{ text-align: justify; font-size: {report_font_size}px !important; line-height: 1.25; padding: 5px 10px !important; white-space: normal !important; }}
+        .frotis-label {{ font-weight: 700; }}
+        .results-body td.culture-note {{ color: #4e5e72; font-size: 9px !important; font-style: italic; line-height: 1.05 !important; padding-top: 4px !important; }}
         .results-body td.image-test-name {{ background: #eef1f5; font-family: {subheading_font_family} !important; font-weight: {subheading_font_weight} !important; color: #223145; font-size: {subheading_font_size}px !important; line-height: 1.1; }}
         .results-body td.result-image-cell {{ text-align: center; padding: 8px; }}
         .result-image {{ display: block; margin: 0 auto; width: 62%; max-width: 62%; height: auto; }}

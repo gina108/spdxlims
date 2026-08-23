@@ -118,6 +118,57 @@ class SettingsMixin:
     def get_ui_state_json(self) -> str:
         return json.dumps(self.get_ui_state(), ensure_ascii=False)
 
+    # --- per-order UI state (see _migrate_order_ui_state_table) ---
+    # These replace the per-order maps that used to be nested inside the
+    # ui_state blob. Reads are single-row or single-scope instead of parsing
+    # the entire history on every access.
+
+    def get_order_ui_value(self, scope: str, entity_id: Any) -> Any | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM order_ui_state WHERE scope = ? AND entity_id = ?",
+                (scope, str(entity_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value"])
+        except json.JSONDecodeError:
+            return None
+
+    def get_order_ui_scope(self, scope: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT entity_id, value FROM order_ui_state WHERE scope = ?",
+                (scope,),
+            ).fetchall()
+        values: dict[str, Any] = {}
+        for row in rows:
+            try:
+                values[str(row["entity_id"])] = json.loads(row["value"])
+            except json.JSONDecodeError:
+                continue
+        return values
+
+    def set_order_ui_value(self, scope: str, entity_id: Any, value: Any) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO order_ui_state (scope, entity_id, value, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(scope, entity_id)
+                DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                """,
+                (scope, str(entity_id), json.dumps(value, ensure_ascii=False)),
+            )
+
+    def delete_order_ui_value(self, scope: str, entity_id: Any) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM order_ui_state WHERE scope = ? AND entity_id = ?",
+                (scope, str(entity_id)),
+            )
+
     def save_ui_state(self, ui_state: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
