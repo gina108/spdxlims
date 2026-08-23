@@ -100,8 +100,9 @@ class OrdersPage(DataAwarePage):
         self._doctor_choices: list[tuple[int | str, str]] = []
         self._client_choices: list[tuple[int | str, str]] = []
 
+        # retranslate_ui() already runs everything refresh_page_data() does
+        # (refresh_choices, the column-visibility pass and refresh_recent_orders).
         self.retranslate_ui()
-        self.refresh_page_data()
         self.populate_next_order_number()
 
     def _build_card(self, object_name: str, title: str) -> tuple[QFrame, QVBoxLayout, QLabel]:

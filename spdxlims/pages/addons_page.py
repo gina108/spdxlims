@@ -82,6 +82,9 @@ class AddonsPage(DataAwarePage):
         self.reload_button.setText(tr("Refresh Addons"))
 
     def refresh_on_show(self) -> None:
+        # Opening the page is the user asking for current state, so this is the
+        # one place that pays to re-query Windows for installed addons.
+        self.addon_manager.invalidate_installed_cache()
         self.load_addons()
 
     def set_runtime_errors(self, errors: dict[str, str]) -> None:
@@ -110,6 +113,7 @@ class AddonsPage(DataAwarePage):
             self._refresh_action_state(None)
 
     def _reload_runtime(self) -> None:
+        self.addon_manager.invalidate_installed_cache()
         reload_addons = getattr(self.window(), "reload_addons", None)
         if callable(reload_addons):
             reload_addons()

@@ -212,14 +212,17 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self._load_drawer_logo()
-        self.retranslate_ui()
+        # Pages retranslate themselves in their own __init__, so cascading into
+        # them here would redo that work (and the data refreshes it triggers)
+        # for every page already built.
+        self.retranslate_ui(include_pages=False)
         self.refresh_deployment_status()
         QTimer.singleShot(200, self._try_auto_start_backend)
         QTimer.singleShot(300, self._try_auto_login)
         QTimer.singleShot(750, self._autostart_instrument_connectivity)
         QTimer.singleShot(900, self._autostart_portal_poll)
 
-    def retranslate_ui(self) -> None:
+    def retranslate_ui(self, *, include_pages: bool = True) -> None:
         self.setWindowTitle("SPDXLIMS")
         self.workspace_label.setText(self._workspace_label_text())
         self.workspace_buttons["operations"].setText(self._workspace_button_text("operations"))
@@ -239,10 +242,11 @@ class MainWindow(QMainWindow):
         self._update_workspace_button_states()
         self._update_account_block()
         self._refresh_navigation_labels()
-        for page in self.pages.values():
-            retranslate = getattr(page, "retranslate_ui", None)
-            if callable(retranslate):
-                retranslate()
+        if include_pages:
+            for page in self.pages.values():
+                retranslate = getattr(page, "retranslate_ui", None)
+                if callable(retranslate):
+                    retranslate()
         self.refresh_deployment_status()
 
     def apply_language(self, language_code: str) -> None:

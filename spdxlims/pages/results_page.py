@@ -1230,9 +1230,12 @@ class ResultsPage(DataAwarePage):
         self.instrument_result = None
         self._fetch_profile_semiquant_maps()
         self._refresh_instrument_tables()
+        # Read the linked-capture set once. Calling this inside the generator
+        # re-read and re-parsed the whole instrument_capture scope per capture.
+        linked_ids = self._linked_instrument_capture_ids()
         linked_count = sum(
             1 for c in self.instrument_captures
-            if str(c.get("id") or "") in self._linked_instrument_capture_ids()
+            if str(c.get("id") or "") in linked_ids
         )
         pending_count = len(self.instrument_captures) - linked_count
         self.instrument_status_label.setText(

@@ -389,7 +389,9 @@ def main() -> int:
     else:
         window.resize(1280, 760)
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    database.checkpoint()
+    return exit_code
 
 
 

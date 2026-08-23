@@ -379,9 +379,43 @@ class OrdersMixin:
         with self.connect() as connection:
             rows = connection.execute(
                 """
+                -- Pick the page of orders first, then aggregate only their
+                -- tests. Joining orders x order_tests x results and grouping
+                -- afterwards built the full fan-out for every order in the
+                -- database before LIMIT could discard it, and the plan was
+                -- fragile: once ANALYZE had run it got roughly 2x slower again.
+                WITH recent_orders AS (
+                    SELECT o.id,
+                           o.order_number,
+                           o.patient_id,
+                           o.doctor_id,
+                           o.client_id,
+                           o.updated_at,
+                           COALESCE(o.ordered_at, o.created_at) AS order_date
+                    FROM orders o
+                    WHERE COALESCE(o.is_preallocated, 0) = 0
+                      AND COALESCE(o.is_archived, 0) = 0
+                    ORDER BY COALESCE(o.ordered_at, o.created_at) DESC, o.id DESC
+                    LIMIT 1000
+                ),
+                counts AS (
+                    SELECT ot.order_id,
+                           COUNT(*) AS result_count,
+                           COUNT(CASE
+                               WHEN COALESCE(NULLIF(TRIM(rst.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL
+                               THEN 1
+                           END) AS completed_result_count
+                    FROM order_tests ot
+                    INNER JOIN tests t ON t.id = ot.test_id
+                    LEFT JOIN results rst ON rst.order_test_id = ot.id
+                    WHERE ot.order_id IN (SELECT id FROM recent_orders)
+                      AND t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+                      AND COALESCE(ot.is_outsourced, 0) = 0
+                    GROUP BY ot.order_id
+                )
                 SELECT o.id,
                        o.order_number,
-                       COALESCE(o.ordered_at, o.created_at) AS order_date,
+                       o.order_date,
                        TRIM(
                            p.first_name || ' ' || p.last_name ||
                            CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END
@@ -395,30 +429,15 @@ class OrdersMixin:
                        CASE WHEN r.finalized_at IS NOT NULL AND (
                            p.updated_at > r.finalized_at OR o.updated_at > r.finalized_at
                        ) THEN 1 ELSE 0 END AS report_outdated,
-                       COUNT(CASE
-                           WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
-                                AND COALESCE(ot.is_outsourced, 0) = 0
-                           THEN 1
-                       END) AS result_count,
-                       COUNT(CASE
-                           WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__')
-                                AND COALESCE(ot.is_outsourced, 0) = 0
-                                AND COALESCE(NULLIF(TRIM(rst.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL
-                           THEN 1
-                       END) AS completed_result_count
-                FROM orders o
+                       COALESCE(cnt.result_count, 0) AS result_count,
+                       COALESCE(cnt.completed_result_count, 0) AS completed_result_count
+                FROM recent_orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN doctors d ON d.id = o.doctor_id
                 LEFT JOIN clients c ON c.id = o.client_id
                 LEFT JOIN reports r ON r.order_id = o.id
-                LEFT JOIN order_tests ot ON ot.order_id = o.id
-                LEFT JOIN tests t ON t.id = ot.test_id
-                LEFT JOIN results rst ON rst.order_test_id = ot.id
-                WHERE COALESCE(o.is_preallocated, 0) = 0
-                  AND COALESCE(o.is_archived, 0) = 0
-                GROUP BY o.id, o.order_number, order_date, patient_name, p.phone, d.full_name, c.name, c.phone, r.report_version, r.finalized_at, p.updated_at, o.updated_at
-                ORDER BY COALESCE(o.ordered_at, o.created_at) DESC, o.id DESC
-                LIMIT 1000
+                LEFT JOIN counts cnt ON cnt.order_id = o.id
+                ORDER BY o.order_date DESC, o.id DESC
                 """
             ).fetchall()
         return [ResultWorkflowRecord(**dict(row)) for row in rows]

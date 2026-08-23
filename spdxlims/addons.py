@@ -59,6 +59,7 @@ class AddonManager:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self._catalog = self._build_catalog()
         self._page_factories = self._build_page_factories()
+        self._optional_packages_cache: tuple[set[str], set[str]] | None = None
 
     def list_addons(self) -> list[StoreAddon]:
         dev_state = self._load_dev_state()
@@ -226,32 +227,31 @@ class AddonManager:
             return bool(override.get("owned"))
         return installed
 
-    def _detect_optional_package(self, manifest: AddonManifest) -> bool:
-        package_name = manifest.optional_package_name.strip()
-        package_family_name = manifest.optional_package_family_name.strip()
-        if not package_name and not package_family_name:
-            return False
-        script = [
-            "$ErrorActionPreference='Stop'",
-            "$packages = Get-AppxPackage -PackageTypeFilter Optional",
-        ]
-        if package_family_name and package_name:
-            script.append(
-                "$match = $packages | Where-Object { $_.PackageFamilyName -eq "
-                f"'{package_family_name}' -or $_.Name -eq '{package_name}' }}"
-            )
-        elif package_family_name:
-            script.append(
-                "$match = $packages | Where-Object { $_.PackageFamilyName -eq "
-                f"'{package_family_name}' }}"
-            )
-        else:
-            script.append(
-                "$match = $packages | Where-Object { $_.Name -eq "
-                f"'{package_name}' }}"
-            )
-        script.append("if ($match) { 'installed' }")
-        command = "; ".join(script)
+    def invalidate_installed_cache(self) -> None:
+        """Force the next installed-state check to re-query Windows.
+
+        Call this after anything that could install or remove an addon.
+        """
+        self._optional_packages_cache = None
+
+    def _optional_packages(self) -> tuple[set[str], set[str]]:
+        """Return (lowercased package names, lowercased package family names).
+
+        This used to run one `Get-AppxPackage` PowerShell process per addon on
+        every `list_addons()` call — four processes and ~1.3s, on the UI thread,
+        repeated on every addon-list selection change. Now it is a single
+        process, cached for the life of the manager.
+        """
+        cached = getattr(self, "_optional_packages_cache", None)
+        if cached is not None:
+            return cached
+
+        empty: tuple[set[str], set[str]] = (set(), set())
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            "Get-AppxPackage -PackageTypeFilter Optional | "
+            "ForEach-Object { $_.Name + '|' + $_.PackageFamilyName }"
+        )
         creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
             result = subprocess.run(
@@ -270,8 +270,31 @@ class AddonManager:
                 creationflags=creation_flags,
             )
         except (OSError, subprocess.SubprocessError):
+            self._optional_packages_cache = empty
+            return empty
+
+        names: set[str] = set()
+        family_names: set[str] = set()
+        for line in (result.stdout or "").splitlines():
+            name, separator, family_name = line.strip().partition("|")
+            if not separator:
+                continue
+            if name:
+                names.add(name.lower())
+            if family_name:
+                family_names.add(family_name.lower())
+        self._optional_packages_cache = (names, family_names)
+        return self._optional_packages_cache
+
+    def _detect_optional_package(self, manifest: AddonManifest) -> bool:
+        package_name = manifest.optional_package_name.strip()
+        package_family_name = manifest.optional_package_family_name.strip()
+        if not package_name and not package_family_name:
             return False
-        return "installed" in result.stdout.lower()
+        names, family_names = self._optional_packages()
+        if package_family_name and package_family_name.lower() in family_names:
+            return True
+        return bool(package_name) and package_name.lower() in names
 
     def _load_dev_state(self) -> dict[str, dict[str, Any]]:
         if not self.state_path.exists():
