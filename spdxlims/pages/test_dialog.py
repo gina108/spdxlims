@@ -8,6 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QFrame,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTextEdit,
     QVBoxLayout,
@@ -44,7 +46,15 @@ class TestDialog(QDialog):
         self._loaded_method = ""
 
         self.setModal(True)
-        self.resize(940, 560)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(
+                min(940, max(760, available.width() - 120)),
+                min(860, max(560, available.height() - 120)),
+            )
+        else:
+            self.resize(940, 760)
         self.setWindowTitle(tr("Edit Test") if test_id is not None else tr("Add Test"))
 
         root = QVBoxLayout(self)
@@ -133,13 +143,15 @@ class TestDialog(QDialog):
         self.ranges_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.ranges_table.setSelectionMode(QTableWidget.SingleSelection)
         self.ranges_table.itemSelectionChanged.connect(self._load_selected_range_into_form)
-        range_layout.addWidget(self.ranges_table)
+        # Keep several saved ranges visible without scrolling the dialog.
+        self.ranges_table.setMinimumHeight(220)
+        self.ranges_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        range_layout.addWidget(self.ranges_table, 1)
 
         remove_range_button = QPushButton(tr("Remove Selected Range"))
         remove_range_button.clicked.connect(self.remove_selected_range)
         range_layout.addWidget(remove_range_button, alignment=Qt.AlignRight)
-        content_layout.addWidget(range_group)
-        content_layout.addStretch(1)
+        content_layout.addWidget(range_group, 1)
         scroll.setWidget(content)
         root.addWidget(scroll, 1)
 

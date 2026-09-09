@@ -588,6 +588,7 @@ _TRANSLATIONS = {
         "Age Max": "Edad Máx.",
         "Reference Text": "Texto de Referencia",
         "Add Range": "Agregar Rango",
+        "Update Range": "Actualizar Rango",
         "Clear Range Fields": "Limpiar Campos de Rango",
         "Remove Selected Range": "Quitar Rango Seleccionado",
         "The selected test could not be loaded.": "No se pudo cargar la analito seleccionada.",

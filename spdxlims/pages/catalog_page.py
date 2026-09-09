@@ -10,7 +10,8 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-        QComboBox,
+    QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTextEdit,
     QVBoxLayout,
@@ -67,11 +69,20 @@ class TestDialog(QDialog):
         self.test_id = test_id
         self._editing = test_id is not None
         self.pending_ranges: list[dict[str, Any]] = []
+        self._selected_range_index: int | None = None
         self._loaded_specimen_type = ""
         self._loaded_method = ""
 
         self.setModal(True)
-        self.resize(940, 560)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(
+                min(940, max(760, available.width() - 120)),
+                min(900, max(560, available.height() - 120)),
+            )
+        else:
+            self.resize(940, 760)
         self.setWindowTitle(tr("Edit Test") if test_id is not None else tr("Add Test"))
 
         root = QVBoxLayout(self)
@@ -149,6 +160,7 @@ class TestDialog(QDialog):
 
         range_buttons = QHBoxLayout()
         add_range_button = QPushButton(tr("Add Range"))
+        self.add_range_button = add_range_button
         add_range_button.clicked.connect(self.add_reference_range)
         clear_range_button = QPushButton(tr("Clear Range Fields"))
         clear_range_button.clicked.connect(self._clear_range_form)
@@ -163,13 +175,15 @@ class TestDialog(QDialog):
         self.ranges_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.ranges_table.setSelectionMode(QTableWidget.SingleSelection)
         self.ranges_table.itemSelectionChanged.connect(self._load_selected_range_into_form)
-        range_layout.addWidget(self.ranges_table)
+        # Keep several saved ranges visible without scrolling the dialog.
+        self.ranges_table.setMinimumHeight(220)
+        self.ranges_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        range_layout.addWidget(self.ranges_table, 1)
 
         remove_range_button = QPushButton(tr("Remove Selected Range"))
         remove_range_button.clicked.connect(self.remove_selected_range)
         range_layout.addWidget(remove_range_button, alignment=Qt.AlignRight)
-        content_layout.addWidget(range_group)
-        content_layout.addStretch(1)
+        content_layout.addWidget(range_group, 1)
         scroll.setWidget(content)
         root.addWidget(scroll, 1)
 
@@ -270,19 +284,20 @@ class TestDialog(QDialog):
             QMessageBox.warning(self, tr("Missing Data"), tr("Add at least one value before saving the range."))
             return
 
-        row = self.ranges_table.currentRow()
-        if 0 <= row < len(self.pending_ranges):
+        row = self._selected_range_index
+        if row is not None and 0 <= row < len(self.pending_ranges):
             self.pending_ranges[row] = reference
         else:
             self.pending_ranges.append(reference)
-        self._refresh_ranges_table()
         self._clear_range_form()
+        self._refresh_ranges_table()
 
     def remove_selected_range(self) -> None:
-        row = self.ranges_table.currentRow()
-        if row < 0 or row >= len(self.pending_ranges):
+        row = self._selected_range_index
+        if row is None or row < 0 or row >= len(self.pending_ranges):
             return
         self.pending_ranges.pop(row)
+        self._clear_range_form()
         self._refresh_ranges_table()
 
     def toggle_test_archive(self) -> None:
@@ -440,12 +455,28 @@ class TestDialog(QDialog):
             )
             for record in self.pending_ranges
         ]
-        DataAwarePage.set_table_rows(self.ranges_table, rows)
-        if self.pending_ranges and self.ranges_table.currentRow() < 0:
-            self.ranges_table.selectRow(0)
+        self.ranges_table.blockSignals(True)
+        try:
+            DataAwarePage.set_table_rows(self.ranges_table, rows)
+            if self._selected_range_index is not None and 0 <= self._selected_range_index < len(rows):
+                self.ranges_table.selectRow(self._selected_range_index)
+            else:
+                self._set_selected_range_index(None)
+        finally:
+            self.ranges_table.blockSignals(False)
+
+    def _set_selected_range_index(self, row: int | None) -> None:
+        self._selected_range_index = row
+        self.add_range_button.setText(tr("Add Range") if row is None else tr("Update Range"))
 
     def _clear_range_form(self) -> None:
-        self.ranges_table.clearSelection()
+        self.ranges_table.blockSignals(True)
+        try:
+            self.ranges_table.setCurrentCell(-1, -1)
+            self.ranges_table.clearSelection()
+        finally:
+            self.ranges_table.blockSignals(False)
+        self._set_selected_range_index(None)
         self.range_sex.setCurrentIndex(0)
         self.range_age_min.clear()
         self.range_age_max.clear()
@@ -458,8 +489,8 @@ class TestDialog(QDialog):
         reference = self._range_from_form()
         if not self._range_has_values(reference):
             return
-        row = self.ranges_table.currentRow()
-        if 0 <= row < len(self.pending_ranges):
+        row = self._selected_range_index
+        if row is not None and 0 <= row < len(self.pending_ranges):
             self.pending_ranges[row] = reference
             return
         self.pending_ranges.append(reference)
@@ -484,8 +515,10 @@ class TestDialog(QDialog):
 
     def _load_selected_range_into_form(self) -> None:
         row = self.ranges_table.currentRow()
-        if row < 0 or row >= len(self.pending_ranges):
+        if row < 0 or row >= len(self.pending_ranges) or not self.ranges_table.selectedItems():
+            self._set_selected_range_index(None)
             return
+        self._set_selected_range_index(row)
         record = self.pending_ranges[row]
         sex_index = self.range_sex.findData(record.get("sex") or "")
         self.range_sex.setCurrentIndex(sex_index if sex_index >= 0 else 0)
