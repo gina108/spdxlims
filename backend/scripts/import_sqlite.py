@@ -1099,9 +1099,22 @@ def _normalize_result_kind(value: Any) -> str:
     return "text"
 
 
+# The desktop (SQLite) and the backend use different order-status vocabularies.
+# Without this mapping every legacy order silently falls back to "registered",
+# so a migrated database shows finalized work as still pending.
+_LEGACY_ORDER_STATUS = {
+    "draft": "registered",
+    "in_progress": "in_lab",
+    "finalized": "reported",
+}
+
+
 def _normalize_order_status(value: Any) -> str:
     text = (_clean_text(value, fallback="registered") or "registered").lower()
-    allowed = {"registered", "in_lab", "reported", "cancelled"}
+    if text in _LEGACY_ORDER_STATUS:
+        return _LEGACY_ORDER_STATUS[text]
+    # Must stay in step with ck_lab_order_status in app/models/models.py.
+    allowed = {"registered", "collected", "in_lab", "completed", "reported", "amended"}
     return text if text in allowed else "registered"
 
 
