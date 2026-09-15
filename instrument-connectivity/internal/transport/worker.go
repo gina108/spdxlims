@@ -773,6 +773,34 @@ func startTCPServerWorker(p profile.Profile, handler PayloadHandler, onError Err
 	return &loopWorker{cancel: func() { cancel(); _ = listener.Close() }, done: done}, nil
 }
 
+const (
+	// A link that carried no data and lasted less than this is treated as a
+	// failed attempt rather than a success, so the backoff keeps growing.
+	minUsefulConnection = 5 * time.Second
+	maxReconnectBackoff = 15 * time.Second
+)
+
+// connectionWasUseful reports whether a finished connection counts as working.
+// Any data at all qualifies, however brief the connection - some analyzers
+// connect, send one message and hang up.
+func connectionWasUseful(dataSeen bool, lifetime time.Duration) bool {
+	return dataSeen || lifetime >= minUsefulConnection
+}
+
+func nextBackoff(current time.Duration) time.Duration {
+	if current < time.Second {
+		return time.Second
+	}
+	if current >= maxReconnectBackoff {
+		return maxReconnectBackoff
+	}
+	doubled := current * 2
+	if doubled > maxReconnectBackoff {
+		return maxReconnectBackoff
+	}
+	return doubled
+}
+
 func startTCPClientWorker(p profile.Profile, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) (Worker, error) {
 	address := strings.TrimSpace(p.Transport.RemoteAddress)
 	if address == "" {
@@ -804,17 +832,28 @@ func startTCPClientWorker(p profile.Profile, handler PayloadHandler, onError Err
 					onState("retrying", map[string]any{"address": address})
 				}
 				sleepWithContext(ctx, backoff)
-				if backoff < 15*time.Second {
-					backoff *= 2
-				}
+				backoff = nextBackoff(backoff)
 				continue
 			}
-			backoff = time.Second
 			if onState != nil {
 				onState("connected", map[string]any{"address": address})
 			}
-			handleConnection(ctx, conn, models.TransportTCPClient, sessionMode, handler, onError, onState, queryHandler)
-			sleepWithContext(ctx, time.Second)
+			openedAt := time.Now()
+			dataSeen := handleConnection(ctx, conn, models.TransportTCPClient, sessionMode, handler, onError, onState, queryHandler)
+			// A dial that succeeds is not proof the link works. An analyzer that
+			// accepts only one LIS client will keep accepting and immediately
+			// dropping us while it still believes another client is attached,
+			// so resetting the backoff here would redial once a second forever
+			// and never give it room to release the slot.
+			if connectionWasUseful(dataSeen, time.Since(openedAt)) {
+				backoff = time.Second
+			} else {
+				if onState != nil {
+					onState("retrying", map[string]any{"address": address, "reason": "closed_immediately"})
+				}
+				backoff = nextBackoff(backoff)
+			}
+			sleepWithContext(ctx, backoff)
 		}
 	}()
 
@@ -853,33 +892,47 @@ func startSerialWorker(p profile.Profile, handler PayloadHandler, onError ErrorH
 					onState("retrying", map[string]any{"port": portName})
 				}
 				sleepWithContext(ctx, backoff)
-				if backoff < 15*time.Second {
-					backoff *= 2
-				}
+				backoff = nextBackoff(backoff)
 				continue
 			}
-			backoff = time.Second
 			_ = port.SetReadTimeout(2 * time.Second)
 			if onState != nil {
 				onState("connected", map[string]any{"port": portName, "candidate": candidate})
 			}
-			readSerialLoop(ctx, port, portName, sessionMode, handler, onError, onState, candidate, queryHandler)
-			sleepWithContext(ctx, time.Second)
+			openedAt := time.Now()
+			dataSeen := readSerialLoop(ctx, port, portName, sessionMode, handler, onError, onState, candidate, queryHandler)
+			// Opening the port is likewise no proof it works: a port that opens
+			// and errors out on first read would otherwise be reopened once a
+			// second indefinitely.
+			if connectionWasUseful(dataSeen, time.Since(openedAt)) {
+				backoff = time.Second
+			} else {
+				if onState != nil {
+					onState("retrying", map[string]any{"port": portName, "reason": "closed_immediately"})
+				}
+				backoff = nextBackoff(backoff)
+			}
+			sleepWithContext(ctx, backoff)
 		}
 	}()
 
 	return &loopWorker{cancel: cancel, done: done}, nil
 }
 
-func readSerialLoop(ctx context.Context, port seriallib.Port, portName, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler, candidate SerialCandidate, queryHandler QueryHandler) {
+// readSerialLoop services an open port and reports whether the instrument ever
+// sent us anything, so the caller can distinguish a live port from one that
+// opens and immediately fails.
+func readSerialLoop(ctx context.Context, port seriallib.Port, portName, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler, candidate SerialCandidate, queryHandler QueryHandler) bool {
 	defer port.Close()
 	processor := newSessionProcessor(sessionMode)
 	processor.queryHandler = queryHandler
 	chunk := make([]byte, 4096)
 	meta := map[string]any{"port": portName, "candidate": candidate}
+	dataSeen := false
 	for {
 		n, err := port.Read(chunk)
 		if n > 0 {
+			dataSeen = true
 			consumeErr := processor.consume(chunk[:n], port, meta, func(payload []byte) error {
 				if onState != nil {
 					onState("processing", meta)
@@ -898,13 +951,13 @@ func readSerialLoop(ctx context.Context, port seriallib.Port, portName, sessionM
 				_ = processor.flush(func(payload []byte) error {
 					return handler(payload, portName, models.TransportSerial)
 				})
-				return
+				return dataSeen
 			}
 			onError(err, mergeMeta(meta, map[string]any{"stage": "serial_read"}))
 			if onState != nil {
 				onState("retrying", meta)
 			}
-			return
+			return dataSeen
 		}
 		if n == 0 {
 			if flushErr := processor.flush(func(payload []byte) error {
@@ -917,7 +970,7 @@ func readSerialLoop(ctx context.Context, port seriallib.Port, portName, sessionM
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return dataSeen
 		default:
 		}
 	}
@@ -967,17 +1020,22 @@ func fallbackString(value, fallback string) string {
 	return fallback
 }
 
-func handleConnection(ctx context.Context, conn net.Conn, transportType models.TransportType, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) {
+// handleConnection services one connection and reports whether the peer ever
+// sent us anything. Callers use that to tell a working link from one that is
+// accepted and dropped straight away.
+func handleConnection(ctx context.Context, conn net.Conn, transportType models.TransportType, sessionMode string, handler PayloadHandler, onError ErrorHandler, onState StateHandler, queryHandler QueryHandler) bool {
 	defer conn.Close()
 	deviceID := conn.RemoteAddr().String()
 	processor := newSessionProcessor(sessionMode)
 	processor.queryHandler = queryHandler
 	chunk := make([]byte, 4096)
 	meta := map[string]any{"device_id": deviceID}
+	dataSeen := false
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, err := conn.Read(chunk)
 		if n > 0 {
+			dataSeen = true
 			consumeErr := processor.consume(chunk[:n], conn, meta, func(payload []byte) error {
 				if onState != nil {
 					onState("processing", meta)
@@ -1002,7 +1060,7 @@ func handleConnection(ctx context.Context, conn net.Conn, transportType models.T
 				}
 				select {
 				case <-ctx.Done():
-					return
+					return dataSeen
 				default:
 					continue
 				}
@@ -1014,17 +1072,17 @@ func handleConnection(ctx context.Context, conn net.Conn, transportType models.T
 				if onState != nil {
 					onState("disconnected", meta)
 				}
-				return
+				return dataSeen
 			}
 			onError(err, mergeMeta(meta, map[string]any{"stage": "connection_read"}))
 			if onState != nil {
 				onState("retrying", meta)
 			}
-			return
+			return dataSeen
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return dataSeen
 		default:
 		}
 	}

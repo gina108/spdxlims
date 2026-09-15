@@ -319,6 +319,18 @@ def broadcast_order_to_instruments(
                     if tid and tid in code_by_test_id:
                         code, name = code_by_test_id[tid]
                         tests.append({"test_code": code, "test_name": name})
+                if not tests:
+                    # Most orders contain nothing this analyzer runs - a PSA-only
+                    # order has no chemistry tests for the CM250. Pushing anyway
+                    # gives the engine an order it cannot resolve to a single
+                    # instrument code, so it records a runtime error and writes no
+                    # file. That buried the real failures in noise, so skip it.
+                    _log.debug(
+                        "No %s instrument codes for order %s; skipping push",
+                        cfg.instrument_profile,
+                        order_number,
+                    )
+                    continue
                 push_pending_order_to_engine(
                     sample_id=order_number,
                     tests=tests,

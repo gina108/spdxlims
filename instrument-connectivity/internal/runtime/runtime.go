@@ -45,9 +45,13 @@ type App struct {
 	bundleHMACSecret []byte
 	bundleSecretMode string
 
-	workersMu  sync.Mutex
-	workers    map[string]transport.Worker
-	tcpServers map[string]*sharedTCPServer
+	workersMu sync.Mutex
+	workers   map[string]transport.Worker
+	// profileSessions maps a profile to its live non-shared worker, so a second
+	// StartCapture for the same instrument reuses it instead of opening a
+	// competing connection to the same hardware.
+	profileSessions map[string]string
+	tcpServers      map[string]*sharedTCPServer
 
 	closeOnce sync.Once
 	stopCh    chan struct{}
@@ -71,7 +75,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	app := &App{cfg: cfg, profiles: profiles, captures: captureStore, processor: pipeline.New(), discovery: discovery.New(), learning: learning.New(), pendingOrders: orders.NewStore(), workers: map[string]transport.Worker{}, tcpServers: map[string]*sharedTCPServer{}, stopCh: make(chan struct{}), bundleHMACSecret: bundleSecret, bundleSecretMode: bundleSecretMode}
+	app := &App{cfg: cfg, profiles: profiles, captures: captureStore, processor: pipeline.New(), discovery: discovery.New(), learning: learning.New(), pendingOrders: orders.NewStore(), workers: map[string]transport.Worker{}, profileSessions: map[string]string{}, tcpServers: map[string]*sharedTCPServer{}, stopCh: make(chan struct{}), bundleHMACSecret: bundleSecret, bundleSecretMode: bundleSecretMode}
 	if err := app.seedProfiles(); err != nil {
 		return nil, err
 	}
@@ -565,6 +569,15 @@ func (a *App) StartCapture(profileID string) (string, error) {
 	if transportType == models.TransportTCPServer {
 		return a.startSharedTCPServerCapture(prof)
 	}
+	// Serial ports, file-drop directories and outbound analyzer connections can
+	// only be owned once. Two workers on the same profile fight over the device:
+	// two tcp_client dialers to a single-client analyzer evict each other, and
+	// two file_drop watchers race to consume the same result file. Callers can
+	// legitimately ask more than once - the UI auto-starts default profiles on
+	// launch - so hand back the running session instead of starting a rival.
+	if existing, ok := a.liveSessionForProfile(prof.ID); ok {
+		return existing, nil
+	}
 	deviceID := transportDeviceID(prof)
 	sessionID, err := a.captures.StartSession(prof.ID, transportType)
 	if err != nil {
@@ -592,8 +605,26 @@ func (a *App) StartCapture(profileID string) (string, error) {
 	}
 	a.workersMu.Lock()
 	a.workers[sessionID] = worker
+	a.profileSessions[prof.ID] = sessionID
 	a.workersMu.Unlock()
 	return sessionID, nil
+}
+
+// liveSessionForProfile returns the session of a running non-shared worker for
+// this profile, if there is one.
+func (a *App) liveSessionForProfile(profileID string) (string, bool) {
+	a.workersMu.Lock()
+	defer a.workersMu.Unlock()
+	sessionID, ok := a.profileSessions[profileID]
+	if !ok {
+		return "", false
+	}
+	if _, running := a.workers[sessionID]; !running {
+		// Worker is gone but the mapping outlived it; drop the stale entry.
+		delete(a.profileSessions, profileID)
+		return "", false
+	}
+	return sessionID, true
 }
 
 func (a *App) StopCapture(sessionID string) error {
@@ -1080,6 +1111,11 @@ func (a *App) stopWorker(sessionID string) {
 	a.workersMu.Lock()
 	worker := a.workers[sessionID]
 	delete(a.workers, sessionID)
+	for profileID, mapped := range a.profileSessions {
+		if mapped == sessionID {
+			delete(a.profileSessions, profileID)
+		}
+	}
 	a.workersMu.Unlock()
 	if worker != nil {
 		_ = worker.Stop()
@@ -1092,6 +1128,7 @@ func (a *App) stopAllWorkers() {
 		workers = append(workers, worker)
 	}
 	a.workers = map[string]transport.Worker{}
+	a.profileSessions = map[string]string{}
 	a.workersMu.Unlock()
 	for _, worker := range workers {
 		_ = worker.Stop()

@@ -6,7 +6,12 @@ import (
 
 	"instrument-connectivity/internal/models"
 	"instrument-connectivity/internal/profile"
+	"instrument-connectivity/internal/transport"
 )
+
+type stubWorker struct{ stopped bool }
+
+func (w *stubWorker) Stop() error { w.stopped = true; return nil }
 
 func TestDiffProfileIncludesOldAndNewValues(t *testing.T) {
 	current := profile.Profile{
@@ -120,6 +125,55 @@ func TestHostOnlyAcceptsPlainIPAndEndpoint(t *testing.T) {
 		if got := hostOnly(input); got != want {
 			t.Fatalf("hostOnly(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestLiveSessionForProfileReusesRunningWorker(t *testing.T) {
+	app := &App{workers: map[string]transport.Worker{}, profileSessions: map[string]string{}}
+
+	if _, ok := app.liveSessionForProfile("mindray-bc30s"); ok {
+		t.Fatal("expected no live session before one is started")
+	}
+
+	worker := &stubWorker{}
+	app.workers["sess_1"] = worker
+	app.profileSessions["mindray-bc30s"] = "sess_1"
+
+	got, ok := app.liveSessionForProfile("mindray-bc30s")
+	if !ok || got != "sess_1" {
+		t.Fatalf("liveSessionForProfile() = %q, %v; want sess_1, true", got, ok)
+	}
+	if _, ok := app.liveSessionForProfile("cm250"); ok {
+		t.Fatal("did not expect a different profile to share the session")
+	}
+
+	// A mapping that outlived its worker must not block a restart.
+	delete(app.workers, "sess_1")
+	if _, ok := app.liveSessionForProfile("mindray-bc30s"); ok {
+		t.Fatal("expected stale mapping to be ignored once the worker is gone")
+	}
+	if _, exists := app.profileSessions["mindray-bc30s"]; exists {
+		t.Fatal("expected the stale mapping to be cleaned up")
+	}
+}
+
+func TestStopWorkerClearsProfileMapping(t *testing.T) {
+	worker := &stubWorker{}
+	app := &App{
+		workers:         map[string]transport.Worker{"sess_1": worker},
+		profileSessions: map[string]string{"urinalysis-com6": "sess_1"},
+	}
+
+	app.stopWorker("sess_1")
+
+	if !worker.stopped {
+		t.Fatal("expected the worker to be stopped")
+	}
+	if _, exists := app.profileSessions["urinalysis-com6"]; exists {
+		t.Fatal("expected the profile mapping to be removed so the profile can start again")
+	}
+	if _, ok := app.liveSessionForProfile("urinalysis-com6"); ok {
+		t.Fatal("expected no live session after stopping")
 	}
 }
 

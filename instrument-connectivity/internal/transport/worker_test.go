@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -180,5 +181,80 @@ func waitForStateName(t *testing.T, states <-chan string, want string) {
 		case <-deadline:
 			t.Fatalf("timed out waiting for state %q", want)
 		}
+	}
+}
+
+func TestConnectionWasUseful(t *testing.T) {
+	cases := []struct {
+		name     string
+		dataSeen bool
+		lifetime time.Duration
+		want     bool
+	}{
+		// The failure this guards against: a single-client analyzer that still
+		// believes another LIS is attached accepts us and hangs up at once.
+		{"accepted then dropped immediately", false, 300 * time.Millisecond, false},
+		{"silent but long lived", false, time.Hour, true},
+		// Some analyzers connect, send one message and hang up. That is a
+		// working link even though it was brief.
+		{"brief but carried data", true, 200 * time.Millisecond, true},
+		{"at the threshold", false, minUsefulConnection, true},
+		{"just under the threshold", false, minUsefulConnection - time.Millisecond, false},
+	}
+	for _, tc := range cases {
+		if got := connectionWasUseful(tc.dataSeen, tc.lifetime); got != tc.want {
+			t.Errorf("%s: connectionWasUseful(%v, %v) = %v, want %v", tc.name, tc.dataSeen, tc.lifetime, got, tc.want)
+		}
+	}
+}
+
+func TestNextBackoffEscalatesAndCaps(t *testing.T) {
+	got := nextBackoff(time.Second)
+	if got != 2*time.Second {
+		t.Fatalf("nextBackoff(1s) = %v, want 2s", got)
+	}
+	if got := nextBackoff(0); got != time.Second {
+		t.Fatalf("nextBackoff(0) = %v, want 1s", got)
+	}
+	if got := nextBackoff(maxReconnectBackoff); got != maxReconnectBackoff {
+		t.Fatalf("nextBackoff(max) = %v, want %v", got, maxReconnectBackoff)
+	}
+	// Must never overshoot the ceiling on the way up.
+	d := time.Second
+	for i := 0; i < 20; i++ {
+		d = nextBackoff(d)
+		if d > maxReconnectBackoff {
+			t.Fatalf("backoff exceeded ceiling: %v > %v", d, maxReconnectBackoff)
+		}
+	}
+	if d != maxReconnectBackoff {
+		t.Fatalf("backoff settled at %v, want %v", d, maxReconnectBackoff)
+	}
+}
+
+func TestHandleConnectionReportsDataSeen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send string
+		want bool
+	}{
+		{"peer closes without sending", "", false},
+		{"peer sends before closing", "hello", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			go func() {
+				if tc.send != "" {
+					_, _ = server.Write([]byte(tc.send))
+				}
+				_ = server.Close()
+			}()
+			got := handleConnection(context.Background(), client, models.TransportTCPClient, "raw",
+				func([]byte, string, models.TransportType) error { return nil },
+				func(error, map[string]any) {}, func(string, map[string]any) {}, nil)
+			if got != tc.want {
+				t.Fatalf("handleConnection() dataSeen = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
