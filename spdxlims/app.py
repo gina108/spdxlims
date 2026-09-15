@@ -4,13 +4,17 @@ import sys
 from pathlib import Path
 
 
-def _acquire_single_instance_lock() -> bool:
-    """Return True if this is the first running instance (lock acquired)."""
+def _acquire_single_instance_lock(mutex_name: str) -> bool:
+    """Return True if this is the first running instance (lock acquired).
+
+    The mutex is named per installation, so the local install and the server
+    checkout each guard themselves without blocking each other.
+    """
     if sys.platform != "win32":
         return True
     try:
         import ctypes
-        _handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\SPDXLIMS_SingleInstance")
+        _handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
         return ctypes.windll.kernel32.GetLastError() != 183  # 183 = ERROR_ALREADY_EXISTS
     except Exception:
         return True
@@ -24,6 +28,7 @@ from spdxlims.auto_invoicing import run_auto_invoicing
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentConfig, DeploymentService
 from spdxlims.i18n import set_language, tr
+from spdxlims.instance import app_instance, apply_windows_identity, icon_path as instance_icon_path
 from spdxlims.log import get_logger, setup_logging
 from spdxlims.main_window import MainWindow
 
@@ -320,15 +325,19 @@ def _apply_dark_theme(app: QApplication) -> None:
 
 
 def main() -> int:
-    if not _acquire_single_instance_lock():
+    instance = app_instance()
+    # Before any window exists, or Windows has already grouped this process
+    # under the pythonw.exe taskbar button.
+    apply_windows_identity()
+    if not _acquire_single_instance_lock(instance.mutex_name):
         app = _App(sys.argv)
-        QMessageBox.information(None, "SPDXLIMS", "SPDXLIMS ya está en ejecución.")
+        QMessageBox.information(None, instance.display_name, f"{instance.display_name} ya está en ejecución.")
         return 0
     QLocale.setDefault(QLocale(QLocale.Language.Spanish, QLocale.Country.Mexico))
     app = _App(sys.argv)
     app.setApplicationName("SPDXLIMS")
     app.setOrganizationName("SPDXLIMS")
-    icon_path = Path(__file__).resolve().parent.parent / "assets" / "SDXSquarePurple.png"
+    icon_path = instance_icon_path()
     if icon_path.exists():
         icon = QIcon(str(icon_path))
         app.setWindowIcon(icon)

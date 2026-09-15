@@ -30,6 +30,7 @@ from spdxlims.addons import AddonManager
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import get_language, set_language, tr
+from spdxlims.instance import app_instance
 from spdxlims.pages.addons_page import AddonsPage
 from spdxlims.pages.addon_placeholder_page import AddonPlaceholderPage
 from spdxlims.pages.administrative_page import AdministrativePage
@@ -223,7 +224,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(900, self._autostart_portal_poll)
 
     def retranslate_ui(self, *, include_pages: bool = True) -> None:
-        self.setWindowTitle("SPDXLIMS")
+        self.setWindowTitle(app_instance().display_name)
         self.workspace_label.setText(self._workspace_label_text())
         self.workspace_buttons["operations"].setText(self._workspace_button_text("operations"))
         self.workspace_buttons["data"].setText(self._workspace_button_text("data"))
