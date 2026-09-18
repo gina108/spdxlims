@@ -23,6 +23,12 @@ class Settings:
     jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", "change-this-in-production")
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
     jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
+    # Lowest order number this database may issue. The lab runs more than one
+    # database - some orders are placed locally, some here - and an analyzer
+    # result is matched to an order by its number, so two databases issuing the
+    # same number would import one patient's run onto another patient's order.
+    # Giving each its own range keeps them apart. 0 means "no floor".
+    order_number_floor: int = int(os.getenv("ORDER_NUMBER_FLOOR", "0"))
     cors_origins: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:

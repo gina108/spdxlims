@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import Integer, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.models import LabOrder, OrderItem, PanelCatalog, PanelCatalogItem, Patient, Provider, TestCatalog
 from app.routers.common import actor_from_header
@@ -227,15 +230,38 @@ def search_orders(search: str = "", include_archived: bool = Query(False), db: S
     return result
 
 
+def _compute_next_order_number(existing: Iterable[str], floor: int = 0) -> str:
+    """Highest all-digit order number seen, raised to ``floor``, plus one.
+
+    Only all-digit numbers count, mirroring the desktop's _next_order_number,
+    so a prefixed batch keeps its own series instead of dragging this one up.
+
+    ``floor`` is what keeps two databases apart. The lab places some orders
+    locally and some here, and a capture is matched to an order by number, so
+    an overlapping series would import an analyzer run onto the wrong patient's
+    order in the other database. See settings.order_number_floor.
+    """
+    highest = 0
+    for value in existing:
+        text = (value or "").strip()
+        if text.isdigit():
+            highest = max(highest, int(text))
+    return f"{max(highest, floor) + 1:06d}"
+
+
+def _next_order_number(db: Session) -> str:
+    # Scans every order number, not just the recent ones: the previous version
+    # read the 200 most recent by ordered_at, which silently understates the
+    # highest whenever an older row carries a larger number.
+    return _compute_next_order_number(
+        db.scalars(select(LabOrder.order_number)).all(),
+        settings.order_number_floor,
+    )
+
+
 @router.get("/next-number")
 def next_number(db: Session = Depends(get_db)):
-    rows = db.scalars(select(LabOrder.order_number).order_by(LabOrder.ordered_at.desc(), LabOrder.order_number.desc()).limit(200)).all()
-    highest = 0
-    for value in rows:
-        digits = "".join(ch for ch in value if ch.isdigit())
-        if digits:
-            highest = max(highest, int(digits))
-    return {"order_number": f"{highest + 1:06d}"}
+    return {"order_number": _next_order_number(db)}
 
 
 @router.get("/test-choices", response_model=list[TestChoiceOut])
@@ -474,19 +500,29 @@ def create_order(payload: OrderCreateIn, db: Session = Depends(get_db), actor: U
     doctor_id = _parse_provider_id(payload.doctor_id, field_name="doctor_id", expected_type="doctor", db=db)
     client_id = _parse_provider_id(payload.client_id, field_name="client_id", expected_type="clinic", db=db)
 
-    next_payload = next_number(db)
-    order = LabOrder(
-        order_number=next_payload["order_number"],
-        patient_id=patient_id,
-        doctor_id=doctor_id,
-        client_id=client_id,
-        accession_id=(payload.accession_id or "").strip() or None,
-        sample_id=(payload.sample_id or "").strip() or None,
-        notes=(payload.notes or "").strip() or None,
-        status=payload.status,
-    )
-    db.add(order)
-    db.flush()
+    # order_number is unique, and two workstations can ask for the next one at
+    # the same moment, so retry the way the desktop does rather than 500.
+    for attempt in range(5):
+        order = LabOrder(
+            order_number=_next_order_number(db),
+            patient_id=patient_id,
+            doctor_id=doctor_id,
+            client_id=client_id,
+            accession_id=(payload.accession_id or "").strip() or None,
+            sample_id=(payload.sample_id or "").strip() or None,
+            notes=(payload.notes or "").strip() or None,
+            status=payload.status,
+        )
+        db.add(order)
+        try:
+            with db.begin_nested():
+                db.flush()
+        except IntegrityError:
+            db.expunge(order)
+            if attempt == 4:
+                raise HTTPException(status_code=409, detail="could not allocate an order number")
+            continue
+        break
 
     for index, requested in enumerate(requested_items):
         db.add(OrderItem(
