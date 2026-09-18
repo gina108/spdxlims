@@ -41,6 +41,7 @@ from spdxlims.database import Database, InstrumentResultMappingRecord, ResultEnt
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.instrument_broadcast import get_engine_url
+from spdxlims.instrument_importer import importer_is_running
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pages.instrument_status_panel import InstrumentStatusPanel
 from spdxlims.portal.result_service import PortalResultService
@@ -1621,7 +1622,12 @@ class ResultsPage(DataAwarePage):
         match it. Patient fallback is off — an unattended import must not attach
         results to an order on a loose identifier guess; those stay pending for
         someone to link by hand.
+
+        Stands down when the headless importer is running, so exactly one thing
+        writes captures to the server.
         """
+        if importer_is_running(self.database.db_path.parent):
+            return
         linked = self._linked_instrument_capture_ids()
         imported_total = 0
         for capture in list(self.instrument_captures):

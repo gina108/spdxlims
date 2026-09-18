@@ -80,6 +80,15 @@ class DeploymentService:
     def is_authenticated(self) -> bool:
         return bool(self._access_token)
 
+    @property
+    def access_token(self) -> str | None:
+        """Bearer token for callers that need to inspect HTTP status codes.
+
+        request_json flattens every failure into RuntimeError, which cannot tell
+        an expected 400 ("no order matched") from a 401 ("token expired").
+        """
+        return self._access_token
+
     def try_auto_login(self) -> bool:
         if self.is_authenticated():
             return True
