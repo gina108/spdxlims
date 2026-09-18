@@ -41,9 +41,19 @@ from spdxlims.log import get_logger, setup_logging
 _log = get_logger(__name__)
 
 CAPTURE_SCOPE = "instrument_capture"
+# Captures that matched no order. Kept so they are not re-posted every cycle:
+# most never match (they belong to the other database) and would otherwise be
+# retried forever, several hundred times a minute, for as long as the service runs.
+UNMATCHED_SCOPE = "instrument_capture_unmatched"
 HEARTBEAT_NAME = "instrument-importer.heartbeat"
 DEFAULT_INTERVAL = 30.0
 DEFAULT_LIMIT = 500
+# A capture older than this will not be attempted again. The engine retains 30
+# days; an order is normally registered before its sample runs, so anything
+# still unmatched after two days belongs to the other database.
+DEFAULT_MAX_AGE_HOURS = 48.0
+# How long to wait before re-attempting a capture that matched no order.
+DEFAULT_RETRY_AFTER_MINUTES = 10.0
 
 # The backend answers 400 when no order matched the capture and 409 when an
 # order matched but none of its tests did. Both are ordinary: analyzers produce
@@ -59,12 +69,15 @@ class ImportSummary:
     results_written: int = 0
     skipped: int = 0
     failed: int = 0
+    aged_out: int = 0
+    backed_off: int = 0
     errors: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
         return (
             f"{self.considered} capture(s) considered, {self.imported} imported "
-            f"({self.results_written} result(s)), {self.skipped} unmatched, {self.failed} failed"
+            f"({self.results_written} result(s)), {self.skipped} unmatched, {self.failed} failed, "
+            f"{self.backed_off} backed off, {self.aged_out} aged out"
         )
 
 
@@ -98,6 +111,8 @@ class InstrumentImporter:
         engine_url: str | None = None,
         limit: int = DEFAULT_LIMIT,
         timeout: float = 15.0,
+        max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+        retry_after_minutes: float = DEFAULT_RETRY_AFTER_MINUTES,
     ) -> None:
         self.database = database
         self.deployment_service = deployment_service
@@ -105,6 +120,8 @@ class InstrumentImporter:
         self.engine_url = (engine_url or get_engine_url()).rstrip("/")
         self.limit = limit
         self.timeout = timeout
+        self.max_age_hours = max_age_hours
+        self.retry_after_minutes = retry_after_minutes
 
     # ── Engine ───────────────────────────────────────────────────────────
 
@@ -149,6 +166,47 @@ class InstrumentImporter:
     def linked_capture_ids(self) -> set[str]:
         return {str(k) for k in self.database.get_order_ui_scope(CAPTURE_SCOPE)}
 
+    @staticmethod
+    def _parse_timestamp(value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    def _too_old(self, capture: dict, now: datetime) -> bool:
+        if self.max_age_hours <= 0:
+            return False
+        received = self._parse_timestamp(capture.get("received_at"))
+        if received is None:
+            return False
+        return (now - received).total_seconds() > self.max_age_hours * 3600
+
+    def _backing_off(self, record: object, now: datetime) -> bool:
+        if not isinstance(record, dict) or self.retry_after_minutes <= 0:
+            return False
+        last = self._parse_timestamp(record.get("last_tried"))
+        if last is None:
+            return False
+        return (now - last).total_seconds() < self.retry_after_minutes * 60
+
+    def _record_unmatched(self, capture_id: str, previous: object, now: datetime) -> None:
+        attempts = int(previous.get("attempts") or 0) if isinstance(previous, dict) else 0
+        self.database.set_order_ui_value(
+            UNMATCHED_SCOPE,
+            capture_id,
+            {"attempts": attempts + 1, "last_tried": now.isoformat()},
+        )
+
+    def _clear_unmatched(self, capture_id: str) -> None:
+        try:
+            self.database.delete_order_ui_value(UNMATCHED_SCOPE, capture_id)
+        except Exception:
+            _log.debug("Could not clear unmatched marker for %s", capture_id, exc_info=True)
+
     def mark_linked(self, capture_id: str, order_id: str) -> None:
         self.database.set_order_ui_value(
             CAPTURE_SCOPE,
@@ -187,10 +245,19 @@ class InstrumentImporter:
             summary.errors.append(f"Could not reach the instrument engine: {exc}")
             return summary
 
+        now = datetime.now(timezone.utc)
         linked = self.linked_capture_ids()
+        unmatched = self.database.get_order_ui_scope(UNMATCHED_SCOPE)
         for capture in captures:
             capture_id = str(capture.get("id") or "").strip()
             if not capture_id or capture_id in linked:
+                continue
+            if self._too_old(capture, now):
+                summary.aged_out += 1
+                continue
+            previous = unmatched.get(capture_id)
+            if self._backing_off(previous, now):
+                summary.backed_off += 1
                 continue
             result = self._should_import(capture)
             if result is None:
@@ -201,6 +268,7 @@ class InstrumentImporter:
                 count = int(payload.get("imported_count") or 0)
                 if count > 0:
                     self.mark_linked(capture_id, str(payload.get("order_id") or ""))
+                    self._clear_unmatched(capture_id)
                     summary.imported += 1
                     summary.results_written += count
                     _log.info(
@@ -209,8 +277,10 @@ class InstrumentImporter:
                         count, payload.get("matched_by"),
                     )
                 else:
+                    self._record_unmatched(capture_id, previous, now)
                     summary.skipped += 1
             elif status in _EXPECTED:
+                self._record_unmatched(capture_id, previous, now)
                 summary.skipped += 1
             else:
                 summary.failed += 1
@@ -242,7 +312,12 @@ class InstrumentImporter:
             time.sleep(interval)
 
 
-def build_importer(root: Path | None = None) -> InstrumentImporter:
+def build_importer(
+    root: Path | None = None,
+    *,
+    max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
+    retry_after_minutes: float = DEFAULT_RETRY_AFTER_MINUTES,
+) -> InstrumentImporter:
     data_dir = (Path(root) if root else Path.cwd()) / "data"
     database = Database(data_dir / "spdxlims.db")
     database.initialize()
@@ -250,6 +325,8 @@ def build_importer(root: Path | None = None) -> InstrumentImporter:
         database,
         DeploymentService(data_dir / "deployment.json"),
         data_dir=data_dir,
+        max_age_hours=max_age_hours,
+        retry_after_minutes=retry_after_minutes,
     )
 
 
@@ -257,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Import analyzer captures into the server database.")
     parser.add_argument("--once", action="store_true", help="run a single pass and exit")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL, help="seconds between passes")
+    parser.add_argument(
+        "--max-age-hours", type=float, default=DEFAULT_MAX_AGE_HOURS,
+        help="ignore captures older than this; 0 disables the cutoff",
+    )
+    parser.add_argument(
+        "--retry-after-minutes", type=float, default=DEFAULT_RETRY_AFTER_MINUTES,
+        help="wait this long before re-attempting a capture that matched no order; 0 disables backoff",
+    )
     parser.add_argument("--root", type=Path, default=None, help="install root holding data\\ (default: cwd)")
     args = parser.parse_args(argv)
 
@@ -271,7 +356,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    importer = build_importer(root)
+    importer = build_importer(
+        root,
+        max_age_hours=args.max_age_hours,
+        retry_after_minutes=args.retry_after_minutes,
+    )
     if importer.deployment_service.load().mode != "server":
         print(
             "Deployment mode is 'local'. The desktop app imports straight into SQLite there, "

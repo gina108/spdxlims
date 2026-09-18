@@ -46,8 +46,16 @@ class FakeDeployment:
         return "token" if self._authenticated else None
 
 
-def _capture(capture_id: str, *, profile_id: str = "mindray-bc30s", observations=None, parsed=True) -> dict:
-    payload: dict = {"id": capture_id, "profile_id": profile_id}
+def _capture(
+    capture_id: str,
+    *,
+    profile_id: str = "mindray-bc30s",
+    observations=None,
+    parsed=True,
+    age_hours: float = 0.0,
+) -> dict:
+    received = datetime.now(timezone.utc) - timedelta(hours=age_hours)
+    payload: dict = {"id": capture_id, "profile_id": profile_id, "received_at": received.isoformat()}
     if parsed:
         payload["parsed_json"] = {
             "capture_id": capture_id,
@@ -207,6 +215,70 @@ def test_stale_heartbeat_means_not_running(tmp_path):
 def test_corrupt_heartbeat_means_not_running(tmp_path):
     heartbeat_path(tmp_path).write_text("not json", encoding="utf-8")
     assert importer_is_running(tmp_path) is False
+
+
+# ── Throttling: without this the service re-posts every old capture forever ──
+
+def test_captures_older_than_the_cutoff_are_not_posted(importer):
+    summary, calls = _run(importer, [_capture("cap_old", age_hours=72)], [(200, {"imported_count": 1})])
+    assert calls == []
+    assert summary.aged_out == 1
+
+
+def test_recent_captures_are_still_posted(importer):
+    summary, calls = _run(
+        importer, [_capture("cap_new", age_hours=1)],
+        [(200, {"imported_count": 1, "order_id": "ord-1"})],
+    )
+    assert len(calls) == 1
+    assert summary.imported == 1
+
+
+def test_cutoff_can_be_disabled(importer):
+    importer.max_age_hours = 0
+    summary, calls = _run(importer, [_capture("cap_old", age_hours=500)], [(400, None)])
+    assert len(calls) == 1
+
+
+def test_capture_missing_a_timestamp_is_still_attempted(importer):
+    capture = _capture("cap_1")
+    del capture["received_at"]
+    _, calls = _run(importer, [capture], [(400, None)])
+    assert len(calls) == 1
+
+
+def test_unmatched_capture_backs_off_on_the_next_cycle(importer):
+    """The whole point: an unmatched capture must not be re-posted every 30s."""
+    first, calls_a = _run(importer, [_capture("cap_1")], [(400, None)])
+    assert first.skipped == 1 and len(calls_a) == 1
+
+    second, calls_b = _run(importer, [_capture("cap_1")], [(400, None)])
+    assert calls_b == []
+    assert second.backed_off == 1
+
+
+def test_backoff_expires_and_the_capture_is_retried(importer):
+    _run(importer, [_capture("cap_1")], [(400, None)])
+    importer.retry_after_minutes = 0  # window elapsed
+    summary, calls = _run(importer, [_capture("cap_1")], [(200, {"imported_count": 1, "order_id": "ord-1"})])
+    assert len(calls) == 1
+    assert summary.imported == 1
+
+
+def test_successful_import_clears_the_unmatched_marker(importer):
+    _run(importer, [_capture("cap_1")], [(400, None)])
+    assert importer.database.get_order_ui_scope("instrument_capture_unmatched")
+    importer.retry_after_minutes = 0
+    _run(importer, [_capture("cap_1")], [(200, {"imported_count": 1, "order_id": "ord-1"})])
+    assert importer.database.get_order_ui_scope("instrument_capture_unmatched") == {}
+
+
+def test_attempts_accumulate_across_retries(importer):
+    _run(importer, [_capture("cap_1")], [(400, None)])
+    importer.retry_after_minutes = 0
+    _run(importer, [_capture("cap_1")], [(400, None)])
+    record = importer.database.get_order_ui_scope("instrument_capture_unmatched")["cap_1"]
+    assert record["attempts"] == 2
 
 
 def test_marks_are_visible_through_the_shared_ui_scope(importer):
