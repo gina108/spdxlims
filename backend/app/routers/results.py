@@ -118,6 +118,11 @@ class InstrumentResultIn(BaseModel):
 class InstrumentImportIn(BaseModel):
     order_id: str | None = None
     result: InstrumentResultIn
+    # The patient_id fallback matches a loose identifier against the sample /
+    # accession / order-number columns and takes the most recent hit. That is
+    # acceptable when a human picked the capture, but an unattended importer
+    # must not attach results to an order on a guess, so auto-import sends False.
+    allow_patient_fallback: bool = True
 
 
 class InstrumentImportOut(BaseModel):
@@ -556,7 +561,9 @@ def _calculate_flag(result_kind: str, result_value: str, lower_value: str | None
     return 'none'
 
 
-def _match_order_for_instrument(message: InstrumentMessageIn, db: Session) -> tuple[LabOrder | None, str]:
+def _match_order_for_instrument(
+    message: InstrumentMessageIn, db: Session, allow_patient_fallback: bool = True
+) -> tuple[LabOrder | None, str]:
     candidates = [
         ('sample_id', (message.sample_id or '').strip()),
         ('accession_id', (message.accession_id or '').strip()),
@@ -573,7 +580,7 @@ def _match_order_for_instrument(message: InstrumentMessageIn, db: Session) -> tu
         order = db.scalars(select(LabOrder).where(column == value).order_by(LabOrder.ordered_at.desc())).first()
         if order is not None:
             return order, field_name
-    if (message.patient_id or '').strip():
+    if allow_patient_fallback and (message.patient_id or '').strip():
         patient_order = db.scalars(
             select(LabOrder).where(
                 or_(
@@ -595,7 +602,9 @@ def _resolve_instrument_order(payload: InstrumentImportIn, db: Session) -> tuple
         if order is None:
             raise HTTPException(status_code=404, detail='order not found')
         return order, 'manual_order_id'
-    return _match_order_for_instrument(payload.result.message, db)
+    return _match_order_for_instrument(
+        payload.result.message, db, allow_patient_fallback=payload.allow_patient_fallback
+    )
 
 
 def _upsert_instrument_result(

@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from spdxlims.database import Database, InstrumentResultMappingRecord, ResultEntryRecord, ResultWorkflowRecord
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
+from spdxlims.instrument_broadcast import get_engine_url
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pages.instrument_status_panel import InstrumentStatusPanel
 from spdxlims.portal.result_service import PortalResultService
@@ -918,7 +919,10 @@ class ResultsPage(DataAwarePage):
         self._instrument_captures_cache: dict[str, dict[str, object]] = self.database.load_instrument_captures_cache()
         self.instrument_result: dict[str, object] | None = None
         self.instrument_order_entries: list[ResultEntryRecord] = []
-        self.engine_url = "http://127.0.0.1:9088"
+        # One source of truth: data\instrument-engine\engine.json. This used to
+        # be hardcoded to 9088 while the status panel read engine.json, so a
+        # checkout could read captures from one engine and push orders to another.
+        self.engine_url = get_engine_url()
         # {profile_id: {NORM_CODE: {qualifier_prefix: display_label}}}
         self._profile_semiquant_maps: dict[str, dict[str, dict[str, str]]] = {}
         # Backing state for the lazily-built action columns in the review table.
@@ -1546,6 +1550,7 @@ class ResultsPage(DataAwarePage):
 
     def _auto_import_pending(self) -> None:
         if self.result_service.uses_server_backend():
+            self._auto_import_pending_server()
             return
         linked = self._linked_instrument_capture_ids()
         imported_total = 0
@@ -1597,6 +1602,58 @@ class ResultsPage(DataAwarePage):
             imported_count, _ = self._apply_capture_to_order(capture, observations, order_id)
             if imported_count > 0:
                 self._mark_instrument_capture_linked(capture_id, order_id)
+                imported_total += imported_count
+        if imported_total > 0:
+            self._reload_workflow_orders()
+            if self.show_review:
+                self._refresh_table()
+            self.refresh_instrument_captures()
+            self.instrument_status_label.setText(
+                tr("Auto-imported {count} result(s) from instrument captures.", count=imported_total)
+            )
+
+    def _auto_import_pending_server(self) -> None:
+        """Auto-import captures in server mode, via the backend.
+
+        The local-mode path resolves the order against local SQLite, which in
+        server mode holds no live orders. So the order lookup happens on the
+        server instead: post the capture with no order_id and let the backend
+        match it. Patient fallback is off — an unattended import must not attach
+        results to an order on a loose identifier guess; those stay pending for
+        someone to link by hand.
+        """
+        linked = self._linked_instrument_capture_ids()
+        imported_total = 0
+        for capture in list(self.instrument_captures):
+            capture_id = str(capture.get("id") or "").strip()
+            if capture_id in linked:
+                continue
+            profile_id = str(capture.get("profile_id") or "").strip()
+            match_cfg = self.database.get_instrument_order_match(profile_id) if profile_id else None
+            if match_cfg is not None and not match_cfg.auto_import:
+                continue
+            result = self._instrument_result_from_capture(capture)
+            if result is None:
+                continue
+            message = result.get("message")
+            if not isinstance(message, dict) or not message.get("observations"):
+                continue
+            try:
+                response = self.deployment_service.request_json(
+                    "POST",
+                    "/api/results/import-instrument",
+                    {"result": result, "allow_patient_fallback": False},
+                )
+            except RuntimeError:
+                # 400 = matched no order, 409 = matched an order but no test
+                # codes lined up. Both are ordinary for a capture the lab has
+                # not registered yet, so leave it pending rather than logging.
+                continue
+            if not isinstance(response, dict):
+                continue
+            imported_count = int(response.get("imported_count") or 0)
+            if imported_count > 0:
+                self._mark_instrument_capture_linked(capture_id, str(response.get("order_id") or ""))
                 imported_total += imported_count
         if imported_total > 0:
             self._reload_workflow_orders()

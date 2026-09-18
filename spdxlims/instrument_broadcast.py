@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from spdxlims.engine_identity import owns_hardware
+
 _log = logging.getLogger(__name__)
 
 try:
@@ -199,6 +201,19 @@ def get_engine_url() -> str:
     return f"http://{host}:{port}"
 
 
+def _engine_data_dir() -> Path:
+    env = os.environ.get("INSTRUMENT_ENGINE_DATA_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
+    return root / "data" / "instrument-engine"
+
+
+def owns_instrument_hardware() -> bool:
+    """True when this checkout may drive the analyzers (see spdxlims.engine_identity)."""
+    return owns_hardware(_engine_data_dir())
+
+
 _ENGINE_URL = get_engine_url()
 
 
@@ -272,6 +287,12 @@ def broadcast_order_to_instruments(
     ``database`` must expose ``list_instrument_order_match_configs`` and
     ``list_instrument_result_mappings`` (the SQLite and server backends both do).
     """
+    if not owns_instrument_hardware():
+        # A checkout that does not own the analyzers is a read-only consumer of
+        # the engine. Pushing from here would write a real .ANA worklist to the
+        # live share and answer real Q-records on behalf of the lab.
+        _log.debug("This checkout does not own the analyzers; skipping order broadcast")
+        return
     try:
         configs = database.list_instrument_order_match_configs()
         enabled = [c for c in configs if c.broadcast_enabled]

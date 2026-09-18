@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from spdxlims.engine_identity import owns_hardware
 from spdxlims.i18n import tr
 from spdxlims.instrument_broadcast import get_engine_url
 
@@ -219,6 +220,12 @@ class InstrumentStatusPanel(QGroupBox):
         except Exception:
             return False
 
+    # ── Hardware ownership ───────────────────────────────────────────────
+
+    def _owns_hardware(self) -> bool:
+        """True when this checkout is the one allowed to open the analyzers."""
+        return owns_hardware(self._runtime_dir())
+
     def _kill_stale_dev_agents(self) -> None:
         # Kill any agent.exe processes left behind by `go run` in temp build dirs.
         # These outlive the terminal they were launched from and aren't visible by
@@ -296,8 +303,15 @@ class InstrumentStatusPanel(QGroupBox):
     # ── Reconnect ────────────────────────────────────────────────────────
 
     def _reconnect_profile(self, profile_id: str) -> None:
-        result = self._post_json("/api/v1/capture/start", {"profile_id": profile_id})
         name = _PROFILE_NAMES.get(profile_id, profile_id)
+        if not self._owns_hardware():
+            QMessageBox.information(
+                self,
+                tr("Instrument Connectivity"),
+                tr("The instrument engine service owns the analyzers. Reconnect {name} from the production install instead.", name=name),
+            )
+            return
+        result = self._post_json("/api/v1/capture/start", {"profile_id": profile_id})
         if result and result.get("session_id"):
             self.log_message.emit(f"{tr('Started')} {name} ({result['session_id']})")
         else:
@@ -308,6 +322,16 @@ class InstrumentStatusPanel(QGroupBox):
 
     def start_engine(self, *, silent: bool = False, start_default_profiles: bool = False) -> None:
         self._sync_runtime_profiles()
+        if not self._owns_hardware():
+            # Never race the service for its port. If the service is merely
+            # stopped, an engine started here would bind 9088 and then block the
+            # real service from coming back.
+            msg = tr("The instrument engine service owns the analyzers. Start it from the production install.")
+            if not silent:
+                QMessageBox.information(self, tr("Instrument Connectivity"), msg)
+            else:
+                self.log_message.emit(msg)
+            return
         if self.engine_process is not None and self.engine_process.state() != QProcess.NotRunning:
             if not silent:
                 QMessageBox.information(self, tr("Instrument Connectivity"), tr("The local engine process is already running from this UI session."))
@@ -425,6 +449,12 @@ class InstrumentStatusPanel(QGroupBox):
                 state = str(device.get("session_state") or "")
                 if pid and state not in ("", "error", "stopped"):
                     active_profiles.add(pid)
+        if not self._owns_hardware():
+            self.log_message.emit(
+                tr("The instrument engine service owns the analyzers. This checkout will not open them.")
+            )
+            self.refresh_status()
+            return
         for profile_id in self.AUTO_START_PROFILE_IDS:
             if profile_id in active_profiles:
                 continue
@@ -451,14 +481,20 @@ class InstrumentStatusPanel(QGroupBox):
         go_executable = self._go_executable()
         listen_addr = self._engine_listen_addr()
         listen_args = ["-listen", listen_addr] if listen_addr else []
+        # Session resume is driven by engine.db, not by the `enabled:` field in
+        # the profile YAML, so an engine started here without this flag reopens
+        # whatever was live when its DB was last written - taking the analyzers
+        # away from the service that owns them.
+        resume_args = [] if self._owns_hardware() else ["-no-auto-resume"]
+        extra_args = listen_args + resume_args
         binary_in_runtime = runtime_dir / "instrument-agent.exe"
         all_candidates = ([binary_in_runtime] if binary_in_runtime.exists() else []) + self._engine_binary_candidates(root)
         for candidate in all_candidates:
             if candidate.exists():
                 workdir = self._resolve_engine_workdir(candidate, source_root)
-                return str(candidate), ["-data-dir", str(runtime_dir)] + listen_args, workdir
+                return str(candidate), ["-data-dir", str(runtime_dir)] + extra_args, workdir
         if (source_root / "cmd" / "agent").exists() and go_executable:
-            return go_executable, ["run", ".\\cmd\\agent", "-data-dir", str(runtime_dir)] + listen_args, source_root
+            return go_executable, ["run", ".\\cmd\\agent", "-data-dir", str(runtime_dir)] + extra_args, source_root
         return None
 
     def _go_executable(self) -> str | None:
