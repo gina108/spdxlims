@@ -103,6 +103,31 @@ def turn_pixmap(pixmap):
     return QPixmap.fromImage(image)
 
 
+def turn_icon(icon):
+    """The same turn applied to a window icon, across every size it carries.
+
+    An .ico holds several resolutions and Windows picks between them - the
+    taskbar, the alt-tab switcher and the title bar all ask for different ones.
+    Turning a single pixmap and rebuilding from that would throw the rest away
+    and leave the icon soft wherever Windows wanted a size we no longer had, so
+    each available size is turned and kept.
+
+    Typed loosely for the same reason as turn_pixmap: this module has to import
+    without Qt for the headless importer.
+    """
+    if _hue_shift() == 0:
+        return icon
+    from PySide6.QtGui import QIcon
+
+    sizes = icon.availableSizes()
+    if not sizes:
+        return icon
+    turned = QIcon()
+    for size in sizes:
+        turned.addPixmap(turn_pixmap(icon.pixmap(size)))
+    return turned
+
+
 def _turn(value: str, shift: float) -> str:
     text = value.lstrip("#")
     if len(text) != 6:

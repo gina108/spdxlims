@@ -31,7 +31,7 @@ from spdxlims.i18n import set_language, tr
 from spdxlims.instance import app_instance, apply_windows_identity, icon_path as instance_icon_path
 from spdxlims.log import get_logger, setup_logging
 from spdxlims.main_window import MainWindow
-from spdxlims.theme import recolor, rgb as accent_rgb
+from spdxlims.theme import recolor, rgb as accent_rgb, turn_icon
 
 
 class _App(QApplication):
@@ -344,7 +344,10 @@ def main() -> int:
     app.setOrganizationName("SPDXLIMS")
     icon_path = instance_icon_path()
     if icon_path.exists():
-        icon = QIcon(str(icon_path))
+        # Turned like the drawer wordmark, so the icon matches the accent this
+        # installation runs. Without it a blue install kept the purple icon in
+        # the taskbar while every other surface had changed.
+        icon = turn_icon(QIcon(str(icon_path)))
         app.setWindowIcon(icon)
     _apply_dark_theme(app)
 
