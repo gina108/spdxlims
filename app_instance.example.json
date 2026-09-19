@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to app_instance.json ONLY on a machine that runs two installs side by side. The key gives this install its own single-instance mutex, taskbar identity and icon, so the two apps do not collide. A machine running one install needs no marker: absent means the default identity, named SPDXLIMS.",
+  "key": "server",
+  "display_name": "SPDXLIMS Server",
+  "icon": "SDXserver.ico"
+}

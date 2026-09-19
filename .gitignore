@@ -33,7 +33,15 @@ backend/app/static/uploads/
 backups/
 data/
 !data/instrument-engine/instrument-agent.exe
-!data/instrument-engine/engine.json
+
+# Per-machine identity and engine address. These differ on every install - the
+# lab PC, the server checkout beside it, and each workstation - so tracking them
+# meant every pull overwrote the local machine's settings with another's.
+# Absent is a valid, sane state: no marker means the default app identity, and
+# no engine.json means http://127.0.0.1:9088.
+app_instance.json
+!app_instance.example.json
+data/instrument-engine/engine.json
 Files/
 data/*.db
 data/*.db-*
