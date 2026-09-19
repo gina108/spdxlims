@@ -551,10 +551,18 @@ def create_order(payload: OrderCreateIn, db: Session = Depends(get_db), actor: U
     doctor_id = _parse_provider_id(payload.doctor_id, field_name="doctor_id", expected_type="doctor", db=db)
     client_id = _parse_provider_id(payload.client_id, field_name="client_id", expected_type="clinic", db=db)
 
-    # order_number is unique, and two workstations can ask for the next one at
-    # the same moment, so retry the way the desktop does rather than 500.
+    # order_number is unique and two workstations can ask for the next one at
+    # the same moment, so retry rather than 500.
+    #
+    # The savepoint has to be opened before the object is added, and the object
+    # must not be touched afterwards: rolling one back detaches whatever was
+    # pending, so expunging it raises "not present in this Session" and every
+    # later statement fails with PendingRollbackError. An earlier version did
+    # exactly that and turned a recoverable collision into a 500.
+    order = None
     for attempt in range(5):
-        order = LabOrder(
+        savepoint = db.begin_nested()
+        candidate = LabOrder(
             order_number=_next_order_number(db),
             patient_id=patient_id,
             doctor_id=doctor_id,
@@ -564,16 +572,19 @@ def create_order(payload: OrderCreateIn, db: Session = Depends(get_db), actor: U
             notes=(payload.notes or "").strip() or None,
             status=payload.status,
         )
-        db.add(order)
+        db.add(candidate)
         try:
-            with db.begin_nested():
-                db.flush()
+            db.flush()
         except IntegrityError:
-            db.expunge(order)
+            savepoint.rollback()
             if attempt == 4:
                 raise HTTPException(status_code=409, detail="could not allocate an order number")
             continue
+        savepoint.commit()
+        order = candidate
         break
+    if order is None:  # pragma: no cover - the loop either breaks or raises
+        raise HTTPException(status_code=409, detail="could not allocate an order number")
 
     for index, requested in enumerate(requested_items):
         db.add(OrderItem(
