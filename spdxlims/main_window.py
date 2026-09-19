@@ -30,6 +30,7 @@ from spdxlims.addons import AddonManager
 from spdxlims.database import Database
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import get_language, set_language, tr
+from spdxlims.theme import turn_pixmap
 from spdxlims.instance import app_instance
 from spdxlims.pages.addons_page import AddonsPage
 from spdxlims.pages.addon_placeholder_page import AddonPlaceholderPage
@@ -392,7 +393,11 @@ class MainWindow(QMainWindow):
         if pixmap.isNull():
             self.logo_label.clear()
             return
-        self.logo_label.setPixmap(pixmap.scaled(190, 92, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        scaled = pixmap.scaled(190, 92, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # The logo is a purple wordmark, so on an install wearing another accent
+        # it is turned with the rest of the theme - a purple logo over blue
+        # chrome is exactly the confusion the accent exists to prevent.
+        self.logo_label.setPixmap(turn_pixmap(scaled))
 
     def _set_workspace(self, workspace_key: str, *, preferred_page_key: str | None = None) -> None:
         if workspace_key == self.current_workspace:

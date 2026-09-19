@@ -10,11 +10,13 @@ them start at a time.
 Identity is read from an optional ``app_instance.json`` sitting next to
 ``app.py``:
 
-    {"key": "server", "display_name": "SPDXLIMS Server", "icon": "SDXserver.ico"}
+    {"key": "server", "display_name": "SPDXLIMS Server", "icon": "SDXserver.ico",
+     "accent": "blue"}
 
 When that file is absent every value falls back to what the app has always
 used, so an install without the file is unaffected in every respect - same
-mutex name, same icon, and no AppUserModelID is set at all.
+mutex name, same icon, the purple accent, and no AppUserModelID is set at all.
+See spdxlims/theme.py for the accents.
 """
 
 import json
@@ -32,6 +34,9 @@ class AppInstance:
     icon_name: str
     mutex_name: str
     app_user_model_id: str | None
+    # Named in spdxlims/theme.py, which owns the shades and ignores a name it
+    # does not know. Empty means the original purple.
+    accent: str = ""
 
     @property
     def is_default(self) -> bool:
@@ -71,6 +76,7 @@ def _load() -> AppInstance:
         icon_name=str(raw.get("icon") or _DEFAULT_ICON),
         mutex_name=f"{_LEGACY_MUTEX}_{key}",
         app_user_model_id=f"SPDXLIMS.{key}",
+        accent=str(raw.get("accent") or ""),
     )
 
 

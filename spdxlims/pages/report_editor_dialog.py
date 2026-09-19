@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from spdxlims.i18n import tr
+from spdxlims.theme import recolor
 
 
 class ReportEditorDialog(QDialog):
@@ -237,7 +238,7 @@ class ReportEditorDialog(QDialog):
 
     @staticmethod
     def _style_combo(combo: QComboBox, color: str, bg: str, border: str) -> None:
-        combo.setStyleSheet(f"""
+        combo.setStyleSheet(recolor(f"""
             QComboBox {{
                 color: {color};
                 background-color: {bg};
@@ -262,7 +263,7 @@ class ReportEditorDialog(QDialog):
                 selection-background-color: #341F5C;
                 outline: 0;
             }}
-        """)
+        """))
 
     @classmethod
     def _style_type_combo(cls, combo: QComboBox, value: str) -> None:

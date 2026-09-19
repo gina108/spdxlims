@@ -51,6 +51,7 @@ from spdxlims.order_excel import read_order_workbook_rows, write_order_import_te
 from spdxlims.result_service import ResultService
 from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
+from spdxlims.theme import recolor
 from spdxlims.sat_catalogs import REGIMEN_FISCAL_OPTIONS, USO_CFDI_OPTIONS
 
 from spdxlims.pages.order_patient_dialog import PatientDialog
@@ -339,9 +340,11 @@ class OrdersPage(DataAwarePage):
         self.import_and_print_button = QPushButton()
         self.import_and_print_button.setProperty("class", "primaryButton")
         self.import_and_print_button.setStyleSheet(
-            "QPushButton { background-color: #bd93f9; color: #1a1a1a; border: none; font-weight: 800; }"
-            "QPushButton:hover { background-color: #caa9fa; }"
-            "QPushButton:pressed { background-color: #a77de6; }"
+            recolor(
+                "QPushButton { background-color: #bd93f9; color: #1a1a1a; border: none; font-weight: 800; }"
+                "QPushButton:hover { background-color: #caa9fa; }"
+                "QPushButton:pressed { background-color: #a77de6; }"
+            )
         )
         self.import_and_print_button.clicked.connect(self.import_and_print_from_excel)
         actions.addWidget(self.result_button, 0, 0, 1, 2)

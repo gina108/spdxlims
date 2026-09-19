@@ -34,6 +34,7 @@ from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.result_service import ResultService
+from spdxlims.theme import recolor
 
 
 class OrderResultsDialog(QDialog):
@@ -88,7 +89,8 @@ class OrderResultsDialog(QDialog):
         self.results_table.itemSelectionChanged.connect(self.load_selected_entry)
         self.results_table.cellDoubleClicked.connect(self.toggle_heading_row)
         self.results_table.setStyleSheet(
-            """
+            recolor(
+                """
             QTableWidget {
                 background-color: #20252B;
             }
@@ -150,6 +152,7 @@ class OrderResultsDialog(QDialog):
                 height: 0px;
             }
             """
+            )
         )
         layout.addWidget(self.results_table)
         layout.addWidget(self._build_culture_group())
@@ -274,7 +277,8 @@ class OrderResultsDialog(QDialog):
 
     def _apply_result_editor_styles(self) -> None:
         self.result_value_stack.setStyleSheet(
-            """
+            recolor(
+                """
             QLineEdit#resultPrimaryInput,
             QTextEdit#resultPrimaryInput,
             QComboBox#resultPrimaryInput {
@@ -307,6 +311,7 @@ class OrderResultsDialog(QDialog):
                 border: none;
             }
             """
+            )
         )
 
     def _set_result_editor_value(self, entry: ResultEntryRecord | None, value: str) -> None:

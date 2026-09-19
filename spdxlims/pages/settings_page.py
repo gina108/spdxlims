@@ -37,6 +37,7 @@ from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.report_export import FILENAME_PART_KEYS, get_pdf_export_settings, save_pdf_export_settings
 from spdxlims.sat_catalogs import REGIMEN_FISCAL_OPTIONS
 from spdxlims.whatsapp_phone import COUNTRY_CODE_OPTIONS
+from spdxlims.theme import recolor
 from spdxlims.whatsapp_templates import get_whatsapp_templates, save_whatsapp_templates
 
 REPORT_FLAG_STYLE_OPTIONS: list[tuple[str, str]] = [
@@ -58,7 +59,8 @@ class AccordionSection(QWidget):
         self.toggle_button.setChecked(expanded)
         self.toggle_button.clicked.connect(self._sync_state)
         self.toggle_button.setStyleSheet(
-            """
+            recolor(
+                """
             QPushButton {
                 text-align: left;
                 padding: 9px 14px;
@@ -78,6 +80,7 @@ class AccordionSection(QWidget):
                 color: #c3ccdf;
             }
             """
+            )
         )
         layout.addWidget(self.toggle_button)
 

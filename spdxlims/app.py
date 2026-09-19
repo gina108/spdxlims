@@ -31,6 +31,7 @@ from spdxlims.i18n import set_language, tr
 from spdxlims.instance import app_instance, apply_windows_identity, icon_path as instance_icon_path
 from spdxlims.log import get_logger, setup_logging
 from spdxlims.main_window import MainWindow
+from spdxlims.theme import recolor, rgb as accent_rgb
 
 
 class _App(QApplication):
@@ -59,8 +60,10 @@ def _apply_dark_theme(app: QApplication) -> None:
     palette.setColor(QPalette.Button, QColor(32, 36, 43))            # #20242b — neutral, QSS handles button purple
     palette.setColor(QPalette.ButtonText, QColor(195, 204, 223))    # #c3ccdf
     palette.setColor(QPalette.BrightText, QColor(255, 107, 107))    # #FF6B6B
-    palette.setColor(QPalette.Link, QColor(189, 147, 249))          # #bd93f9
-    palette.setColor(QPalette.Highlight, QColor(99, 75, 138))       # #634b8a — selection
+    # Accent-coloured, so a second install wearing another accent takes its
+    # links and selections with it. See spdxlims/theme.py.
+    palette.setColor(QPalette.Link, QColor(*accent_rgb("#bd93f9")))
+    palette.setColor(QPalette.Highlight, QColor(*accent_rgb("#634b8a")))  # selection
     palette.setColor(QPalette.HighlightedText, QColor(195, 204, 223))
     palette.setColor(QPalette.PlaceholderText, QColor(139, 149, 170)) # #8b95aa
 
@@ -70,7 +73,8 @@ def _apply_dark_theme(app: QApplication) -> None:
 
     app.setPalette(palette)
     app.setStyleSheet(
-        """
+        recolor(
+            """
         QWidget {
             background-color: #1f232a;
             color: #c3ccdf;
@@ -318,10 +322,11 @@ def _apply_dark_theme(app: QApplication) -> None:
             outline: 0;
         }
         """
+        )
     )
     theme_path = Path(__file__).resolve().parent / "styles" / "dark_theme.qss"
     if theme_path.exists():
-        app.setStyleSheet(app.styleSheet() + "\n" + theme_path.read_text(encoding="utf-8"))
+        app.setStyleSheet(app.styleSheet() + "\n" + recolor(theme_path.read_text(encoding="utf-8")))
 
 
 def main() -> int:

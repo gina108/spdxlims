@@ -58,6 +58,7 @@ from spdxlims.report_layout import build_report_html
 from spdxlims.outsourced_service import OutsourcedService
 from spdxlims.report_service import ReportService
 from spdxlims.result_service import ResultService
+from spdxlims.theme import recolor
 from spdxlims.whatsapp_templates import default_whatsapp_templates, get_whatsapp_templates
 from spdxlims.whatsapp_phone import normalize_whatsapp_phone
 
@@ -722,7 +723,7 @@ class ReportEditorDialog(QDialog):
 
     @staticmethod
     def _style_combo(combo: QComboBox, color: str, bg: str, border: str) -> None:
-        combo.setStyleSheet(f"""
+        combo.setStyleSheet(recolor(f"""
             QComboBox {{
                 color: {color};
                 background-color: {bg};
@@ -747,7 +748,7 @@ class ReportEditorDialog(QDialog):
                 selection-background-color: #341F5C;
                 outline: 0;
             }}
-        """)
+        """))
 
     @classmethod
     def _style_type_combo(cls, combo: QComboBox, value: str) -> None:
@@ -2312,7 +2313,7 @@ class ResultsPage(DataAwarePage):
         return container
 
     def _results_action_button_style(self) -> str:
-        return (
+        return recolor(
             "QPushButton {"
             "background-color: #bd93f9;"
             "color: #1a1a1a;"

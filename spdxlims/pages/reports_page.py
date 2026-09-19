@@ -33,6 +33,7 @@ from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.report_export import build_pdf_export_path
 from spdxlims.report_layout import build_report_html
 from spdxlims.report_service import ReportService
+from spdxlims.theme import recolor
 
 try:
     from PySide6.QtWebEngineCore import QWebEnginePage
@@ -225,7 +226,7 @@ class ReportsPage(DataAwarePage):
         web_view_class = self._get_web_view_class()
         if web_view_class is not None:
             self.preview = web_view_class()
-            self.preview.setStyleSheet('background:#ffffff; border:2px solid #392c4b;')
+            self.preview.setStyleSheet(recolor('background:#ffffff; border:2px solid #392c4b;'))
             settings = getattr(self.preview, 'settings', None)
             if callable(settings):
                 preview_settings = settings()
@@ -241,7 +242,7 @@ class ReportsPage(DataAwarePage):
         else:
             self.preview = QTextEdit()
             self.preview.setReadOnly(True)
-            self.preview.setStyleSheet('background:#ffffff; color:#111111; border:2px solid #392c4b;')
+            self.preview.setStyleSheet(recolor('background:#ffffff; color:#111111; border:2px solid #392c4b;'))
             self._preview_html_setter = self.preview.setHtml
         layout.addWidget(self.preview)
         return self.preview_group

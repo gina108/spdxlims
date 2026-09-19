@@ -31,6 +31,7 @@ from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import get_language, tr
 from spdxlims.outsourced_service import OutsourcedService
 from spdxlims.pages.base_page import DataAwarePage
+from spdxlims.theme import color as accent, recolor, rgb as accent_rgb
 from spdxlims.pdf_table_extractor_library import (
     DetectedTable,
     ManualGridProposal,
@@ -87,10 +88,12 @@ class DropZoneFrame(QFrame):
         self.setAcceptDrops(True)
         self.setObjectName("DropZone")
         self.setStyleSheet(
-            "#DropZone {"
-            "  border: 2px dashed #7840b8;"
-            "  border-radius: 12px;"
-            "}"
+            recolor(
+                "#DropZone {"
+                "  border: 2px dashed #7840b8;"
+                "  border-radius: 12px;"
+                "}"
+            )
         )
 
         layout = QVBoxLayout(self)
@@ -259,8 +262,8 @@ class PageCanvas(QLabel):
 
             if draw_region:
                 rx0, ry0, rx1, ry1 = (int(v * display_scale) for v in self._region)
-                painter.setPen(QPen(QColor("#bd93f9"), 2))
-                painter.setBrush(QColor(189, 147, 249, 40))
+                painter.setPen(QPen(QColor(accent("#bd93f9")), 2))
+                painter.setBrush(QColor(*accent_rgb("#bd93f9"), 40))
                 painter.drawRect(rx0, ry0, rx1 - rx0, ry1 - ry0)
 
             if draw_drag:
@@ -268,8 +271,8 @@ class PageCanvas(QLabel):
                 dy0 = min(self._drag_start[1], self._drag_current[1])
                 dx1 = max(self._drag_start[0], self._drag_current[0])
                 dy1 = max(self._drag_start[1], self._drag_current[1])
-                painter.setPen(QPen(QColor("#a855f7"), 2, Qt.DashLine))
-                painter.setBrush(QColor(168, 85, 247, 30))
+                painter.setPen(QPen(QColor(accent("#a855f7")), 2, Qt.DashLine))
+                painter.setBrush(QColor(*accent_rgb("#a855f7"), 30))
                 painter.drawRect(dx0, dy0, dx1 - dx0, dy1 - dy0)
 
             painter.end()
@@ -278,7 +281,7 @@ class PageCanvas(QLabel):
             self.setPixmap(scaled)
 
 
-_REVIEW_BTN_STYLE = (
+_REVIEW_BTN_STYLE = recolor(
     "QPushButton {"
     "  background-color: #bd93f9; color: #1a1a1a; border: none;"
     "  border-radius: 6px; padding: 8px; font-weight: 800;"
@@ -576,10 +579,12 @@ class ManualGridEditorDialog(QDialog):
         self._cancel_btn.clicked.connect(self.reject)
         self._apply_btn = QPushButton(tr("Apply Extraction and Close"))
         self._apply_btn.setStyleSheet(
-            "QPushButton { background-color: #bd93f9; color: #1a1a1a; border: none;"
-            " border-radius: 4px; padding: 6px 14px; font-weight: 800; }"
-            "QPushButton:hover { background-color: #caa9fa; }"
-            "QPushButton:pressed { background-color: #a77de6; }"
+            recolor(
+                "QPushButton { background-color: #bd93f9; color: #1a1a1a; border: none;"
+                " border-radius: 4px; padding: 6px 14px; font-weight: 800; }"
+                "QPushButton:hover { background-color: #caa9fa; }"
+                "QPushButton:pressed { background-color: #a77de6; }"
+            )
         )
         self._apply_btn.clicked.connect(self._apply_extraction)
         self._selected_label = QLabel(f"{tr('Selected')}: none")
