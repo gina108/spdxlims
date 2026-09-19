@@ -497,7 +497,7 @@ class InstrumentStatusPanel(QGroupBox):
     def _engine_listen_addr(self) -> str | None:
         cfg_path = self._runtime_dir() / "engine.json"
         try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))  # tolerate a BOM; see instance.py
             addr = (data.get("listen_addr") or "").strip()
             return addr or None
         except (OSError, json.JSONDecodeError):

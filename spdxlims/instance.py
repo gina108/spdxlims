@@ -60,7 +60,12 @@ def _default() -> AppInstance:
 def _load() -> AppInstance:
     marker = _app_root() / "app_instance.json"
     try:
-        raw = json.loads(marker.read_text(encoding="utf-8"))
+        # utf-8-sig, not utf-8: this file is hand-written on Windows, and
+        # PowerShell's `Set-Content -Encoding utf8` prepends a BOM. Plain utf-8
+        # then raises, the except below swallows it, and the install silently
+        # reverts to the default identity - a marker that looks correct but has
+        # no effect. utf-8-sig reads BOM-less files identically.
+        raw = json.loads(marker.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return _default()
     if not isinstance(raw, dict):

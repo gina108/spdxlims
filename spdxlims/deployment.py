@@ -44,7 +44,11 @@ class DeploymentService:
         if not self.config_path.exists():
             return DeploymentConfig()
         try:
-            payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+            # utf-8-sig: a BOM (PowerShell's `Set-Content -Encoding utf8` adds
+            # one) would otherwise raise, be swallowed below, and silently hand
+            # back mode="local" - a workstation would stop talking to the server
+            # with nothing to show why.
+            payload = json.loads(self.config_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return DeploymentConfig()
         return DeploymentConfig.from_dict(payload if isinstance(payload, dict) else None)

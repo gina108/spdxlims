@@ -184,7 +184,7 @@ def _read_engine_config() -> dict:
         candidates = [root / "data" / "instrument-engine" / "engine.json"]
     for path in candidates:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8-sig"))  # tolerate a BOM; see instance.py
         except (OSError, json.JSONDecodeError):
             pass
     return {}

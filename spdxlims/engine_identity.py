@@ -27,7 +27,10 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 def _deployment_config() -> dict:
     """Read data\\deployment.json the way app.py locates it (cwd-relative)."""
     try:
-        raw = json.loads((Path.cwd() / "data" / "deployment.json").read_text(encoding="utf-8"))
+        # utf-8-sig: a BOM would make this look like an unreadable config, and
+        # the caller would conclude this machine is not a remote client - which
+        # is what lets a checkout open the analyzers. Worth being strict about.
+        raw = json.loads((Path.cwd() / "data" / "deployment.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
     return raw if isinstance(raw, dict) else {}
