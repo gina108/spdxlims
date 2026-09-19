@@ -250,13 +250,17 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
                     result_kind='text',
                     select_options=None,
                     default_result_value=None,
-                    result_value=None,
+                    # A comment row carries the panel's free-text note, so its
+                    # saved value has to come back or reopening the order shows
+                    # an empty box over text that is already stored. A heading
+                    # has no value of its own.
+                    result_value=entry.get('value_text') if item_type == 'comment' else None,
                     unit=None,
                     lower_value=None,
                     upper_value=None,
                     flag=None,
                     reference_text=None,
-                    comments=None,
+                    comments=entry.get('comments') if item_type == 'comment' else None,
                     test_status='pending',
                     source_label=source_label,
                 )
@@ -311,8 +315,14 @@ def save_order_item_result(order_item_id: str, payload: ResultEntryIn, db: Sessi
     if order_item is None:
         raise HTTPException(status_code=404, detail='order item not found')
 
-    test = db.get(TestCatalog, order_item.test_id)
-    if test is None:
+    # A panel's free-text note - the "Observaciones" line under BIOMETRIA
+    # HEMATICA and others - is an order item with item_type 'comment' and no
+    # test at all. Local mode models the same row as a real test
+    # (__PANEL_COMMENT__), so it saved there while the server answered "test
+    # not found" and the note could not be typed on a workstation.
+    is_note = str(order_item.item_type or 'test') == 'comment'
+    test = db.get(TestCatalog, order_item.test_id) if order_item.test_id else None
+    if test is None and not is_note:
         raise HTTPException(status_code=404, detail='test not found')
 
     normalized_value = payload.result_value.strip()
@@ -321,8 +331,14 @@ def save_order_item_result(order_item_id: str, payload: ResultEntryIn, db: Sessi
     upper_value = (payload.upper_value or '').strip() or None
     reference_text = payload.reference_text.strip() or None
     comments = payload.comments.strip() or None
-    result_kind = test.result_kind or payload.result_kind or 'text'
-    if result_kind == 'select':
+    if test is not None:
+        result_kind = test.result_kind or payload.result_kind or 'text'
+    else:
+        # Free text, with no unit, range or flag of its own.
+        result_kind = 'text'
+        normalized_unit = ''
+        lower_value = upper_value = reference_text = None
+    if result_kind == 'select' and test is not None:
         valid_options = _deserialize_select_options(test.select_options)
         if normalized_value and valid_options and normalized_value not in valid_options:
             raise HTTPException(status_code=400, detail='result value must match a configured selectable option')

@@ -561,18 +561,23 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
         item_type = str(entry.get('item_type') or 'test')
         source_label = entry.get('source_label') or None
         if item_type in ('heading', 'comment'):
+            is_note = item_type == 'comment'
             items.append(
                 ReportPreviewItemOut(
-                    order_test_id=None,
+                    # A comment row is the panel's free-text note. report_layout
+                    # prints "comments or result_value" for it, so leaving both
+                    # empty dropped a note a technician had typed - it saved,
+                    # and then simply did not appear on the report.
+                    order_test_id=str(entry.get('order_item_id')) if is_note and entry.get('order_item_id') else None,
                     item_type=item_type,
                     test_name=entry.get('display_name') or '',
-                    result_value=None,
+                    result_value=entry.get('value_text') if is_note else None,
                     unit=None,
                     reference_text=None,
                     lower_value=None,
                     upper_value=None,
                     flag=None,
-                    comments=None,
+                    comments=entry.get('comments') if is_note else None,
                     sort_order=len(items),
                     source_label=source_label,
                 )
