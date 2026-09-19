@@ -36,6 +36,7 @@ from spdxlims.database import Database
 from spdxlims.deployment import DeploymentService
 from spdxlims.engine_identity import is_remote_client
 from spdxlims.instrument_broadcast import get_engine_url
+from spdxlims.instrument_mapping import resolve_payload
 from spdxlims.log import get_logger, setup_logging
 
 _log = get_logger(__name__)
@@ -232,7 +233,10 @@ class InstrumentImporter:
         message = parsed.get("message")
         if not isinstance(message, dict) or not message.get("observations"):
             return None
-        return parsed
+        # The server matches observations to order items by catalog code only,
+        # so the analyzers that report LOINC or positional codes are resolved
+        # here, against this lab's own mappings. See spdxlims.instrument_mapping.
+        return resolve_payload(self.database, capture, parsed)
 
     def run_once(self) -> ImportSummary:
         summary = ImportSummary()

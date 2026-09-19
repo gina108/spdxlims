@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import ast as _ast
 import importlib
 import json
-import operator as _operator
-from decimal import Decimal, InvalidOperation
 import re
 import subprocess
 import time
@@ -43,6 +40,15 @@ from spdxlims.i18n import tr
 from spdxlims.engine_client import EngineClient, EngineUnavailable
 from spdxlims.instrument_broadcast import get_engine_url
 from spdxlims.instrument_importer import importer_is_running
+from spdxlims.instrument_mapping import (
+    apply_value_transform,
+    extract_code_from_test_name,
+    normalize_test_code,
+    observation_raw_code,
+    observation_value,
+    resolve_observation_mapping,
+    resolve_payload,
+)
 from spdxlims.pages.base_page import DataAwarePage
 from spdxlims.pages.instrument_status_panel import InstrumentStatusPanel
 from spdxlims.portal.result_service import PortalResultService
@@ -59,36 +65,6 @@ try:
     from PySide6.QtWebEngineCore import QWebEnginePage
 except ImportError:  # pragma: no cover
     QWebEnginePage = None
-
-_FORMULA_OPS: dict = {
-    _ast.Add: _operator.add,
-    _ast.Sub: _operator.sub,
-    _ast.Mult: _operator.mul,
-    _ast.Div: _operator.truediv,
-    _ast.USub: _operator.neg,
-    _ast.UAdd: _operator.pos,
-}
-
-
-def _safe_eval_formula(formula: str, x: float) -> float:
-    """Evaluate a simple arithmetic formula with variable x.
-    If the formula starts with an operator (e.g. *1000, /10, +5, -2) x is implied."""
-    normalized = formula.strip()
-    if normalized and normalized[0] in ("*", "/", "+", "-") and "x" not in normalized:
-        normalized = "x " + normalized
-    def _eval(node: _ast.AST) -> float:
-        if isinstance(node, _ast.Expression):
-            return _eval(node.body)
-        if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
-            return float(node.value)
-        if isinstance(node, _ast.Name) and node.id == "x":
-            return x
-        if isinstance(node, _ast.BinOp) and type(node.op) in _FORMULA_OPS:
-            return _FORMULA_OPS[type(node.op)](_eval(node.left), _eval(node.right))
-        if isinstance(node, _ast.UnaryOp) and type(node.op) in _FORMULA_OPS:
-            return _FORMULA_OPS[type(node.op)](_eval(node.operand))
-        raise ValueError(f"Unsupported expression: {type(node).__name__}")
-    return _eval(_ast.parse(normalized, mode="eval"))
 
 
 class ReportPreviewDialog(QDialog):
@@ -1405,11 +1381,17 @@ class ResultsPage(DataAwarePage):
 
     def _link_server_instrument_capture(self, capture: dict[str, object], order_id: object) -> None:
         capture_id = str(capture.get("id") or "").strip()
+        payload = resolve_payload(
+            self.database,
+            capture,
+            self.instrument_result or {},
+            self._order_test_entries(order_id),
+        )
         try:
             response = self.deployment_service.request_json(
                 "POST",
                 "/api/results/import-instrument",
-                {"order_id": str(order_id), "result": self.instrument_result or {}},
+                {"order_id": str(order_id), "result": payload},
             )
         except RuntimeError as exc:
             QMessageBox.warning(self, tr("Import Failed"), str(exc))
@@ -1421,7 +1403,11 @@ class ResultsPage(DataAwarePage):
         unmatched_codes = [str(code) for code in response.get("unmatched_codes") or []]
         self._mark_instrument_capture_linked(capture_id, str(order_id))
         self._reload_workflow_orders()
-        self._refresh_table()
+        # The review table only exists on the page that shows it; the
+        # Instrumentos page has no orders_table, and calling this there threw
+        # before the capture list was repainted, so the row stayed "Pending".
+        if self.show_review:
+            self._refresh_table()
         self.refresh_instrument_captures()
         detail = ""
         if unmatched_codes:
@@ -1431,6 +1417,19 @@ class ResultsPage(DataAwarePage):
             tr("Imported"),
             tr("Linked {count} instrument results to the selected order.", count=imported_count) + detail,
         )
+
+    def _order_test_entries(self, order_id: object) -> list[ResultEntryRecord]:
+        """The order's real tests, through the service so it works in both modes.
+
+        The local database cannot be asked directly here: in server mode the
+        order id is a UUID. A failure is not worth blocking an import over -
+        these entries only sharpen the mapping lookup.
+        """
+        try:
+            entries = self.result_service.get_order_entries(order_id)
+        except RuntimeError:
+            return []
+        return [entry for entry in entries if entry.item_type == "test"]
 
     def _apply_capture_to_order(
         self,
@@ -1453,29 +1452,19 @@ class ResultsPage(DataAwarePage):
             code = self._extract_code_from_test_name(entry.test_name)
             if code:
                 entries_by_code[code] = entry
+        profile_mappings = self.database.list_instrument_result_mappings(instrument_profile=profile_id)
         imported_count = 0
         unmatched_codes: list[str] = []
         for obs in observations:
             code = self._observation_raw_code(obs)
-            mapping = self.database.resolve_instrument_result_mapping(
-                instrument_profile=profile_id,
+            mapping = resolve_observation_mapping(
+                self.database,
+                profile_id=profile_id,
                 device_id=device_id,
-                raw_code=code,
-                specimen_type=str(obs.get("specimen_type") or obs.get("sample_type") or ""),
-                panel_hint=str(obs.get("panel_hint") or obs.get("panel") or ""),
+                obs=obs,
+                entries=entries,
+                profile_mappings=profile_mappings,
             )
-            if mapping is None:
-                for candidate_entry in entries:
-                    candidate_mapping = self.database.resolve_instrument_result_mapping(
-                        instrument_profile=profile_id,
-                        device_id=device_id,
-                        raw_code=code,
-                        specimen_type=candidate_entry.specimen_type or "",
-                        panel_hint=candidate_entry.source_label or "",
-                    )
-                    if candidate_mapping is not None and candidate_mapping.test_id == candidate_entry.test_id:
-                        mapping = candidate_mapping
-                        break
             entry = entries_by_test_id.get(mapping.test_id) if mapping is not None else None
             if entry is None:
                 entry = entries_by_code.get(code)
@@ -1492,45 +1481,12 @@ class ResultsPage(DataAwarePage):
                 unmatched_codes.append(code or tr("unknown"))
                 continue
             result_value = self._instrument_observation_value(obs, entry.result_kind)
-            if mapping is not None and result_value:
-                slice_start = mapping.value_slice_start
-                slice_end = mapping.value_slice_end
-                if slice_start is not None or slice_end is not None:
-                    py_start = (slice_start - 1) if slice_start is not None else 0
-                    py_end = slice_end if slice_end is not None else None
-                    result_value = result_value[py_start:py_end].strip()
-            value_formula = mapping.value_formula if mapping is not None else None
-            multiplier = (mapping.value_multiplier if mapping is not None and mapping.value_multiplier else None) or entry.result_multiplier
-            if entry.result_kind == "numeric" and result_value:
-                if value_formula:
-                    try:
-                        raw = float(Decimal(result_value.replace(",", "")))
-                        transformed = Decimal(str(_safe_eval_formula(value_formula, raw)))
-                        formatted = format(transformed, "f")
-                        if "." in formatted:
-                            int_part, dec_part = formatted.split(".", 1)
-                            result_value = formatted if dec_part.rstrip("0") else int_part
-                        else:
-                            result_value = formatted
-                    except (ValueError, TypeError, InvalidOperation, ZeroDivisionError):
-                        pass
-                elif multiplier:
-                    try:
-                        multiplied = Decimal(result_value.replace(",", "")) * Decimal(str(multiplier))
-                        formatted = format(multiplied, "f")
-                        if "." in formatted:
-                            int_part, dec_part = formatted.split(".", 1)
-                            result_value = formatted if dec_part.rstrip("0") else int_part
-                        else:
-                            result_value = formatted
-                    except (ValueError, TypeError, InvalidOperation):
-                        pass
-            decimal_places = mapping.decimal_places if mapping is not None else None
-            if decimal_places is not None and entry.result_kind == "numeric" and result_value:
-                try:
-                    result_value = str(round(Decimal(result_value.replace(",", "")), decimal_places))
-                except (ValueError, TypeError, InvalidOperation):
-                    pass
+            result_value = apply_value_transform(
+                mapping,
+                result_value,
+                numeric=entry.result_kind == "numeric",
+                fallback_multiplier=entry.result_multiplier,
+            )
             unit = str(entry.unit or "").strip()
             reference_text = (
                 mapping.reference_range_override
@@ -1649,7 +1605,10 @@ class ResultsPage(DataAwarePage):
                 response = self.deployment_service.request_json(
                     "POST",
                     "/api/results/import-instrument",
-                    {"result": result, "allow_patient_fallback": False},
+                    {
+                        "result": resolve_payload(self.database, capture, result),
+                        "allow_patient_fallback": False,
+                    },
                 )
             except RuntimeError:
                 # 400 = matched no order, 409 = matched an order but no test
@@ -1766,15 +1725,22 @@ class ResultsPage(DataAwarePage):
         if order_id is None:
             self.instrument_target_test_combo.addItem(tr("Select order first"), None)
             return
-        self.instrument_order_entries = [
-            entry
-            for entry in self.database.get_order_result_entries(int(order_id))
-            if entry.item_type == "test"
-        ]
-        order_test_codes = self.database.list_order_test_codes(int(order_id))
+        # Through the service, not the local database: in server mode the order
+        # id is a UUID, and int() on it threw inside this slot, leaving the
+        # target-test list empty and no mapping saveable from a workstation.
+        self.instrument_order_entries = self._order_test_entries(order_id)
+        order_test_codes = (
+            {}
+            if self.result_service.uses_server_backend()
+            else self.database.list_order_test_codes(int(order_id))
+        )
         self.instrument_target_test_combo.addItem(tr("Select target test"), None)
         for entry in self.instrument_order_entries:
-            test_code = str(order_test_codes.get(int(entry.order_test_id), "") or "").strip()
+            test_code = str(order_test_codes.get(int(entry.order_test_id), "") or "").strip() if order_test_codes else ""
+            if not test_code:
+                # Server mode has no local code table; the backend appends the
+                # code to the test name ("Leucocitos (WBC)").
+                test_code = self._extract_code_from_test_name(entry.test_name)
             test_label = f"{test_code} - {entry.test_name}" if test_code else entry.test_name
             label = f"{test_label} ({entry.specimen_type or entry.source_label or entry.order_number})"
             self.instrument_target_test_combo.addItem(label, entry.order_test_id)
@@ -2108,43 +2074,20 @@ class ResultsPage(DataAwarePage):
         except ValueError:
             return value.replace("T", " ").replace("Z", "")[:16]
 
+    # These live in spdxlims.instrument_mapping so the headless importer can
+    # resolve captures the same way this page does, without importing Qt.
+
     @staticmethod
     def _normalize_test_code(value: str) -> str:
-        return "".join(character for character in value.upper().strip() if character.isalnum() or character in {"-", "_"})
+        return normalize_test_code(value)
 
     @classmethod
     def _extract_code_from_test_name(cls, test_name: str) -> str:
-        text = str(test_name or "")
-        if "(" in text and ")" in text:
-            candidate = text.rsplit("(", 1)[-1].split(")", 1)[0]
-            return cls._normalize_test_code(candidate)
-        return ""
+        return extract_code_from_test_name(test_name)
 
     @staticmethod
     def _instrument_observation_value(obs: dict[str, object], result_kind: str) -> str:
-        if result_kind == "numeric":
-            # Prefer the raw string from the instrument so trailing zeros are preserved
-            # (e.g. "1.020" must not become "1.02" via float conversion)
-            for key in ("value_raw", "value_text"):
-                raw = obs.get(key)
-                if raw is not None:
-                    s = str(raw).strip().replace(",", "")
-                    if s:
-                        try:
-                            float(s)
-                            return s
-                        except ValueError:
-                            pass
-            if obs.get("value_numeric") is not None:
-                val = float(obs["value_numeric"])
-                return str(int(val)) if val == int(val) else str(val)
-            return ""
-        for key in ("value_text", "value_raw", "value_numeric"):
-            value = obs.get(key)
-            if value is not None and str(value).strip():
-                s = str(value).strip()
-                return s.split("^")[0].strip() if "^" in s else s
-        return ""
+        return observation_value(obs, result_kind)
 
     def _fetch_profile_semiquant_maps(self) -> None:
         try:
@@ -2205,7 +2148,7 @@ class ResultsPage(DataAwarePage):
 
     @classmethod
     def _observation_raw_code(cls, obs: dict[str, object]) -> str:
-        return cls._normalize_test_code(str(obs.get("instrument_test_code") or obs.get("mapped_lis_test_id") or ""))
+        return observation_raw_code(obs)
 
     def _refresh_table(self) -> None:
         query = self.review_search.text().strip().casefold() if hasattr(self, "review_search") else ""
