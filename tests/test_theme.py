@@ -128,3 +128,48 @@ def test_turn_icon_turns_the_colour_and_keeps_every_size(accent):
     biggest = source.availableSizes()[-1]
     assert 235 <= dominant_hue(source.pixmap(biggest)) <= 310   # purple before
     assert 190 <= dominant_hue(turned.pixmap(biggest)) < 235    # blue after
+
+
+def test_write_accent_icon_does_nothing_on_a_purple_install(accent, tmp_path):
+    """The shipped asset is already right, so the shortcut should use it."""
+    accent("purple")
+    target = tmp_path / "app-icon.ico"
+    assert theme.write_accent_icon(object(), target) is False
+    assert not target.exists()
+
+
+def test_write_accent_icon_writes_an_icon_windows_can_read(accent, tmp_path):
+    """A shortcut stores a path, so a blue install needs a turned file on disk."""
+    import struct
+
+    QtGui = pytest.importorskip("PySide6.QtGui")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if QtWidgets.QApplication.instance() is None:
+        try:
+            QtWidgets.QApplication([])
+        except Exception:
+            pytest.skip("Qt could not start")
+
+    source = QtGui.QIcon(str(_ASSETS / "SDX.ico"))
+    if not source.availableSizes():
+        pytest.skip("icon asset unavailable")
+
+    accent("blue")
+    target = tmp_path / "app-icon.ico"
+    assert theme.write_accent_icon(theme.turn_icon(source), target) is True
+
+    raw = target.read_bytes()
+    reserved, kind, count = struct.unpack("<HHH", raw[:6])
+    assert (reserved, kind) == (0, 1)          # a real ICONDIR
+    assert count == len(source.availableSizes())
+
+    for index in range(count):
+        offset = 6 + index * 16
+        *_, nbytes, data_offset = struct.unpack("<BBBBHHII", raw[offset:offset + 16])
+        assert data_offset + nbytes <= len(raw)                     # no entry past the end
+        assert raw[data_offset:data_offset + 8] == b"\x89PNG\r\n\x1a\n"   # PNG payload
+
+    # Qt must be able to read back every size we claimed to write.
+    assert len(QtGui.QIcon(str(target)).availableSizes()) == count

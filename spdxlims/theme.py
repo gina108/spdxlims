@@ -128,6 +128,57 @@ def turn_icon(icon):
     return turned
 
 
+def write_accent_icon(icon, path) -> bool:
+    """Save this install's turned icon, for things that need a file on disk.
+
+    A desktop shortcut stores a *path* to an icon, so it cannot follow the
+    accent the way the running window does - it keeps showing whatever the
+    shipped asset looks like. That left a blue install with a blue icon in the
+    taskbar and a purple one on the desktop.
+
+    Returns False when there is nothing to do, which includes a purple install:
+    the shipped asset is already correct there, so the shortcut should point
+    straight at it.
+    """
+    if _hue_shift() == 0:
+        return False
+    import struct
+
+    from PySide6.QtCore import QBuffer
+
+    # Every size the source carries, so Windows still has a crisp one for the
+    # desktop, the taskbar and the small list views instead of scaling 256 down.
+    images = []
+    for size in sorted(icon.availableSizes(), key=lambda s: s.width()):
+        if size.width() > 256 or size.height() > 256:
+            continue
+        pixmap = icon.pixmap(size)
+        buffer = QBuffer()
+        buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+        if pixmap.save(buffer, "PNG"):
+            images.append((pixmap.width(), pixmap.height(), bytes(buffer.data())))
+    if not images:
+        return False
+
+    # ICONDIR, then one ICONDIRENTRY each, then the PNG payloads. A 256px side
+    # is written as 0 - the field is one byte and 256 does not fit.
+    header = struct.pack("<HHH", 0, 1, len(images))
+    offset = len(header) + 16 * len(images)
+    entries = b""
+    blobs = b""
+    for width, height, blob in images:
+        entries += struct.pack(
+            "<BBBBHHII", width % 256, height % 256, 0, 0, 1, 32, len(blob), offset
+        )
+        offset += len(blob)
+        blobs += blob
+    try:
+        path.write_bytes(header + entries + blobs)
+    except OSError:
+        return False
+    return True
+
+
 def _turn(value: str, shift: float) -> str:
     text = value.lstrip("#")
     if len(text) != 6:

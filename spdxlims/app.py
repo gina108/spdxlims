@@ -31,7 +31,7 @@ from spdxlims.i18n import set_language, tr
 from spdxlims.instance import app_instance, apply_windows_identity, icon_path as instance_icon_path
 from spdxlims.log import get_logger, setup_logging
 from spdxlims.main_window import MainWindow
-from spdxlims.theme import recolor, rgb as accent_rgb, turn_icon
+from spdxlims.theme import recolor, rgb as accent_rgb, turn_icon, write_accent_icon
 
 
 class _App(QApplication):
@@ -353,6 +353,11 @@ def main() -> int:
 
     data_dir = Path.cwd() / "data"
     data_dir.mkdir(exist_ok=True)
+    if icon_path.exists():
+        # The desktop shortcut points at a file and cannot follow the accent,
+        # so leave a turned copy for create-shortcut.ps1 to use. Writes nothing
+        # on a purple install: the shipped asset is already right there.
+        write_accent_icon(icon, data_dir / "app-icon.ico")
     setup_logging(data_dir, debug="--debug" in sys.argv)
     _log = get_logger(__name__)
 

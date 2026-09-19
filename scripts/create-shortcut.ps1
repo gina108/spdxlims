@@ -35,6 +35,16 @@ if (Test-Path $Marker) {
 $Link = Join-Path $Desktop "$LinkName.lnk"
 $Icon = Join-Path $AppDir "assets\$IconName"
 
+# A shortcut stores a path to an icon, so it cannot follow this install's accent
+# the way the running window does. The app leaves a turned copy here on a
+# non-default accent; without it a blue install had a blue taskbar icon and a
+# purple one on the desktop. Absent is normal on a purple install - the shipped
+# asset is already right - and the app must have been started once to write it.
+$AccentIcon = Join-Path $AppDir "data\app-icon.ico"
+if (Test-Path $AccentIcon) {
+    $Icon = $AccentIcon
+}
+
 $shell    = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($Link)
 $shortcut.TargetPath       = $Python
