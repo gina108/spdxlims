@@ -1,6 +1,6 @@
 {
-  "_comment": "Copy to app_instance.json ONLY on a machine that runs two installs side by side. The key gives this install its own single-instance mutex, taskbar identity and icon, so the two apps do not collide. A machine running one install needs no marker: absent means the default identity, named SPDXLIMS.",
-  "key": "server",
-  "display_name": "SPDXLIMS Server",
-  "icon": "SDXserver.ico"
+  "_comment": "Copy to app_instance.json to give THIS machine its own identity. The file is per-machine and deliberately untracked, so each install needs its own - a fresh clone has none. Absent means every default: the name SPDXLIMS, the legacy single-instance mutex, the default icon, and the purple accent. Set 'key' on any machine running two installs side by side, or they share one mutex and only one will start. 'accent' is purple or blue (see spdxlims/theme.py ACCENT_HUES); 'icon' is a filename under assets/ and may be omitted. Restart the app after changing this.",
+  "key": "lab2",
+  "display_name": "SPDXLIMS LAB2",
+  "accent": "blue"
 }
