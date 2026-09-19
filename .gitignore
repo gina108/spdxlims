@@ -104,3 +104,6 @@ sh -T git@github.com
 Thumbs.db
 .idea/
 .vscode/
+
+# Backend error log - per-machine runtime state
+backend/logs/
