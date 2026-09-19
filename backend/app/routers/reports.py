@@ -34,6 +34,7 @@ from app.routers.common import (
     age_to_days,
     inject_panel_title_rows,
     panel_catalog_structures,
+    panel_report_metadata,
     resolve_reference_range,
     restore_panel_catalog_structure,
 )
@@ -553,7 +554,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
 
     structures = panel_catalog_structures(db)
     restored = restore_panel_catalog_structure(raw_items, structures)
-    final_items = inject_panel_title_rows(restored)
+    final_items = inject_panel_title_rows(restored, panel_report_metadata(db))
 
     items: list[ReportPreviewItemOut] = []
     for entry in final_items:
@@ -597,7 +598,11 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
             ReportPreviewItemOut(
                 order_test_id=str(order_item_id) if order_item_id else None,
                 item_type='test',
-                test_name=f"{entry.get('test_name')} ({entry.get('test_code')})",
+                # The printed report shows the analyte's name alone. Local mode
+                # uses COALESCE(display_name, name) and never appended the code;
+                # doing it here put "Glucosa serica (GLU)" on server-rendered
+                # reports only.
+                test_name=str(entry.get('test_name') or ''),
                 result_value=entry.get('value_text'),
                 unit=unit,
                 reference_text=reference_text,

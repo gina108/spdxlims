@@ -223,6 +223,8 @@ def get_order_entries(order_id: str, db: Session = Depends(get_db), _actor: UUID
 
     structures = panel_catalog_structures(db)
     restored = restore_panel_catalog_structure(raw_items, structures)
+    # No panel metadata here on purpose: local mode injects the methodology line
+    # only into the report preview, not the result-entry list.
     final_items = inject_panel_title_rows(restored)
 
     entries: list[ResultEntryOut] = []

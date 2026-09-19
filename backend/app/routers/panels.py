@@ -35,6 +35,11 @@ class PanelIn(BaseModel):
     code: str
     name: str
     items: list[PanelItemIn]
+    # The desktop has always sent these; until panel_catalog had the columns
+    # they were accepted and silently dropped, so a report rendered in server
+    # mode lost its "Metodologia ... | Tipo de Muestra ..." line.
+    specimen_type: str | None = None
+    method: str | None = None
 
 
 class PanelDetailOut(BaseModel):
@@ -43,6 +48,8 @@ class PanelDetailOut(BaseModel):
     name: str
     is_active: bool
     items: list[dict]
+    specimen_type: str | None = None
+    method: str | None = None
 
 
 @router.get('', response_model=list[PanelSummaryOut])
@@ -94,12 +101,25 @@ def get_panel(panel_id: str, include_inactive: bool = Query(False), db: Session 
         name=panel.name,
         is_active=bool(panel.active),
         items=items,
+        specimen_type=panel.specimen_type,
+        method=panel.method,
     )
+
+
+def _clean(value: str | None) -> str | None:
+    text = (value or "").strip()
+    return text or None
 
 
 @router.post('')
 def create_panel(payload: PanelIn, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
-    panel = PanelCatalog(code=payload.code.strip(), name=payload.name.strip(), active=True)
+    panel = PanelCatalog(
+        code=payload.code.strip(),
+        name=payload.name.strip(),
+        active=True,
+        specimen_type=_clean(payload.specimen_type),
+        method=_clean(payload.method),
+    )
     db.add(panel)
     db.flush()
     _replace_panel_items(panel.id, payload.items, db)
@@ -118,6 +138,8 @@ def update_panel(panel_id: str, payload: PanelIn, db: Session = Depends(get_db),
     before = _panel_audit_payload(panel, db)
     panel.code = payload.code.strip()
     panel.name = payload.name.strip()
+    panel.specimen_type = _clean(payload.specimen_type)
+    panel.method = _clean(payload.method)
     db.query(PanelCatalogItem).filter(PanelCatalogItem.panel_id == parsed_panel_id).delete()
     db.flush()
     _replace_panel_items(parsed_panel_id, payload.items, db)

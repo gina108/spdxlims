@@ -81,6 +81,10 @@ class PanelCatalog(Base):
     code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Printed under the study on a report, as
+    # "Metodologia: <method> | Tipo de Muestra: <specimen_type>".
+    specimen_type: Mapped[str | None] = mapped_column(String(255))
+    method: Mapped[str | None] = mapped_column(String(255))
 
 
 class PanelCatalogItem(Base):

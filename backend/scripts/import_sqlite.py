@@ -439,7 +439,7 @@ def import_tests(sqlite_db: sqlite3.Connection, db: Session, context: ImportCont
 def import_panels(sqlite_db: sqlite3.Connection, db: Session, context: ImportContext) -> int:
     rows = sqlite_db.execute(
         """
-        SELECT id, code, name, is_active
+        SELECT id, code, name, is_active, specimen_type, method
         FROM test_panels
         ORDER BY id ASC
         """
@@ -460,18 +460,26 @@ def import_panels(sqlite_db: sqlite3.Connection, db: Session, context: ImportCon
         code = _clean_text(row["code"], fallback="")
         if not code:
             continue
+        # Carried so a server-rendered report can print the methodology line
+        # under the study, the way local mode always has.
+        specimen_type = _clean_text(row["specimen_type"], fallback="") or None
+        method = _clean_text(row["method"], fallback="") or None
         panel = db.scalars(select(PanelCatalog).where(PanelCatalog.code == code)).first()
         if panel is None:
             panel = PanelCatalog(
                 code=code,
                 name=_clean_text(row["name"], fallback=code),
                 active=_parse_bool(row["is_active"], default=True),
+                specimen_type=specimen_type,
+                method=method,
             )
             db.add(panel)
             db.flush()
         else:
             panel.name = _clean_text(row["name"], fallback=panel.name)
             panel.active = _parse_bool(row["is_active"], default=True)
+            panel.specimen_type = specimen_type
+            panel.method = method
             db.flush()
 
         db.execute(delete(PanelCatalogItem).where(PanelCatalogItem.panel_id == panel.id))

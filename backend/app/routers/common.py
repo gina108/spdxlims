@@ -168,10 +168,78 @@ def restore_panel_catalog_structure(items: list[dict[str, Any]], structures: dic
     return restored
 
 
-def inject_panel_title_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def panel_report_metadata(db: Session) -> dict[str, dict[str, str]]:
+    """Specimen type and method per panel, keyed by every label a row might use.
+
+    Same aliasing as panel_catalog_structures, because a stored source_label may
+    be the panel's name, its code, or an old combo-box label.
+    """
+    metadata: dict[str, dict[str, str]] = {}
+    for panel in db.scalars(select(PanelCatalog)).all():
+        specimen_type = (panel.specimen_type or '').strip()
+        method = (panel.method or '').strip()
+        if not specimen_type and not method:
+            continue
+        values = {'specimen_type': specimen_type, 'method': method}
+        name = (panel.name or '').strip()
+        code = (panel.code or '').strip()
+        aliases = {
+            name,
+            code,
+            normalize_report_panel_label(f'{name} ({code})'),
+            normalize_report_panel_label(f'{name} ({code}) - 1 tests'),
+        }
+        for alias in aliases:
+            normalized = (alias or '').strip()
+            if normalized:
+                metadata[normalized.casefold()] = values
+    return metadata
+
+
+# Mirrors spdxlims/i18n.py ("Methodology" / "Specimen Type"). The backend has no
+# translation layer, and this string is composed here so the report reads the
+# same whether it was rendered locally or through the server.
+_METHODOLOGY_LABEL = 'Metodología'
+_SPECIMEN_LABEL = 'Tipo de Muestra'
+
+
+def _panel_meta_row(label: str, metadata: dict[str, dict[str, str]]) -> dict[str, Any] | None:
+    values = metadata.get(label.casefold()) or {}
+    specimen_type = str(values.get('specimen_type') or '').strip()
+    method = str(values.get('method') or '').strip()
+    if not specimen_type and not method:
+        return None
+    return {
+        'order_item_id': None,
+        'test_id': None,
+        'item_type': 'panel_meta',
+        'display_name': None,
+        'test_name': None,
+        'test_code': None,
+        'result_kind': None,
+        'value_text': None,
+        'unit': None,
+        'reference_text': None,
+        'lower_value_text': None,
+        'upper_value_text': None,
+        'flag': None,
+        'comments': f'{_METHODOLOGY_LABEL}: {method} | {_SPECIMEN_LABEL}: {specimen_type}',
+        'source_label': label,
+    }
+
+
+def inject_panel_title_rows(
+    items: list[dict[str, Any]],
+    panel_metadata: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     """Mirrors the desktop's local-mode equivalent: inserts one top-level heading
     row whenever the (already-resolved) panel label changes, so e.g. "BIOMETRIA
-    HEMATICA" shows as a bold banner above its sub-headings/tests."""
+    HEMATICA" shows as a bold banner above its sub-headings/tests.
+
+    With panel_metadata it also closes each panel with the methodology line the
+    desktop prints. It goes *after* the panel's rows, matching local mode.
+    """
+    metadata = panel_metadata or {}
     rendered: list[dict[str, Any]] = []
     active_panel = ''
     for item in items:
@@ -180,6 +248,10 @@ def inject_panel_title_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]
         label = normalize_report_panel_label(str(normalized.get('source_label') or ''))
         normalized['source_label'] = label
         if item_type in ('test', 'heading', 'comment') and label and label != active_panel:
+            if active_panel:
+                closing = _panel_meta_row(active_panel, metadata)
+                if closing is not None:
+                    rendered.append(closing)
             rendered.append(
                 {
                     'order_item_id': None,
@@ -203,4 +275,8 @@ def inject_panel_title_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]
         rendered.append(normalized)
         if item_type == 'heading' and not label:
             active_panel = ''
+    if active_panel:
+        closing = _panel_meta_row(active_panel, metadata)
+        if closing is not None:
+            rendered.append(closing)
     return rendered
