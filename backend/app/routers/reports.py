@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import and_, case, delete, exists, func, select
+from sqlalchemy import and_, case, delete, exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
@@ -60,6 +60,7 @@ class ResultsWorkflowOrderOut(BaseModel):
     result_count: int = 0
     completed_result_count: int = 0
     report_outdated: int = 0
+    typed_result_count: int = 0
 
 
 class ReportPreviewItemOut(BaseModel):
@@ -198,13 +199,22 @@ def list_results_workflow_orders(
         TestCatalog.code.notin_(_PANEL_META_CODES),
         OrderItem.is_outsourced.is_(False),
     )
+    # An observation is a free-text note that is left off the report when it is
+    # empty, so it is never what is missing: it counts as done and does not hold
+    # the order back.
     completed = and_(
         countable,
-        func.coalesce(
-            func.nullif(func.trim(Result.value_text), ''),
-            func.nullif(func.trim(TestCatalog.default_result_value), ''),
-        ).isnot(None),
+        or_(
+            TestCatalog.result_kind == 'observation',
+            func.coalesce(
+                func.nullif(func.trim(Result.value_text), ''),
+                func.nullif(func.trim(TestCatalog.default_result_value), ''),
+            ).isnot(None),
+        ),
     )
+    # The yellow "in progress" dot: results someone typed, catalog defaults not
+    # counted, so a new order does not look like it has been started.
+    typed = and_(countable, func.nullif(func.trim(Result.value_text), '').isnot(None))
     stmt = (
         select(
             LabOrder.id,
@@ -221,6 +231,7 @@ def list_results_workflow_orders(
             ReportSnapshot.finalized_at,
             func.count(case((countable, 1))).label('result_count'),
             func.count(case((completed, 1))).label('completed_result_count'),
+            func.count(case((typed, 1))).label('typed_result_count'),
         )
         .join(Patient, Patient.id == LabOrder.patient_id)
         .outerjoin(doctor, doctor.id == LabOrder.doctor_id)
@@ -264,6 +275,7 @@ def list_results_workflow_orders(
                 report_finalized_at=_iso_or_none(row.finalized_at),
                 result_count=int(row.result_count or 0),
                 completed_result_count=int(row.completed_result_count or 0),
+                typed_result_count=int(row.typed_result_count or 0),
                 report_outdated=0,
             )
         )

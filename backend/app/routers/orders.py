@@ -5,14 +5,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import Integer, delete, func, or_, select
+from sqlalchemy import Integer, and_, case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
 from app.core.config import settings
 from app.db.session import get_db
-from app.models.models import LabOrder, OrderItem, PanelCatalog, PanelCatalogItem, Patient, Provider, TestCatalog
+from app.models.models import LabOrder, OrderItem, PanelCatalog, PanelCatalogItem, Patient, Provider, Result, TestCatalog
 from app.routers.common import actor_from_header
 
 router = APIRouter()
@@ -27,6 +27,8 @@ class RecentOrderOut(BaseModel):
     status: str
     created_at: str
     item_count: int
+    all_results_entered: bool = False
+    any_results_entered: bool = False
 
 
 class OrderBrowserOut(BaseModel):
@@ -39,6 +41,43 @@ class OrderBrowserOut(BaseModel):
     status: str
     item_count: int
     is_archived: int = 0
+    all_results_entered: bool = False
+    any_results_entered: bool = False
+
+
+_PANEL_META_CODES = ('__PANEL_HEADING__', '__PANEL_COMMENT__')
+
+# Progress behind the order status dot, matching the desktop's SQL in
+# spdxlims/db/orders.py. A real result is a test row that is neither a panel
+# heading/comment nor outsourced. It counts as entered when it has a value or
+# the catalog gives it a default, and an observation is a free note that is
+# never required. The "typed" count ignores catalog defaults on purpose, so a
+# brand-new order does not look like someone has started working on it.
+_REAL_RESULT = and_(TestCatalog.code.notin_(_PANEL_META_CODES), OrderItem.is_outsourced.is_(False))
+_VALUE_OR_DEFAULT = func.coalesce(
+    func.nullif(func.trim(Result.value_text), ''),
+    func.nullif(func.trim(TestCatalog.default_result_value), ''),
+)
+_REAL_RESULT_COUNT = func.count(case((_REAL_RESULT, 1)))
+_ENTERED_COUNT = func.count(
+    case((and_(_REAL_RESULT, or_(TestCatalog.result_kind == 'observation', _VALUE_OR_DEFAULT.isnot(None))), 1))
+)
+_TYPED_COUNT = func.count(
+    case((and_(_REAL_RESULT, func.nullif(func.trim(Result.value_text), '').isnot(None)), 1))
+)
+
+
+def _progress_columns() -> list:
+    return [
+        _REAL_RESULT_COUNT.label('real_result_count'),
+        _ENTERED_COUNT.label('entered_count'),
+        _TYPED_COUNT.label('typed_count'),
+    ]
+
+
+def _progress_flags(row) -> tuple[bool, bool]:
+    total = int(row.real_result_count or 0)
+    return (total > 0 and int(row.entered_count or 0) >= total, int(row.typed_count or 0) > 0)
 
 
 class TestChoiceOut(BaseModel):
@@ -121,11 +160,14 @@ def recent_orders(db: Session = Depends(get_db)):
             LabOrder.status,
             LabOrder.ordered_at,
             func.count(OrderItem.id).label("item_count"),
+            *_progress_columns(),
         )
         .join(Patient, Patient.id == LabOrder.patient_id)
         .outerjoin(doctor_provider, doctor_provider.id == LabOrder.doctor_id)
         .outerjoin(client_provider, client_provider.id == LabOrder.client_id)
         .outerjoin(OrderItem, OrderItem.order_id == LabOrder.id)
+        .outerjoin(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .outerjoin(Result, Result.order_item_id == OrderItem.id)
         .group_by(
             LabOrder.id,
             LabOrder.order_number,
@@ -145,6 +187,7 @@ def recent_orders(db: Session = Depends(get_db)):
     for row in rows:
         parts = [row.first_name or "", row.last_name or "", row.middle_name or ""]
         patient_name = " ".join(part for part in parts if part).strip()
+        all_entered, any_entered = _progress_flags(row)
         result.append(
             RecentOrderOut(
                 id=str(row.id),
@@ -155,6 +198,8 @@ def recent_orders(db: Session = Depends(get_db)):
                 status=row.status,
                 created_at=row.ordered_at.isoformat() if row.ordered_at else "",
                 item_count=int(row.item_count or 0),
+                all_results_entered=all_entered,
+                any_results_entered=any_entered,
             )
         )
     return result
@@ -177,11 +222,14 @@ def search_orders(search: str = "", include_archived: bool = Query(False), db: S
             LabOrder.ordered_at,
             LabOrder.is_archived,
             func.count(OrderItem.id).label("item_count"),
+            *_progress_columns(),
         )
         .join(Patient, Patient.id == LabOrder.patient_id)
         .outerjoin(doctor_provider, doctor_provider.id == LabOrder.doctor_id)
         .outerjoin(client_provider, client_provider.id == LabOrder.client_id)
         .outerjoin(OrderItem, OrderItem.order_id == LabOrder.id)
+        .outerjoin(TestCatalog, TestCatalog.id == OrderItem.test_id)
+        .outerjoin(Result, Result.order_item_id == OrderItem.id)
         .group_by(
             LabOrder.id,
             LabOrder.order_number,
@@ -214,6 +262,7 @@ def search_orders(search: str = "", include_archived: bool = Query(False), db: S
     result: list[OrderBrowserOut] = []
     for row in rows:
         patient_name = " ".join(part for part in [row.first_name or "", row.last_name or "", row.middle_name or ""] if part).strip()
+        all_entered, any_entered = _progress_flags(row)
         result.append(
             OrderBrowserOut(
                 id=str(row.id),
@@ -225,6 +274,8 @@ def search_orders(search: str = "", include_archived: bool = Query(False), db: S
                 status=row.status,
                 item_count=int(row.item_count or 0),
                 is_archived=1 if row.is_archived else 0,
+                all_results_entered=all_entered,
+                any_results_entered=any_entered,
             )
         )
     return result

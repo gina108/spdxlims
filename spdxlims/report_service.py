@@ -100,6 +100,7 @@ class ReportService(ServiceBase):
                     report_finalized_at=item.get('report_finalized_at'),
                     result_count=int(item.get('result_count') or 0),
                     completed_result_count=int(item.get('completed_result_count') or 0),
+                    typed_result_count=int(item.get('typed_result_count') or 0),
                     report_outdated=int(item.get('report_outdated') or 0),
                 )
             )

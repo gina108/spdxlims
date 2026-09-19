@@ -258,7 +258,11 @@ class OrdersBrowserPage(DataAwarePage):
             self.table.setCellWidget(
                 row_index,
                 4,
-                self.build_order_status_indicator(record.status, all_results_entered=record.all_results_entered),
+                self.build_order_status_indicator(
+                    record.status,
+                    all_results_entered=record.all_results_entered,
+                    any_results_entered=record.any_results_entered,
+                ),
             )
             self._rows_with_widgets.add(row_index)
 

@@ -2230,13 +2230,14 @@ class ResultsPage(DataAwarePage):
             and not int(order.report_outdated or 0)
         )
         ready = int(order.result_count or 0) > 0 and int(order.completed_result_count or 0) >= int(order.result_count or 0)
+        in_progress = int(order.typed_result_count or 0) > 0
 
         preview_button = QPushButton(tr("Preview Report"))
         preview_button.setStyleSheet(self._results_action_button_style())
         preview_button.clicked.connect(lambda _checked=False, order_id=order.id: self.preview_report(order_id))
         self.orders_table.setCellWidget(row_index, 4, self._build_centered_cell_widget(preview_button))
 
-        self.orders_table.setCellWidget(row_index, 5, self._build_status_indicator(approved, order.id in self.previewed_orders, ready))
+        self.orders_table.setCellWidget(row_index, 5, self._build_status_indicator(approved, ready, in_progress))
 
         send_patient_button = QPushButton(tr("Send Patient"))
         send_patient_button.setEnabled(approved and bool((order.patient_phone or "").strip()))
@@ -2264,7 +2265,14 @@ class ResultsPage(DataAwarePage):
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self.orders_table.setItem(row, column, item)
 
-    def _build_status_indicator(self, approved: bool, previewed: bool, ready: bool = False) -> QWidget:
+    def _build_status_indicator(self, approved: bool, ready: bool = False, in_progress: bool = False) -> QWidget:
+        """The same four colours as the order pages (BasePage.build_order_status_indicator).
+
+        The dot used to turn yellow for "you opened the preview", which was only
+        remembered until the app closed and never showed on an order that was
+        already complete. Yellow now means the same thing here as everywhere
+        else: some results are in, some are still missing.
+        """
         container = QWidget()
         container.setAttribute(Qt.WA_TranslucentBackground, True)
         container.setStyleSheet("background-color: transparent; border: none;")
@@ -2280,9 +2288,9 @@ class ResultsPage(DataAwarePage):
         elif ready:
             color = "#4db8ff"
             tooltip = tr("Ready to approve")
-        elif previewed:
+        elif in_progress:
             color = "#f5c451"
-            tooltip = tr("Previewed")
+            tooltip = tr("Results in progress")
         else:
             color = "#7f8a98"
             tooltip = tr("Pending")

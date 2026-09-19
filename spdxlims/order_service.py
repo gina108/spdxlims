@@ -67,6 +67,8 @@ class OrderService(ServiceBase):
                 status=str(item.get("status") or ""),
                 created_at=str(item.get("created_at") or ""),
                 item_count=int(item.get("item_count") or 0),
+                all_results_entered=bool(item.get("all_results_entered")),
+                any_results_entered=bool(item.get("any_results_entered")),
             )
             for item in payload if isinstance(item, dict)
         ]
@@ -107,6 +109,8 @@ class OrderService(ServiceBase):
                 status=str(item.get("status") or ""),
                 item_count=int(item.get("item_count") or 0),
                 is_archived=int(bool(item.get("is_archived", False))),
+                all_results_entered=bool(item.get("all_results_entered")),
+                any_results_entered=bool(item.get("any_results_entered")),
             )
             for item in payload if isinstance(item, dict)
         ]

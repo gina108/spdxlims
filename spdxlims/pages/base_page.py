@@ -27,7 +27,12 @@ class DataAwarePage(QWidget):
         table.setUpdatesEnabled(True)
 
     @staticmethod
-    def build_order_status_indicator(status: str | None, *, all_results_entered: bool = False) -> QWidget:
+    def build_order_status_indicator(
+        status: str | None,
+        *,
+        all_results_entered: bool = False,
+        any_results_entered: bool = False,
+    ) -> QWidget:
         _STATUS_MAP: dict[str, tuple[str, str]] = {
             "draft":       ("#7f8a98", "Borrador"),
             "registered":  ("#7f8a98", "Registrada"),
@@ -40,10 +45,19 @@ class DataAwarePage(QWidget):
             "amended":     ("#f5a742", "Corregida"),
             "cancelled":   ("#e06c75", "Cancelada"),
         }
+        # How far the results have got beats the order's coarse status, which
+        # only says the sample reached the lab: "in_lab" turned the dot blue
+        # while half the results were still empty. Blue now means every result
+        # has a value, yellow means some of them do. A finished or cancelled
+        # order keeps its own colour - there is nothing left to be in progress.
+        _FINAL = {"reported", "finalized", "amended", "cancelled"}
         normalized = str(status or "").strip()
         color, tooltip = _STATUS_MAP.get(normalized, ("#7f8a98", normalized or ""))
-        if all_results_entered and color not in ("#3ddc84", "#4db8ff"):
-            color = "#4db8ff"
+        if normalized not in _FINAL:
+            if all_results_entered:
+                color, tooltip = "#4db8ff", "Resultados completos"
+            elif any_results_entered:
+                color, tooltip = "#f5c451", "Resultados en progreso"
         container = QWidget()
         container.setAttribute(Qt.WA_TranslucentBackground, True)
         container.setStyleSheet("background-color: transparent; border: none;")

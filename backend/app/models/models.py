@@ -529,7 +529,7 @@ class AuditEvent(Base):
 # Basic data integrity constraints
 AppUser.__table__.append_constraint(CheckConstraint("role in ('admin','tech','reviewer','lab_manager')", name="ck_app_user_role"))
 Patient.__table__.append_constraint(CheckConstraint("sex in ('M','F','O','X') or sex is null", name="ck_patient_sex"))
-TestCatalog.__table__.append_constraint(CheckConstraint("result_kind in ('numeric','text','select','image')", name="ck_test_catalog_result_kind"))
+TestCatalog.__table__.append_constraint(CheckConstraint("result_kind in ('numeric','text','select','image','observation')", name="ck_test_catalog_result_kind"))
 TestReferenceRange.__table__.append_constraint(CheckConstraint("sex in ('M','F','O','X') or sex is null", name="ck_test_reference_range_sex"))
 Patient.__table__.append_constraint(CheckConstraint("age_unit in ('days','months','years') or age_unit is null", name="ck_patient_age_unit"))
 Provider.__table__.append_constraint(CheckConstraint("provider_type in ('doctor','clinic')", name="ck_provider_type"))

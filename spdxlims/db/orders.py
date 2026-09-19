@@ -13,6 +13,38 @@ from spdxlims.db.records import (
     ResultEntryRecord,
 )
 
+# Progress flags behind the order status dot. A real result is a test row that
+# is neither a panel heading/comment nor outsourced. It counts as entered when
+# it has a value or the catalog gives it a default, and an observation is a free
+# note that is never required, so it never holds an order back. "any" ignores
+# catalog defaults on purpose: a brand-new order must not look like someone has
+# already started working on it.
+_REAL_RESULT = "t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0"
+REAL_RESULT_COUNT_SQL = f"COUNT(CASE WHEN {_REAL_RESULT} THEN 1 END)"
+
+
+def entered_count_sql(results: str = "r") -> str:
+    return (
+        f"COUNT(CASE WHEN {_REAL_RESULT} AND (t.result_kind = 'observation'"
+        f" OR COALESCE(NULLIF(TRIM({results}.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL)"
+        " THEN 1 END)"
+    )
+
+
+def typed_count_sql(results: str = "r") -> str:
+    return f"COUNT(CASE WHEN {_REAL_RESULT} AND NULLIF(TRIM({results}.result_value), '') IS NOT NULL THEN 1 END)"
+
+
+def all_results_entered_sql(results: str = "r") -> str:
+    return (
+        f"CASE WHEN {REAL_RESULT_COUNT_SQL} > 0 AND {REAL_RESULT_COUNT_SQL} = {entered_count_sql(results)}"
+        " THEN 1 ELSE 0 END"
+    )
+
+
+def any_results_entered_sql(results: str = "r") -> str:
+    return f"CASE WHEN {typed_count_sql(results)} > 0 THEN 1 ELSE 0 END"
+
 
 class OrdersMixin:
     def next_order_number(self) -> str:
@@ -318,13 +350,36 @@ class OrdersMixin:
     def set_order_archived(self, order_id: int, archived: bool) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE orders SET is_archived = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE orders SET is_archived = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (1 if archived else 0, order_id),
             )
 
     def list_recent_orders(self) -> list[OrderSummaryRecord]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT o.id, o.order_number, TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name, d.full_name AS doctor_name, o.status, o.created_at, SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count, CASE WHEN COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) > 0 AND COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) = COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 AND COALESCE(NULLIF(TRIM(r.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL THEN 1 END) THEN 1 ELSE 0 END AS all_results_entered FROM orders o INNER JOIN patients p ON p.id = o.patient_id LEFT JOIN doctors d ON d.id = o.doctor_id LEFT JOIN order_tests ot ON ot.order_id = o.id LEFT JOIN tests t ON t.id = ot.test_id LEFT JOIN results r ON r.order_test_id = ot.id WHERE COALESCE(o.is_preallocated, 0) = 0 AND COALESCE(o.is_archived, 0) = 0 GROUP BY o.id, o.order_number, patient_name, d.full_name, o.status, o.created_at ORDER BY o.created_at DESC, o.id DESC LIMIT 25").fetchall()
+            rows = connection.execute(
+                f"""
+                SELECT o.id,
+                       o.order_number,
+                       TRIM(p.first_name || ' ' || p.last_name || CASE WHEN p.middle_name IS NOT NULL AND p.middle_name != '' THEN ' ' || p.middle_name ELSE '' END) AS patient_name,
+                       d.full_name AS doctor_name,
+                       o.status,
+                       o.created_at,
+                       SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count,
+                       {all_results_entered_sql()} AS all_results_entered,
+                       {any_results_entered_sql()} AS any_results_entered
+                FROM orders o
+                INNER JOIN patients p ON p.id = o.patient_id
+                LEFT JOIN doctors d ON d.id = o.doctor_id
+                LEFT JOIN order_tests ot ON ot.order_id = o.id
+                LEFT JOIN tests t ON t.id = ot.test_id
+                LEFT JOIN results r ON r.order_test_id = ot.id
+                WHERE COALESCE(o.is_preallocated, 0) = 0
+                  AND COALESCE(o.is_archived, 0) = 0
+                GROUP BY o.id, o.order_number, patient_name, d.full_name, o.status, o.created_at
+                ORDER BY o.created_at DESC, o.id DESC
+                LIMIT 25
+                """
+            ).fetchall()
         return [OrderSummaryRecord(**dict(row)) for row in rows]
 
     def search_orders(self, search_text: str = "", include_archived: bool = False) -> list[OrderBrowserRecord]:
@@ -346,9 +401,8 @@ class OrdersMixin:
                        o.status,
                        COALESCE(o.is_archived, 0) AS is_archived,
                        SUM(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') THEN 1 ELSE 0 END) AS item_count,
-                       CASE WHEN COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) > 0
-                            AND COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 THEN 1 END) = COUNT(CASE WHEN t.code NOT IN ('__PANEL_HEADING__', '__PANEL_COMMENT__') AND COALESCE(ot.is_outsourced, 0) = 0 AND COALESCE(NULLIF(TRIM(r.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL THEN 1 END)
-                           THEN 1 ELSE 0 END AS all_results_entered
+                       {all_results_entered_sql()} AS all_results_entered,
+                       {any_results_entered_sql()} AS any_results_entered
                 FROM orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN clients c ON c.id = o.client_id
@@ -399,12 +453,19 @@ class OrdersMixin:
                     LIMIT 1000
                 ),
                 counts AS (
+                    -- An observation is a free-text note that is left off the
+                    -- report when it is empty, so it is never what is missing:
+                    -- it counts as done and does not hold the order back.
+                    -- typed_result_count drives the same yellow "in progress"
+                    -- dot as the orders pages, so it ignores catalog defaults.
                     SELECT ot.order_id,
                            COUNT(*) AS result_count,
                            COUNT(CASE
-                               WHEN COALESCE(NULLIF(TRIM(rst.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL
+                               WHEN t.result_kind = 'observation'
+                                 OR COALESCE(NULLIF(TRIM(rst.result_value), ''), NULLIF(TRIM(t.default_result_value), '')) IS NOT NULL
                                THEN 1
-                           END) AS completed_result_count
+                           END) AS completed_result_count,
+                           COUNT(CASE WHEN NULLIF(TRIM(rst.result_value), '') IS NOT NULL THEN 1 END) AS typed_result_count
                     FROM order_tests ot
                     INNER JOIN tests t ON t.id = ot.test_id
                     LEFT JOIN results rst ON rst.order_test_id = ot.id
@@ -430,7 +491,8 @@ class OrdersMixin:
                            p.updated_at > r.finalized_at OR o.updated_at > r.finalized_at
                        ) THEN 1 ELSE 0 END AS report_outdated,
                        COALESCE(cnt.result_count, 0) AS result_count,
-                       COALESCE(cnt.completed_result_count, 0) AS completed_result_count
+                       COALESCE(cnt.completed_result_count, 0) AS completed_result_count,
+                       COALESCE(cnt.typed_result_count, 0) AS typed_result_count
                 FROM recent_orders o
                 INNER JOIN patients p ON p.id = o.patient_id
                 LEFT JOIN doctors d ON d.id = o.doctor_id

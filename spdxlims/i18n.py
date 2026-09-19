@@ -56,6 +56,7 @@ _TRANSLATIONS = {
         "Approve Report": "Aprobar Reporte",
         "Approved": "Aprobado",
         "Ready to approve": "Listo para aprobar",
+        "Results in progress": "Resultados en progreso",
         "Pending": "Pendiente",
         "Send Patient": "Enviar Paciente",
         "Send Client": "Enviar Cliente",

@@ -245,7 +245,8 @@ class OrderSummaryRecord:
     status: str
     created_at: str
     item_count: int
-    all_results_entered: bool
+    all_results_entered: bool = False
+    any_results_entered: bool = False
 
 
 @dataclass(slots=True)
@@ -260,6 +261,7 @@ class OrderBrowserRecord:
     item_count: int
     all_results_entered: bool = False
     is_archived: int = 0
+    any_results_entered: bool = False
 
 
 @dataclass(slots=True)
@@ -277,6 +279,9 @@ class ResultWorkflowRecord:
     result_count: int
     completed_result_count: int
     report_outdated: int = 0
+    # Results someone actually typed, ignoring catalog defaults: the "in
+    # progress" half of the status dot. See spdxlims/db/orders.py.
+    typed_result_count: int = 0
 
 
 @dataclass(slots=True)
