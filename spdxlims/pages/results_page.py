@@ -237,7 +237,11 @@ class ReportPreviewDialog(QDialog):
     def _refresh_from_server(self) -> None:
         if self._reset_fetcher is None:
             return
-        fresh = self._reset_fetcher()
+        try:
+            fresh = self._reset_fetcher()
+        except Exception as exc:
+            QMessageBox.warning(self, tr("Refresh Failed"), str(exc))
+            return
         if fresh is None:
             QMessageBox.warning(self, tr("Refresh Failed"), tr("Could not load the latest report data for this order."))
             return
@@ -2494,10 +2498,10 @@ class ResultsPage(DataAwarePage):
         preview_with_layout = {**self.database.get_report_layout_settings(), **preview}
 
         def _reset_fetcher() -> dict[str, object] | None:
-            try:
-                self.report_service.delete_saved_report(order_id)
-            except Exception:
-                pass
+            # A failure here used to be swallowed, so the saved report survived
+            # and the dialog reloaded it - the refresh looked like it had worked
+            # and the report came back approved and unchanged.
+            self.report_service.delete_saved_report(order_id)
             self.database.delete_order_ui_value("approval", order_id)
             live = self.report_service.get_live_report_preview(order_id)
             if live is None:

@@ -182,6 +182,20 @@ def list_report_order_choices(
 _PANEL_META_CODES = ('__PANEL_HEADING__', '__PANEL_COMMENT__')
 
 
+# Where an order goes back to when its report is deleted: the sample is in the
+# lab with results on it, just not reported any more. A cancelled order keeps
+# its own status.
+_REOPENED_STATUS = 'in_lab'
+
+
+def reopen_order_after_report_delete(order) -> None:
+    """Undo what finalizing did to the order itself."""
+    if order is None or order.status != 'reported':
+        return
+    order.status = _REOPENED_STATUS
+    order.reported_at = None
+
+
 def printed_result_value(entry: dict[str, Any]) -> str | None:
     """What a test row prints on the report.
 
@@ -486,6 +500,11 @@ def delete_saved_report(order_id: str, db: Session = Depends(get_db), actor: UUI
     db.execute(delete(ReportOutsourcedRowSnapshot).where(ReportOutsourcedRowSnapshot.report_id == report_id))
     db.execute(delete(ReportItemSnapshot).where(ReportItemSnapshot.report_id == report_id))
     db.delete(report)
+    # Finalizing marked the order reported; deleting its report has to undo that
+    # or the order stays "reported" with no report behind it - the dot on Nueva
+    # Orden went on reading green after the report had been sent back for
+    # editing, and "Actualizar desde el servidor" never really un-approved it.
+    reopen_order_after_report_delete(db.get(LabOrder, parsed_order_id))
     db.flush()
     log_audit(
         db,

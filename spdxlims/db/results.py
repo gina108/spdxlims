@@ -1082,6 +1082,16 @@ class ResultsMixin:
             connection.execute("DELETE FROM report_item_images WHERE report_id = ?", (report_id,))
             connection.execute("DELETE FROM report_items WHERE report_id = ?", (report_id,))
             connection.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+            # Finalizing marked the order finalized; deleting its report has to
+            # undo that, or the order stays finalized with no report behind it.
+            connection.execute(
+                """
+                UPDATE orders
+                SET status = 'in_progress', reported_at = NULL, updated_at = datetime('now','localtime')
+                WHERE id = ? AND status = 'finalized'
+                """,
+                (order_id,),
+            )
 
     def save_result_entry(self, order_test_id: int, result_value: str, unit: str, lower_value: str | None, upper_value: str | None, reference_text: str, comments: str, result_kind: str) -> None:
         normalized_value = result_value.strip()
