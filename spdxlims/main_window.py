@@ -693,6 +693,12 @@ class MainWindow(QMainWindow):
         return candidate if (candidate / "app" / "main.py").exists() else None
 
     def closeEvent(self, event) -> None:
+        # Stop every timer this window owns before anything is torn down. The
+        # pages poll on timers - engine health, portal, auto-import - and a tick
+        # that lands mid-teardown starts work against widgets that are going
+        # away, which shows up as "python is not responding" on the way out.
+        for timer in self.findChildren(QTimer):
+            timer.stop()
         if self._backend_fallback_process is not None and self._backend_fallback_process.poll() is None:
             self._backend_fallback_process.terminate()
         super().closeEvent(event)

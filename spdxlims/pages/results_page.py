@@ -38,6 +38,7 @@ from spdxlims.database import Database, InstrumentResultMappingRecord, ResultEnt
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
 from spdxlims.engine_client import EngineClient, EngineUnavailable
+from spdxlims.engine_identity import is_remote_client
 from spdxlims.instrument_broadcast import get_engine_url
 from spdxlims.instrument_importer import importer_is_running
 from spdxlims.instrument_mapping import (
@@ -1583,8 +1584,14 @@ class ResultsPage(DataAwarePage):
 
         Stands down when the headless importer is running, so exactly one thing
         writes captures to the server.
+
+        Never runs on a workstation. The import happens on the machine wired to
+        the analyzers, into the same database this app reads, so a workstation
+        doing it too would be a second writer for no gain - and it posts one
+        request per capture on the UI thread, which froze the app for minutes
+        at a time on a checkout that had a few hundred captures to consider.
         """
-        if importer_is_running(self.database.db_path.parent):
+        if is_remote_client() or importer_is_running(self.database.db_path.parent):
             return
         linked = self._linked_instrument_capture_ids()
         imported_total = 0
