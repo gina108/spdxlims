@@ -209,6 +209,13 @@ def _panel_meta_row(label: str, metadata: dict[str, dict[str, str]]) -> dict[str
     method = str(values.get('method') or '').strip()
     if not specimen_type and not method:
         return None
+    # Only the halves that have a value: a panel with a method and no specimen
+    # type would otherwise print "Tipo de Muestra:" followed by nothing.
+    parts = []
+    if method:
+        parts.append(f'{_METHODOLOGY_LABEL}: {method}')
+    if specimen_type:
+        parts.append(f'{_SPECIMEN_LABEL}: {specimen_type}')
     return {
         'order_item_id': None,
         'test_id': None,
@@ -223,7 +230,7 @@ def _panel_meta_row(label: str, metadata: dict[str, dict[str, str]]) -> dict[str
         'lower_value_text': None,
         'upper_value_text': None,
         'flag': None,
-        'comments': f'{_METHODOLOGY_LABEL}: {method} | {_SPECIMEN_LABEL}: {specimen_type}',
+        'comments': ' | '.join(parts),
         'source_label': label,
     }
 

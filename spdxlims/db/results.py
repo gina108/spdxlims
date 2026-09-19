@@ -793,6 +793,13 @@ class ResultsMixin:
             method = str(values.get("method") or "").strip()
             if not specimen_type and not method:
                 return
+            # Only the halves that have a value: a panel with a method and no
+            # specimen type used to print "Tipo de Muestra:" followed by nothing.
+            parts = []
+            if method:
+                parts.append(f"{tr('Methodology')}: {method}")
+            if specimen_type:
+                parts.append(f"{tr('Specimen Type')}: {specimen_type}")
             rendered.append(
                 {
                     "order_test_id": None,
@@ -804,7 +811,7 @@ class ResultsMixin:
                     "lower_value": "",
                     "upper_value": "",
                     "flag": "",
-                    "comments": f"{tr('Methodology')}: {method} | {tr('Specimen Type')}: {specimen_type}",
+                    "comments": " | ".join(parts),
                     "sort_order": next_sort_order,
                 }
             )

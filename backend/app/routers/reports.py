@@ -578,6 +578,27 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                 )
             )
             continue
+        if item_type == 'panel_meta':
+            # Carries its text in comments, which is what report_layout renders
+            # for this row. Without its own branch it fell through to the test
+            # branch below and was emitted as a blank test row.
+            items.append(
+                ReportPreviewItemOut(
+                    order_test_id=None,
+                    item_type='panel_meta',
+                    test_name='',
+                    result_value=None,
+                    unit=None,
+                    reference_text=None,
+                    lower_value=None,
+                    upper_value=None,
+                    flag=None,
+                    comments=entry.get('comments') or '',
+                    sort_order=len(items),
+                    source_label=source_label,
+                )
+            )
+            continue
         test_id = entry.get('test_id')
         unit = entry.get('unit')
         lower_value = entry.get('lower_value_text')

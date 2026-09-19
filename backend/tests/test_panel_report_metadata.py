@@ -36,10 +36,18 @@ def test_a_panel_with_no_metadata_produces_no_row():
     assert _panel_meta_row("GLUCOSA", {}) is None
 
 
-def test_a_panel_with_only_one_value_still_prints():
+def test_a_panel_with_only_one_value_prints_only_that_half():
+    """A dangling 'Tipo de Muestra:' with nothing after it looks broken on a
+    printed patient report."""
     row = _panel_meta_row("SOLO MUESTRA", META)
     assert row is not None
-    assert "Tipo de Muestra: Orina" in row["comments"]
+    assert row["comments"] == "Tipo de Muestra: Orina"
+    assert "Metodología" not in row["comments"]
+
+
+def test_a_panel_with_only_a_method_prints_only_that_half():
+    meta = {"solo metodo": {"specimen_type": "", "method": "Quimioluminiscencia"}}
+    assert _panel_meta_row("SOLO METODO", meta)["comments"] == "Metodología: Quimioluminiscencia"
 
 
 def test_the_line_closes_the_panel_rather_than_opening_it():
