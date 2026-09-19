@@ -1143,9 +1143,17 @@ func (s *Store) RecordProcessingSuccess(profileID, deviceID string, transport mo
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	_, err = tx.Exec(`INSERT INTO runtime_status (profile_id, device_id, transport_type, protocol_type, last_capture_id, last_success_at, session_state, selected_settings_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(profile_id, device_id) DO UPDATE SET transport_type = excluded.transport_type, protocol_type = excluded.protocol_type, last_capture_id = excluded.last_capture_id, last_success_at = excluded.last_success_at, session_state = excluded.session_state, selected_settings_json = excluded.selected_settings_json, updated_at = excluded.updated_at`, profileID, deviceID, string(transport), string(protocol), captureID, occurredAt.Format(time.RFC3339Nano), "active", string(settingsJSON), occurredAt.Format(time.RFC3339Nano))
-	if err != nil {
-		return err
+	// runtime_status is what "is this analyzer connected?" is answered from, and
+	// it is keyed by (profile, device). Re-parsing a stored payload arrives here
+	// with the original device id and transport "replay", so it used to overwrite
+	// the live row with "replay"/"active" - an instrument that was switched off
+	// went on reading as connected until a real event corrected it. A replay
+	// observes; it never speaks for the link.
+	if transport != models.TransportReplay {
+		_, err = tx.Exec(`INSERT INTO runtime_status (profile_id, device_id, transport_type, protocol_type, last_capture_id, last_success_at, session_state, selected_settings_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(profile_id, device_id) DO UPDATE SET transport_type = excluded.transport_type, protocol_type = excluded.protocol_type, last_capture_id = excluded.last_capture_id, last_success_at = excluded.last_success_at, session_state = excluded.session_state, selected_settings_json = excluded.selected_settings_json, updated_at = excluded.updated_at`, profileID, deviceID, string(transport), string(protocol), captureID, occurredAt.Format(time.RFC3339Nano), "active", string(settingsJSON), occurredAt.Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
 	}
 	for _, obs := range observations {
 		if obs.MappedLISTestID != "" {
@@ -1183,9 +1191,14 @@ func (s *Store) RecordProcessingError(profileID, deviceID string, transport mode
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO runtime_status (profile_id, device_id, transport_type, last_error_at, last_error_message, session_state, selected_settings_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(profile_id, device_id) DO UPDATE SET transport_type = excluded.transport_type, last_error_at = excluded.last_error_at, last_error_message = excluded.last_error_message, session_state = excluded.session_state, selected_settings_json = excluded.selected_settings_json, updated_at = excluded.updated_at`, profileID, deviceID, string(transport), now.Format(time.RFC3339Nano), message, state, string(settingsJSON), now.Format(time.RFC3339Nano))
-	if err != nil {
-		return err
+	// The error is still recorded above; only the live link's state is left
+	// alone, for the same reason as in RecordProcessingSuccess: a payload that
+	// fails to re-parse says nothing about whether the analyzer is connected.
+	if transport != models.TransportReplay {
+		_, err = tx.Exec(`INSERT INTO runtime_status (profile_id, device_id, transport_type, last_error_at, last_error_message, session_state, selected_settings_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(profile_id, device_id) DO UPDATE SET transport_type = excluded.transport_type, last_error_at = excluded.last_error_at, last_error_message = excluded.last_error_message, session_state = excluded.session_state, selected_settings_json = excluded.selected_settings_json, updated_at = excluded.updated_at`, profileID, deviceID, string(transport), now.Format(time.RFC3339Nano), message, state, string(settingsJSON), now.Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

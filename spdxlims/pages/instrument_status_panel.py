@@ -279,20 +279,42 @@ class InstrumentStatusPanel(QGroupBox):
         devices = data.get("devices") if isinstance(data, dict) else None
         self._runtime_result.emit(devices)
 
-    def _apply_runtime_status(self, devices: list | None) -> None:
-        if not isinstance(devices, list):
-            return
+    @staticmethod
+    def _states_by_profile(devices: list) -> dict[str, str]:
+        """The live state per profile, ignoring rows that are not a live link.
+
+        The engine keeps a device row for every source it has ever read and
+        never expires them: re-parsing a stored capture adds a row of its own,
+        with transport "replay", and its timestamp is the newest one there is.
+        Taking the newest row therefore showed the COR 50 as connected while the
+        analyzer was switched off, because a replay had touched it last.
+
+        A row counts only when its transport is the one the session is actually
+        configured with, and the newest of those wins. For a TCP listener that is
+        either the live client connection or the listener row, which is where the
+        engine records the disconnect when the client goes away.
+        """
         best: dict[str, tuple[str, str]] = {}  # profile_id -> (state, updated_at)
         for device in devices:
             if not isinstance(device, dict):
+                continue
+            settings = device.get("selected_settings")
+            configured = str((settings or {}).get("type") or "") if isinstance(settings, dict) else ""
+            if configured and str(device.get("transport_type") or "") != configured:
                 continue
             pid = str(device.get("profile_id") or "")
             state = str(device.get("session_state") or "unknown")
             updated_at = str(device.get("updated_at") or "")
             if pid not in best or updated_at > best[pid][1]:
                 best[pid] = (state, updated_at)
+        return {pid: state for pid, (state, _) in best.items()}
+
+    def _apply_runtime_status(self, devices: list | None) -> None:
+        if not isinstance(devices, list):
+            return
+        best = self._states_by_profile(devices)
         for profile_id, row in self._instrument_rows.items():
-            state = best.get(profile_id, ("unknown", ""))[0]
+            state = best.get(profile_id, "unknown")
             color = _STATE_COLOR.get(state, _COLOR_GRAY)
             row["circle"].setStyleSheet(f"color: {color}; {_CIRCLE_STYLE}")
             row["state_lbl"].setText(state.replace("_", " ").capitalize())

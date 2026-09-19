@@ -256,3 +256,75 @@ func TestNetworkDeviceLinksAndReplaySummary(t *testing.T) {
 		t.Fatalf("allLinks = %#v", allLinks)
 	}
 }
+
+// A replay re-parses a payload that is already stored; it must not be mistaken
+// for traffic from the analyzer. Before this, previewing a capture in the LIMS
+// overwrote the live row with "replay"/"active", so an instrument that was
+// switched off still read as connected.
+func TestReplayLeavesTheLiveDeviceStateAlone(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+
+	connectedAt := time.Date(2026, 9, 18, 13, 40, 0, 0, time.UTC)
+	settings := map[string]any{"type": "tcp_server", "listen_address": "0.0.0.0:5101"}
+	if err := store.UpdateRuntimeState("cor50-lis", "0.0.0.0:5101", models.TransportTCPServer, "sess_1", "disconnected", settings); err != nil {
+		t.Fatalf("UpdateRuntimeState() error = %v", err)
+	}
+
+	replayedAt := connectedAt.Add(24 * time.Hour)
+	if err := store.RecordProcessingSuccess("cor50-lis", "0.0.0.0:5101", models.TransportReplay, models.ProtocolHL7, "cap_1", settings, nil, replayedAt); err != nil {
+		t.Fatalf("RecordProcessingSuccess() error = %v", err)
+	}
+	if err := store.RecordProcessingError("cor50-lis", "0.0.0.0:5101", models.TransportReplay, "bad parse", settings, map[string]any{"stage": "process_payload"}); err != nil {
+		t.Fatalf("RecordProcessingError() error = %v", err)
+	}
+
+	devices, err := store.ListRuntimeStatus(50)
+	if err != nil {
+		t.Fatalf("ListRuntimeStatus() error = %v", err)
+	}
+	var found *RuntimeStatus
+	for i := range devices {
+		if devices[i].DeviceID == "0.0.0.0:5101" {
+			found = &devices[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("expected the listener row to still be there")
+	}
+	if found.SessionState != "disconnected" {
+		t.Fatalf("SessionState = %q, want %q", found.SessionState, "disconnected")
+	}
+	if found.TransportType != string(models.TransportTCPServer) {
+		t.Fatalf("TransportType = %q, want %q", found.TransportType, models.TransportTCPServer)
+	}
+}
+
+// Real traffic still updates the row, or nothing would ever read as connected.
+func TestRealTrafficStillUpdatesTheLiveDeviceState(t *testing.T) {
+	store := openTestStore(t)
+	defer store.Close()
+
+	settings := map[string]any{"type": "tcp_server", "listen_address": "0.0.0.0:5101"}
+	if err := store.UpdateRuntimeState("cor50-lis", "10.0.0.3:49160", models.TransportTCPServer, "sess_1", "disconnected", settings); err != nil {
+		t.Fatalf("UpdateRuntimeState() error = %v", err)
+	}
+	receivedAt := time.Date(2026, 9, 19, 15, 0, 0, 0, time.UTC)
+	if err := store.RecordProcessingSuccess("cor50-lis", "10.0.0.3:49160", models.TransportTCPServer, models.ProtocolHL7, "cap_2", settings, nil, receivedAt); err != nil {
+		t.Fatalf("RecordProcessingSuccess() error = %v", err)
+	}
+
+	devices, err := store.ListRuntimeStatus(50)
+	if err != nil {
+		t.Fatalf("ListRuntimeStatus() error = %v", err)
+	}
+	for _, device := range devices {
+		if device.DeviceID == "10.0.0.3:49160" {
+			if device.SessionState != "active" {
+				t.Fatalf("SessionState = %q, want %q", device.SessionState, "active")
+			}
+			return
+		}
+	}
+	t.Fatal("expected the device row")
+}

@@ -523,6 +523,29 @@ func (a *App) ImportNetworkLinks(links []models.NetworkDeviceLink, replace bool,
 	}
 	return nil
 }
+// parsePayload runs a payload through a profile and returns the result without
+// ingesting it: no capture row, no runtime status, no stored result, no order
+// file archived. Replaying is an inspection tool - previewing a capture in the
+// LIMS calls it - and it used to run the full ingest path, so every preview
+// saved a second copy of the capture it was only meant to look at.
+func (a *App) parsePayload(raw []byte, transportType models.TransportType, profileID string, deviceID string) (models.ParseResult, error) {
+	resolvedProfileID := profileID
+	if resolvedProfileID == "" {
+		resolvedProfileID = "generic-hl7"
+	}
+	prof, err := a.profiles.Get(resolvedProfileID)
+	if err != nil {
+		a.recordError(resolvedProfileID, deviceID, transportType, err, map[string]any{"stage": "load_profile"}, nil)
+		return models.ParseResult{}, err
+	}
+	result, err := a.processor.Process(raw, transportType, deviceID, prof, "")
+	if err != nil {
+		a.recordError(prof.ID, deviceID, transportType, err, map[string]any{"stage": "process_payload"}, prof.Transport)
+		return models.ParseResult{}, err
+	}
+	return result, nil
+}
+
 func (a *App) ReplayCapture(id, overrideProfileID string) (models.ParseResult, error) {
 	rec, raw, err := a.captures.GetCapture(id)
 	if err != nil {
@@ -532,7 +555,10 @@ func (a *App) ReplayCapture(id, overrideProfileID string) (models.ParseResult, e
 	if overrideProfileID != "" {
 		profileID = overrideProfileID
 	}
-	result, _, err := a.ProcessPayload(raw, models.TransportReplay, profileID, rec.DeviceID)
+	// Parse only. The re-parse is written back onto the capture that was
+	// replayed, further down, which is the point of replaying with a corrected
+	// profile; ingesting it as a new capture never was.
+	result, err := a.parsePayload(raw, models.TransportReplay, profileID, rec.DeviceID)
 	networkDeviceID := resolveNetworkDeviceID(rec.DeviceID, nil)
 	if networkDeviceID == "" {
 		linkedID, lookupErr := a.captures.FindNetworkDeviceID(profileID, rec.DeviceID)
@@ -553,7 +579,7 @@ func (a *App) ReplayFile(path, profileID string) (ReplayOutput, error) {
 	if err != nil {
 		return ReplayOutput{}, err
 	}
-	result, _, err := a.ProcessPayload(raw, models.TransportReplay, profileID, filepath.Base(path))
+	result, err := a.parsePayload(raw, models.TransportReplay, profileID, filepath.Base(path))
 	if err != nil {
 		return ReplayOutput{}, err
 	}
