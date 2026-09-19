@@ -13,7 +13,7 @@ import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlsplit
 
 from PySide6.QtCore import QEvent, QEventLoop, QMarginsF, QSizeF, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QTextDocument
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from spdxlims.database import Database, InstrumentResultMappingRecord, ResultEntryRecord, ResultWorkflowRecord
 from spdxlims.deployment import DeploymentService
 from spdxlims.i18n import tr
+from spdxlims.engine_client import EngineClient, EngineUnavailable
 from spdxlims.instrument_broadcast import get_engine_url
 from spdxlims.instrument_importer import importer_is_running
 from spdxlims.pages.base_page import DataAwarePage
@@ -943,7 +944,7 @@ class ResultsPage(DataAwarePage):
             if self.show_review:
                 left_col.addWidget(self._build_queue_group())
             outer.addLayout(left_col, 1)
-            self._status_panel = InstrumentStatusPanel()
+            self._status_panel = InstrumentStatusPanel(self.deployment_service)
             self._status_panel.log_message.connect(self.instrument_status_label.setText)
             outer.addWidget(self._status_panel)
         else:
@@ -1943,7 +1944,28 @@ class ResultsPage(DataAwarePage):
             return loaded if isinstance(loaded, dict) else None
         return None
 
+    def _engine_client(self) -> EngineClient:
+        return EngineClient(self.deployment_service, self.engine_url)
+
     def _instrument_request_json(self, path: str, *, method: str = "GET", body: dict[str, object] | None = None) -> object:
+        # A workstation has no route to the engine, so its reads are relayed by
+        # the backend. The EngineClient picks the transport for this install.
+        client = self._engine_client()
+        if client.relayed:
+            try:
+                if path.startswith("/api/v1/captures"):
+                    query = dict(parse_qsl(urlsplit(path).query))
+                    return client.captures(
+                        limit=int(query.get("limit") or 100),
+                        profile_id=query.get("profile_id") or "",
+                    )
+                if path == "/api/v1/replay" and isinstance(body, dict):
+                    return client.replay(
+                        str(body.get("capture_id") or ""),
+                        str(body.get("profile_id") or ""),
+                    )
+            except EngineUnavailable as exc:
+                raise RuntimeError(str(exc)) from exc
         data = None
         headers = {"Accept": "application/json"}
         if body is not None:

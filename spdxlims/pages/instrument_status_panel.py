@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from spdxlims.engine_client import EngineClient, EngineUnavailable
 from spdxlims.engine_identity import owns_hardware
 from spdxlims.i18n import tr
 from spdxlims.instrument_broadcast import get_engine_url
@@ -61,11 +62,14 @@ class InstrumentStatusPanel(QGroupBox):
     _runtime_result = Signal(object)
     log_message = Signal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, deployment_service=None) -> None:
         super().__init__()
         self._health_result.connect(self._apply_health_result)
         self._auto_start_done.connect(self._finish_auto_start)
         self._runtime_result.connect(self._apply_runtime_status)
+        # Needed so a workstation can read the engine through the backend; the
+        # engine itself binds loopback and is unreachable from another machine.
+        self.deployment_service = deployment_service
         self.engine_url = get_engine_url()
         self.health_url = self.engine_url + "/api/v1/health"
         self.engine_process: QProcess | None = None
@@ -398,18 +402,21 @@ class InstrumentStatusPanel(QGroupBox):
 
     # ── HTTP helpers ─────────────────────────────────────────────────────
 
+    def _engine_client(self) -> EngineClient:
+        return EngineClient(self.deployment_service, self.engine_url)
+
     def _fetch_health(self) -> dict | None:
-        try:
-            with urllib.request.urlopen(self.health_url, timeout=1.5) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-            return None
+        # On a workstation this is relayed by the backend: the engine binds
+        # loopback, so a direct call could only ever report "disconnected".
+        return self._engine_client().health()
 
     def _get_json(self, path: str) -> dict | list | None:
+        client = self._engine_client()
         try:
-            with urllib.request.urlopen(self.engine_url + path, timeout=2.5) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            if path == "/api/v1/runtime/status":
+                return client.runtime_status()
+            return client._direct(path)
+        except EngineUnavailable:
             return None
 
     def _post_json(self, path: str, payload: dict) -> dict | None:

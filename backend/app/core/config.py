@@ -29,6 +29,10 @@ class Settings:
     # same number would import one patient's run onto another patient's order.
     # Giving each its own range keeps them apart. 0 means "no floor".
     order_number_floor: int = int(os.getenv("ORDER_NUMBER_FLOOR", "0"))
+    # The engine binds loopback on the PC wired to the analyzers. This backend
+    # runs there too, so it can relay instrument reads to workstations that have
+    # no route of their own (see routers/instruments.py).
+    instrument_engine_url: str = os.getenv("INSTRUMENT_ENGINE_URL", "http://127.0.0.1:9088")
     cors_origins: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
