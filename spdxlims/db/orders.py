@@ -147,7 +147,7 @@ class OrdersMixin:
             while True:
                 try:
                     cursor = connection.execute(
-                        "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes) VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, ?)",
+                        "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now','localtime'), ?, datetime('now','localtime'), datetime('now','localtime'))",
                         (resolved_order_number, (accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None),
                     )
                     break
@@ -172,7 +172,7 @@ class OrdersMixin:
                 while True:
                     try:
                         cursor = connection.execute(
-                            "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes) VALUES (?, NULL, NULL, ?, NULL, ?, 'draft', 1, CURRENT_TIMESTAMP, ?)",
+                            "INSERT INTO orders (order_number, accession_id, sample_id, patient_id, doctor_id, client_id, status, is_preallocated, ordered_at, notes, created_at, updated_at) VALUES (?, NULL, NULL, ?, NULL, ?, 'draft', 1, datetime('now','localtime'), ?, datetime('now','localtime'), datetime('now','localtime'))",
                             (order_number, placeholder_patient_id, client_id, 'Preprinted barcode batch'),
                         )
                         break
@@ -249,7 +249,7 @@ class OrdersMixin:
             if int(row['is_preallocated']) != 1:
                 raise sqlite3.IntegrityError('Only preallocated barcode orders can be assigned from this workflow.')
             connection.execute(
-                "UPDATE orders SET accession_id = ?, sample_id = ?, patient_id = ?, doctor_id = ?, client_id = ?, status = ?, is_preallocated = 0, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE orders SET accession_id = ?, sample_id = ?, patient_id = ?, doctor_id = ?, client_id = ?, status = ?, is_preallocated = 0, notes = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 ((accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None, order_id),
             )
             for existing_row in connection.execute("SELECT id FROM order_tests WHERE order_id = ?", (order_id,)).fetchall():
@@ -263,7 +263,7 @@ class OrdersMixin:
             if row is None:
                 raise sqlite3.IntegrityError('Order not found.')
             connection.execute(
-                "UPDATE orders SET accession_id = ?, sample_id = ?, patient_id = ?, doctor_id = ?, client_id = ?, status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE orders SET accession_id = ?, sample_id = ?, patient_id = ?, doctor_id = ?, client_id = ?, status = ?, notes = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 ((accession_id or '').strip() or None, (sample_id or '').strip() or None, patient_id, doctor_id, client_id, status, notes.strip() or None, order_id),
             )
             # Remove any existing report — it references order_tests rows and must be
@@ -569,7 +569,7 @@ class OrdersMixin:
                     """
                     INSERT INTO outsourced_panel_tables (
                         order_id, panel_label, source_pdf_path, updated_at
-                    ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, datetime('now','localtime'))
                     """,
                     (order_id, normalized_label, normalized_source),
                 )
@@ -577,7 +577,7 @@ class OrdersMixin:
             else:
                 table_id = int(existing["id"])
                 connection.execute(
-                    "UPDATE outsourced_panel_tables SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    "UPDATE outsourced_panel_tables SET updated_at = datetime('now','localtime') WHERE id = ?",
                     (table_id,),
                 )
             ext_cursor = connection.execute(
@@ -681,14 +681,14 @@ class OrdersMixin:
                         """
                         INSERT INTO outsourced_panel_tables (
                             order_id, panel_label, source_pdf_path, updated_at
-                        ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        ) VALUES (?, ?, ?, datetime('now','localtime'))
                         """,
                         (order_id, label, source_pdf_path),
                     )
                     table_id = int(cursor.lastrowid)
                 else:
                     connection.execute(
-                        "UPDATE outsourced_panel_tables SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        "UPDATE outsourced_panel_tables SET updated_at = datetime('now','localtime') WHERE id = ?",
                         (table_id,),
                     )
                 connection.execute(

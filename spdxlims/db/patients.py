@@ -50,7 +50,7 @@ class PatientsMixin:
     def create_patient(self, payload: dict[str, Any]) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO patients (patient_code, first_name, last_name, middle_name, sex, date_of_birth, age_value, age_unit, phone, email, address, national_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO patients (patient_code, first_name, last_name, middle_name, sex, date_of_birth, age_value, age_unit, phone, email, address, national_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))",
                 (
                     str(payload.get("patient_code") or "").strip() or None,
                     payload["first_name"].strip(),
@@ -71,7 +71,7 @@ class PatientsMixin:
     def update_patient(self, patient_id: int, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE patients SET first_name = ?, last_name = ?, middle_name = ?, sex = ?, date_of_birth = ?, age_value = ?, age_unit = ?, phone = ?, email = ?, address = ?, national_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE patients SET first_name = ?, last_name = ?, middle_name = ?, sex = ?, date_of_birth = ?, age_value = ?, age_unit = ?, phone = ?, email = ?, address = ?, national_id = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (
                     payload["first_name"].strip(),
                     payload["last_name"].strip(),
@@ -91,14 +91,14 @@ class PatientsMixin:
     def archive_patient(self, patient_id: int) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE patients SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(patient_code, '') != '__PREALLOCATED__'",
+                "UPDATE patients SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ? AND COALESCE(patient_code, '') != '__PREALLOCATED__'",
                 (patient_id,),
             )
 
     def unarchive_patient(self, patient_id: int) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE patients SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(patient_code, '') != '__PREALLOCATED__'",
+                "UPDATE patients SET is_active = 1, updated_at = datetime('now','localtime') WHERE id = ? AND COALESCE(patient_code, '') != '__PREALLOCATED__'",
                 (patient_id,),
             )
 
@@ -107,6 +107,6 @@ class PatientsMixin:
         if row is not None:
             return int(row["id"])
         cursor = connection.execute(
-            "INSERT INTO patients (patient_code, first_name, last_name, middle_name, phone, email, address, national_id) VALUES ('__PREALLOCATED__', 'Unassigned', 'Barcode', NULL, NULL, NULL, NULL, NULL)"
+            "INSERT INTO patients (patient_code, first_name, last_name, middle_name, phone, email, address, national_id, created_at, updated_at) VALUES ('__PREALLOCATED__', 'Unassigned', 'Barcode', NULL, NULL, NULL, NULL, NULL, datetime('now','localtime'), datetime('now','localtime'))"
         )
         return int(cursor.lastrowid)

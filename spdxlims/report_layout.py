@@ -679,20 +679,30 @@ def _format_datetime(value: str) -> str:
 
 
 def _parse_datetime(value: str) -> datetime | None:
+    """Parse a stored timestamp, always as the lab's own wall clock.
+
+    Local mode writes plain local strings, and the server sends its timestamps
+    with an offset. A value that carries a zone is converted here, so a report
+    never prints a UTC hour to a patient.
+    """
     raw = (value or "").strip()
     if not raw:
         return None
     normalized = raw.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(normalized)
     except ValueError:
-        pass
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(raw, fmt)
-        except ValueError:
-            continue
-    return None
+        parsed = None
+    if parsed is None:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(raw, fmt)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return None
+    return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo is not None else parsed
 
 
 def _format_age(

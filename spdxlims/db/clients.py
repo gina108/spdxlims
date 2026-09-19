@@ -70,7 +70,7 @@ class ClientsMixin:
     def create_client(self, payload: dict[str, Any]) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO clients (name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency, header_image_path, footer_signature_image_path) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                "INSERT INTO clients (name, phone, email, tax_id, fiscal_regime, postal_code, cfdi_use, is_active, auto_invoice_enabled, auto_invoice_frequency, header_image_path, footer_signature_image_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))",
                 (
                     payload["name"].strip(),
                     str(payload.get("phone") or "").strip() or None,
@@ -90,7 +90,7 @@ class ClientsMixin:
     def update_client(self, client_id: int, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE clients SET name = ?, phone = ?, email = ?, tax_id = ?, fiscal_regime = ?, postal_code = ?, cfdi_use = ?, auto_invoice_enabled = ?, auto_invoice_frequency = ?, header_image_path = ?, footer_signature_image_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE clients SET name = ?, phone = ?, email = ?, tax_id = ?, fiscal_regime = ?, postal_code = ?, cfdi_use = ?, auto_invoice_enabled = ?, auto_invoice_frequency = ?, header_image_path = ?, footer_signature_image_path = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (
                     payload["name"].strip(),
                     str(payload.get("phone") or "").strip() or None,
@@ -109,11 +109,11 @@ class ClientsMixin:
 
     def archive_client(self, client_id: int) -> None:
         with self.connect() as connection:
-            connection.execute("UPDATE clients SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (client_id,))
+            connection.execute("UPDATE clients SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ?", (client_id,))
 
     def unarchive_client(self, client_id: int) -> None:
         with self.connect() as connection:
-            connection.execute("UPDATE clients SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (client_id,))
+            connection.execute("UPDATE clients SET is_active = 1, updated_at = datetime('now','localtime') WHERE id = ?", (client_id,))
 
     def get_client(self, client_id: int) -> ClientRecord | None:
         with self.connect() as connection:

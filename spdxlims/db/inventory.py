@@ -21,7 +21,7 @@ class InventoryMixin:
     def create_inventory_item(self, payload: dict[str, Any]) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO inventory_items (sku, name, unit, on_hand, reorder_level, unit_cost) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO inventory_items (sku, name, unit, on_hand, reorder_level, unit_cost, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))",
                 (
                     payload["sku"].strip(),
                     payload["name"].strip(),
@@ -44,7 +44,7 @@ class InventoryMixin:
     def update_inventory_item(self, item_id: int, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE inventory_items SET sku = ?, name = ?, unit = ?, on_hand = ?, reorder_level = ?, unit_cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE inventory_items SET sku = ?, name = ?, unit = ?, on_hand = ?, reorder_level = ?, unit_cost = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (
                     payload["sku"].strip(),
                     payload["name"].strip(),
@@ -81,7 +81,7 @@ class InventoryMixin:
     def create_supplier(self, payload: dict[str, Any]) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO suppliers (name, phone, email, tax_id) VALUES (?, ?, ?, ?)",
+                "INSERT INTO suppliers (name, phone, email, tax_id, created_at, updated_at) VALUES (?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))",
                 (payload["name"].strip(), payload.get("phone") or None, payload.get("email") or None, payload.get("tax_id") or None),
             )
             return int(cursor.lastrowid)
@@ -139,7 +139,7 @@ class InventoryMixin:
             movement_type = payload.get("movement_type") or "purchase"
             signed_quantity = quantity if movement_type in {"purchase", "adjustment_in"} else -abs(quantity)
             cursor = connection.execute(
-                "INSERT INTO inventory_movements (inventory_item_id, supplier_id, movement_type, quantity, unit_cost, movement_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO inventory_movements (inventory_item_id, supplier_id, movement_type, quantity, unit_cost, movement_date, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))",
                 (
                     payload["inventory_item_id"],
                     payload.get("supplier_id"),
@@ -151,7 +151,7 @@ class InventoryMixin:
                 ),
             )
             connection.execute(
-                "UPDATE inventory_items SET on_hand = on_hand + ?, unit_cost = CASE WHEN ? > 0 THEN ? ELSE unit_cost END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE inventory_items SET on_hand = on_hand + ?, unit_cost = CASE WHEN ? > 0 THEN ? ELSE unit_cost END, updated_at = datetime('now','localtime') WHERE id = ?",
                 (signed_quantity, payload.get("unit_cost") or 0, payload.get("unit_cost") or 0, payload["inventory_item_id"]),
             )
             return int(cursor.lastrowid)

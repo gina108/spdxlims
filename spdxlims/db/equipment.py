@@ -65,7 +65,7 @@ class EquipmentMixin:
                     last_maintenance_date = ?,
                     next_maintenance_date = ?,
                     notes = ?,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
                 (

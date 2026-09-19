@@ -23,7 +23,7 @@ class SettingsMixin:
         logo_path = self._copy_asset(payload.get("logo_path", ""), "logo")
         with self.connect() as connection:
             connection.execute(
-                "UPDATE lab_settings SET lab_name = ?, address = ?, phone = ?, email = ?, logo_path = ?, header_image_path = ?, footer_signature_image_path = ?, report_footer = ?, director_name = ?, director_license = ?, sat_rfc = ?, sat_fiscal_regime = ?, sat_postal_code = ?, sat_certificate_path = ?, sat_key_path = ?, ui_language = ?, report_flag_style = ?, keep_panels_together = ?, report_font_family = ?, report_font_size = ?, report_font_bold = ?, report_abnormal_bold = ?, report_subheading_font_family = ?, report_subheading_font_size = ?, report_subheading_font_bold = ?, report_footer_gap_mm = ?, ui_state = ?, report_sex_format = ?, report_date_format = ?, report_show_doctor = ?, report_show_client = ?, report_show_sex = ?, report_show_age = ?, report_show_dob = ?, report_show_ordered_at = ?, report_show_reported_at = ?, report_doctor_col = ?, report_client_col = ?, report_sex_col = ?, report_age_col = ?, report_dob_col = ?, report_ordered_at_col = ?, report_reported_at_col = ?, pac_provider = ?, pac_environment = ?, pac_username = ?, pac_password = ?, cfdi_tax_treatment = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                "UPDATE lab_settings SET lab_name = ?, address = ?, phone = ?, email = ?, logo_path = ?, header_image_path = ?, footer_signature_image_path = ?, report_footer = ?, director_name = ?, director_license = ?, sat_rfc = ?, sat_fiscal_regime = ?, sat_postal_code = ?, sat_certificate_path = ?, sat_key_path = ?, ui_language = ?, report_flag_style = ?, keep_panels_together = ?, report_font_family = ?, report_font_size = ?, report_font_bold = ?, report_abnormal_bold = ?, report_subheading_font_family = ?, report_subheading_font_size = ?, report_subheading_font_bold = ?, report_footer_gap_mm = ?, ui_state = ?, report_sex_format = ?, report_date_format = ?, report_show_doctor = ?, report_show_client = ?, report_show_sex = ?, report_show_age = ?, report_show_dob = ?, report_show_ordered_at = ?, report_show_reported_at = ?, report_doctor_col = ?, report_client_col = ?, report_sex_col = ?, report_age_col = ?, report_dob_col = ?, report_ordered_at_col = ?, report_reported_at_col = ?, pac_provider = ?, pac_environment = ?, pac_username = ?, pac_password = ?, cfdi_tax_treatment = ?, updated_at = datetime('now','localtime') WHERE id = 1",
                 (
                     payload.get("lab_name", "").strip(),
                     payload.get("address", "").strip(),
@@ -155,9 +155,9 @@ class SettingsMixin:
             connection.execute(
                 """
                 INSERT INTO order_ui_state (scope, entity_id, value, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT(scope, entity_id)
-                DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')
                 """,
                 (scope, str(entity_id), json.dumps(value, ensure_ascii=False)),
             )
@@ -172,7 +172,7 @@ class SettingsMixin:
     def save_ui_state(self, ui_state: dict[str, Any]) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE lab_settings SET ui_state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                "UPDATE lab_settings SET ui_state = ?, updated_at = datetime('now','localtime') WHERE id = 1",
                 (json.dumps(ui_state, ensure_ascii=False),),
             )
 

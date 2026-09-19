@@ -73,7 +73,7 @@ class InstrumentsMixin:
                     test_id, unit_override, reference_range_override,
                     value_slice_start, value_slice_end, value_multiplier, decimal_places, value_formula,
                     is_active, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now','localtime'))
                 ON CONFLICT(instrument_profile, device_id, raw_code, specimen_type, panel_hint)
                 DO UPDATE SET
                     raw_name = excluded.raw_name,
@@ -86,7 +86,7 @@ class InstrumentsMixin:
                     decimal_places = excluded.decimal_places,
                     value_formula = excluded.value_formula,
                     is_active = 1,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 """,
                 (
                     normalized_profile,
@@ -193,14 +193,14 @@ class InstrumentsMixin:
     def toggle_instrument_result_mapping_active(self, mapping_id: int) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE instrument_result_mappings SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE instrument_result_mappings SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = datetime('now','localtime') WHERE id = ?",
                 (mapping_id,),
             )
 
     def update_instrument_result_mapping_profile(self, mapping_id: int, instrument_profile: str) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE instrument_result_mappings SET instrument_profile = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE instrument_result_mappings SET instrument_profile = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (instrument_profile, mapping_id),
             )
 
@@ -288,7 +288,7 @@ class InstrumentsMixin:
                     broadcast_enabled, broadcast_protocol, broadcast_encoding, broadcast_patient_id,
                     broadcast_patient_name, broadcast_dob, broadcast_age, broadcast_sex, broadcast_doctor,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT (instrument_profile) DO UPDATE SET
                     instrument_field = excluded.instrument_field,
                     order_field = excluded.order_field,
@@ -302,7 +302,7 @@ class InstrumentsMixin:
                     broadcast_age = excluded.broadcast_age,
                     broadcast_sex = excluded.broadcast_sex,
                     broadcast_doctor = excluded.broadcast_doctor,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 """,
                 (
                     profile_id, instrument_field, order_field, 1 if auto_import else 0,
@@ -381,11 +381,11 @@ class InstrumentsMixin:
                 connection.execute(
                     """
                     INSERT INTO instrument_captures_cache (capture_id, received_at, payload_json, cached_at, has_data)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    VALUES (?, ?, ?, datetime('now','localtime'), ?)
                     ON CONFLICT (capture_id) DO UPDATE SET
                         received_at = excluded.received_at,
                         payload_json = excluded.payload_json,
-                        cached_at = CURRENT_TIMESTAMP,
+                        cached_at = datetime('now','localtime'),
                         has_data = excluded.has_data
                     """,
                     (cid, received_at, json.dumps(capture), has_data),

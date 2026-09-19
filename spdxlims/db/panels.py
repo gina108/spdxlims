@@ -224,9 +224,9 @@ class PanelsMixin:
             connection.execute(
                 """
                 INSERT INTO order_culture_data (order_id, panel_code, report_version, gram, rows_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT(order_id, panel_code, report_version)
-                DO UPDATE SET gram = excluded.gram, rows_json = excluded.rows_json, updated_at = CURRENT_TIMESTAMP
+                DO UPDATE SET gram = excluded.gram, rows_json = excluded.rows_json, updated_at = datetime('now','localtime')
                 """,
                 (
                     int(order_id),
@@ -245,10 +245,10 @@ class PanelsMixin:
             connection.execute(
                 """
                 INSERT INTO order_culture_data (order_id, panel_code, report_version, gram, rows_json, updated_at)
-                SELECT order_id, panel_code, ?, gram, rows_json, CURRENT_TIMESTAMP
+                SELECT order_id, panel_code, ?, gram, rows_json, datetime('now','localtime')
                 FROM order_culture_data WHERE order_id = ? AND report_version = 0
                 ON CONFLICT(order_id, panel_code, report_version)
-                DO UPDATE SET gram = excluded.gram, rows_json = excluded.rows_json, updated_at = CURRENT_TIMESTAMP
+                DO UPDATE SET gram = excluded.gram, rows_json = excluded.rows_json, updated_at = datetime('now','localtime')
                 """,
                 (int(report_version), int(order_id)),
             )
@@ -300,7 +300,7 @@ class PanelsMixin:
 
     def create_panel(self, code: str, name: str, panel_items: list[dict[str, Any]], specimen_type: str = "", method: str = "") -> None:
         with self.connect() as connection:
-            cursor = connection.execute("INSERT INTO test_panels (code, name, specimen_type, method, is_active) VALUES (?, ?, ?, ?, 1)", (code.strip(), name.strip(), specimen_type.strip() or None, method.strip() or None))
+            cursor = connection.execute("INSERT INTO test_panels (code, name, specimen_type, method, is_active, created_at) VALUES (?, ?, ?, ?, 1, datetime('now','localtime'))", (code.strip(), name.strip(), specimen_type.strip() or None, method.strip() or None))
             panel_id = int(cursor.lastrowid)
             self._save_panel_items(connection, panel_id, panel_items)
 
@@ -341,9 +341,9 @@ class PanelsMixin:
                 connection.execute(
                     """
                     INSERT INTO client_panel_prices (client_id, panel_id, price, updated_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, datetime('now','localtime'))
                     ON CONFLICT(client_id, panel_id)
-                    DO UPDATE SET price = excluded.price, updated_at = CURRENT_TIMESTAMP
+                    DO UPDATE SET price = excluded.price, updated_at = datetime('now','localtime')
                     """,
                     (int(client_id), int(panel_id), float(price)),
                 )

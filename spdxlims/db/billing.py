@@ -664,7 +664,7 @@ class BillingMixin:
             if order_id and (resolved_total is None or float(resolved_total) == 0):
                 resolved_total = self.calculate_order_total(int(order_id))
             cursor = connection.execute(
-                "INSERT INTO invoices (invoice_number, client_id, order_id, invoice_date, status, total_amount, notes, cfdi_use, payment_form, payment_method, currency, xml_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO invoices (invoice_number, client_id, order_id, invoice_date, status, total_amount, notes, cfdi_use, payment_form, payment_method, currency, xml_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))",
                 (
                     (payload.get("invoice_number") or self.next_invoice_number()).strip(),
                     payload.get("client_id"),
@@ -736,7 +736,7 @@ class BillingMixin:
                     cfdi_status = 'stamped',
                     cfdi_stamped_at = ?,
                     status = CASE WHEN status = 'draft' THEN 'issued' ELSE status END,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
                 (
@@ -757,7 +757,7 @@ class BillingMixin:
                 UPDATE invoices
                 SET cfdi_status = 'cancelled',
                     status = 'cancelled',
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
                 (int(invoice_id),),

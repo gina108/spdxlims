@@ -65,8 +65,8 @@ class SchemaMixin:
                     full_name TEXT NOT NULL,
                     role TEXT NOT NULL CHECK (role IN ('admin', 'tech', 'reviewer')),
                     is_active INTEGER NOT NULL DEFAULT 1,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS patients (
@@ -84,8 +84,8 @@ class SchemaMixin:
                     address TEXT,
                     national_id TEXT,
                     is_active INTEGER NOT NULL DEFAULT 1,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS doctors (
@@ -95,8 +95,8 @@ class SchemaMixin:
                     phone TEXT,
                     email TEXT,
                     is_active INTEGER NOT NULL DEFAULT 1,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS clients (
@@ -114,8 +114,8 @@ class SchemaMixin:
                     auto_invoice_last_run TEXT,
                     header_image_path TEXT,
                     footer_signature_image_path TEXT,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS equipment (
@@ -130,8 +130,8 @@ class SchemaMixin:
                     last_maintenance_date DATE,
                     next_maintenance_date DATE,
                     notes TEXT,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS inventory_items (
@@ -142,8 +142,8 @@ class SchemaMixin:
                     on_hand REAL NOT NULL DEFAULT 0,
                     reorder_level REAL NOT NULL DEFAULT 0,
                     unit_cost REAL NOT NULL DEFAULT 0,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS suppliers (
@@ -152,8 +152,8 @@ class SchemaMixin:
                     phone TEXT,
                     email TEXT,
                     tax_id TEXT,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS inventory_movements (
@@ -165,7 +165,7 @@ class SchemaMixin:
                     unit_cost REAL NOT NULL DEFAULT 0,
                     movement_date DATE NOT NULL,
                     notes TEXT,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id),
                     FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
                 );
@@ -190,8 +190,8 @@ class SchemaMixin:
                     cfdi_pdf_path TEXT,
                     cfdi_provider_id TEXT,
                     cfdi_stamped_at DATETIME,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (client_id) REFERENCES clients(id),
                     FOREIGN KEY (order_id) REFERENCES orders(id)
                 );
@@ -214,8 +214,8 @@ class SchemaMixin:
                     payment_form TEXT,
                     payment_method TEXT,
                     currency TEXT NOT NULL DEFAULT 'MXN',
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (order_id) REFERENCES orders(id)
                 );
 
@@ -245,7 +245,7 @@ class SchemaMixin:
                     client_id INTEGER NOT NULL,
                     test_id INTEGER NOT NULL,
                     price REAL NOT NULL,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     PRIMARY KEY (client_id, test_id),
                     FOREIGN KEY (client_id) REFERENCES clients(id),
                     FOREIGN KEY (test_id) REFERENCES tests(id)
@@ -274,14 +274,14 @@ class SchemaMixin:
                     method TEXT,
                     price REAL NOT NULL DEFAULT 0,
                     is_active INTEGER NOT NULL DEFAULT 1,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
                 CREATE TABLE IF NOT EXISTS client_panel_prices (
                     client_id INTEGER NOT NULL,
                     panel_id INTEGER NOT NULL,
                     price REAL NOT NULL,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     PRIMARY KEY (client_id, panel_id),
                     FOREIGN KEY (client_id) REFERENCES clients(id),
                     FOREIGN KEY (panel_id) REFERENCES test_panels(id)
@@ -315,8 +315,8 @@ class SchemaMixin:
                     notes TEXT,
                     created_by INTEGER,
                     finalized_by INTEGER,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (patient_id) REFERENCES patients(id),
                     FOREIGN KEY (doctor_id) REFERENCES doctors(id),
                     FOREIGN KEY (client_id) REFERENCES clients(id),
@@ -368,8 +368,8 @@ class SchemaMixin:
                     unit_override TEXT,
                     reference_range_override TEXT,
                     is_active INTEGER NOT NULL DEFAULT 1,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (test_id) REFERENCES tests(id),
                     UNIQUE (
                         instrument_profile,
@@ -431,7 +431,7 @@ class SchemaMixin:
                     mime_type TEXT NOT NULL DEFAULT 'image/png',
                     caption TEXT,
                     sort_order INTEGER NOT NULL DEFAULT 0,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (order_test_id) REFERENCES order_tests(id)
                 );
 
@@ -452,8 +452,8 @@ class SchemaMixin:
                     order_id INTEGER NOT NULL,
                     panel_label TEXT NOT NULL,
                     source_pdf_path TEXT NOT NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                     UNIQUE (order_id, panel_label),
                     FOREIGN KEY (order_id) REFERENCES orders(id)
                 );
@@ -464,7 +464,7 @@ class SchemaMixin:
                     source_pdf_path TEXT NOT NULL DEFAULT '',
                     page_label TEXT NOT NULL DEFAULT '',
                     row_count INTEGER NOT NULL DEFAULT 0,
-                    extracted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    extracted_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id)
                 );
 
@@ -546,11 +546,11 @@ class SchemaMixin:
                     report_ordered_at_col TEXT NOT NULL DEFAULT 'right',
                     report_reported_at_col TEXT NOT NULL DEFAULT 'right',
                     ui_state TEXT NOT NULL DEFAULT '{}',
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
                 );
 
-                INSERT INTO lab_settings (id)
-                SELECT 1
+                INSERT INTO lab_settings (id, updated_at)
+                SELECT 1, datetime('now','localtime')
                 WHERE NOT EXISTS (SELECT 1 FROM lab_settings WHERE id = 1);
                 """
             )
@@ -636,7 +636,7 @@ class SchemaMixin:
                 scope TEXT NOT NULL,
                 entity_id TEXT NOT NULL,
                 value TEXT NOT NULL,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 PRIMARY KEY (scope, entity_id)
             )
             """
@@ -658,7 +658,7 @@ class SchemaMixin:
                 continue
             for entity_id, value in raw.items():
                 connection.execute(
-                    "INSERT OR REPLACE INTO order_ui_state (scope, entity_id, value) VALUES (?, ?, ?)",
+                    "INSERT OR REPLACE INTO order_ui_state (scope, entity_id, value, updated_at) VALUES (?, ?, ?, datetime('now','localtime'))",
                     (scope, str(entity_id), json.dumps(value, ensure_ascii=False)),
                 )
             ui_state.pop(legacy_key, None)
@@ -673,7 +673,7 @@ class SchemaMixin:
                     continue
                 for entity_id, version in recipient_raw.items():
                     connection.execute(
-                        "INSERT OR REPLACE INTO order_ui_state (scope, entity_id, value) VALUES (?, ?, ?)",
+                        "INSERT OR REPLACE INTO order_ui_state (scope, entity_id, value, updated_at) VALUES (?, ?, ?, datetime('now','localtime'))",
                         (f"whatsapp_{recipient}", str(entity_id), json.dumps(version, ensure_ascii=False)),
                     )
             ui_state.pop("results_whatsapp_sent", None)
@@ -717,7 +717,7 @@ class SchemaMixin:
                 report_version INTEGER NOT NULL DEFAULT 0,
                 gram TEXT NOT NULL DEFAULT '',
                 rows_json TEXT NOT NULL DEFAULT '[]',
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 PRIMARY KEY (order_id, panel_code, report_version)
             )
             """
@@ -892,8 +892,8 @@ class SchemaMixin:
                 order_id INTEGER NOT NULL,
                 panel_label TEXT NOT NULL,
                 source_pdf_path TEXT NOT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 UNIQUE (order_id, panel_label),
                 FOREIGN KEY (order_id) REFERENCES orders(id)
             )
@@ -907,7 +907,7 @@ class SchemaMixin:
                 source_pdf_path TEXT NOT NULL DEFAULT '',
                 page_label TEXT NOT NULL DEFAULT '',
                 row_count INTEGER NOT NULL DEFAULT 0,
-                extracted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                extracted_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY (outsourced_panel_table_id) REFERENCES outsourced_panel_tables(id)
             )
             """
@@ -970,8 +970,8 @@ class SchemaMixin:
                 value_multiplier REAL,
                 value_formula TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY (test_id) REFERENCES tests(id),
                 UNIQUE (
                     instrument_profile,
@@ -1088,16 +1088,16 @@ class SchemaMixin:
                 payment_form TEXT,
                 payment_method TEXT,
                 currency TEXT NOT NULL DEFAULT 'MXN',
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY (order_id) REFERENCES orders(id)
             )
             """
         )
 
     def _migrate_suppliers_table(self, connection: sqlite3.Connection) -> None:
-        connection.execute("CREATE TABLE IF NOT EXISTS suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, phone TEXT, email TEXT, tax_id TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)")
-        connection.execute("CREATE TABLE IF NOT EXISTS inventory_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_item_id INTEGER NOT NULL, supplier_id INTEGER, movement_type TEXT NOT NULL CHECK (movement_type IN ('purchase', 'adjustment_in', 'adjustment_out', 'consumption')), quantity REAL NOT NULL, unit_cost REAL NOT NULL DEFAULT 0, movement_date DATE NOT NULL, notes TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id), FOREIGN KEY (supplier_id) REFERENCES suppliers(id))")
+        connection.execute("CREATE TABLE IF NOT EXISTS suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, phone TEXT, email TEXT, tax_id TEXT, created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')), updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')))")
+        connection.execute("CREATE TABLE IF NOT EXISTS inventory_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_item_id INTEGER NOT NULL, supplier_id INTEGER, movement_type TEXT NOT NULL CHECK (movement_type IN ('purchase', 'adjustment_in', 'adjustment_out', 'consumption')), quantity REAL NOT NULL, unit_cost REAL NOT NULL DEFAULT 0, movement_date DATE NOT NULL, notes TEXT, created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')), FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id), FOREIGN KEY (supplier_id) REFERENCES suppliers(id))")
 
     def _migrate_lab_settings_table(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(lab_settings)").fetchall()}
@@ -1336,7 +1336,7 @@ class SchemaMixin:
                 mime_type TEXT NOT NULL DEFAULT 'image/png',
                 caption TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 FOREIGN KEY (order_test_id) REFERENCES order_tests(id)
             )
             """
@@ -1364,7 +1364,7 @@ class SchemaMixin:
                 client_id INTEGER NOT NULL,
                 test_id INTEGER NOT NULL,
                 price REAL NOT NULL,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 PRIMARY KEY (client_id, test_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id),
                 FOREIGN KEY (test_id) REFERENCES tests(id)
@@ -1379,7 +1379,7 @@ class SchemaMixin:
                 client_id INTEGER NOT NULL,
                 panel_id INTEGER NOT NULL,
                 price REAL NOT NULL,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 PRIMARY KEY (client_id, panel_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id),
                 FOREIGN KEY (panel_id) REFERENCES test_panels(id)
@@ -1445,7 +1445,7 @@ class SchemaMixin:
                 method TEXT,
                 price REAL NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -1546,7 +1546,7 @@ class SchemaMixin:
                 broadcast_age INTEGER NOT NULL DEFAULT 1,
                 broadcast_sex INTEGER NOT NULL DEFAULT 1,
                 broadcast_doctor INTEGER NOT NULL DEFAULT 1,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
             )
             """
         )
@@ -1583,7 +1583,7 @@ class SchemaMixin:
                 capture_id TEXT PRIMARY KEY,
                 received_at TEXT NOT NULL DEFAULT '',
                 payload_json TEXT NOT NULL,
-                cached_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                cached_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
                 has_data INTEGER NOT NULL DEFAULT 0
             )
             """

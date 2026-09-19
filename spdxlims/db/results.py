@@ -906,7 +906,7 @@ class ResultsMixin:
                         patient_snapshot_dob, doctor_snapshot_name, lab_snapshot_name, lab_snapshot_address,
                         lab_snapshot_phone, lab_snapshot_email, director_snapshot_name, director_snapshot_license,
                         footer_snapshot_text, header_image_snapshot_path, footer_signature_snapshot_path, general_comments
-                    ) VALUES (?, ?, 'final', CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, 'final', datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                     ,
                     (
@@ -936,7 +936,7 @@ class ResultsMixin:
                     UPDATE reports
                     SET report_version = ?,
                         status = 'final',
-                        finalized_at = CURRENT_TIMESTAMP,
+                        finalized_at = datetime('now','localtime'),
                         patient_snapshot_name = ?,
                         patient_snapshot_sex = ?,
                         patient_snapshot_dob = ?,
@@ -1054,7 +1054,7 @@ class ResultsMixin:
                 (order_id,),
             )
             connection.execute(
-                "UPDATE orders SET status = 'finalized', reported_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE orders SET status = 'finalized', reported_at = datetime('now','localtime'), updated_at = datetime('now','localtime') WHERE id = ?",
                 (order_id,),
             )
         # Freeze the culture rows against this version. They live outside
@@ -1087,11 +1087,11 @@ class ResultsMixin:
         with self.connect() as connection:
             existing = connection.execute("SELECT id FROM results WHERE order_test_id = ?", (order_test_id,)).fetchone()
             if existing:
-                connection.execute("UPDATE results SET result_value = ?, unit = ?, lower_value = ?, upper_value = ?, lower_value_text = ?, upper_value_text = ?, flag = ?, reference_text = ?, comments = ?, entered_at = CURRENT_TIMESTAMP WHERE order_test_id = ?", (normalized_value or None, normalized_unit or None, self._decimal_to_float(lower_value), self._decimal_to_float(upper_value), lower_value, upper_value, flag, normalized_reference or None, normalized_comments or None, order_test_id))
+                connection.execute("UPDATE results SET result_value = ?, unit = ?, lower_value = ?, upper_value = ?, lower_value_text = ?, upper_value_text = ?, flag = ?, reference_text = ?, comments = ?, entered_at = datetime('now','localtime') WHERE order_test_id = ?", (normalized_value or None, normalized_unit or None, self._decimal_to_float(lower_value), self._decimal_to_float(upper_value), lower_value, upper_value, flag, normalized_reference or None, normalized_comments or None, order_test_id))
             else:
-                connection.execute("INSERT INTO results (order_test_id, result_value, unit, lower_value, upper_value, lower_value_text, upper_value_text, flag, reference_text, comments, entered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", (order_test_id, normalized_value or None, normalized_unit or None, self._decimal_to_float(lower_value), self._decimal_to_float(upper_value), lower_value, upper_value, flag, normalized_reference or None, normalized_comments or None))
+                connection.execute("INSERT INTO results (order_test_id, result_value, unit, lower_value, upper_value, lower_value_text, upper_value_text, flag, reference_text, comments, entered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))", (order_test_id, normalized_value or None, normalized_unit or None, self._decimal_to_float(lower_value), self._decimal_to_float(upper_value), lower_value, upper_value, flag, normalized_reference or None, normalized_comments or None))
             connection.execute("UPDATE order_tests SET status = 'entered' WHERE id = ?", (order_test_id,))
-            connection.execute("UPDATE orders SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT order_id FROM order_tests WHERE id = ?)", (order_test_id,))
+            connection.execute("UPDATE orders SET status = 'in_progress', updated_at = datetime('now','localtime') WHERE id = (SELECT order_id FROM order_tests WHERE id = ?)", (order_test_id,))
             order_row = connection.execute("SELECT order_id FROM order_tests WHERE id = ?", (order_test_id,)).fetchone()
             if order_row is not None:
                 _recalculate_formula_tests(connection, int(order_row["order_id"]))
@@ -1115,7 +1115,7 @@ class ResultsMixin:
             ).fetchone()
             next_sort = int(next_sort_row["next_sort"]) if next_sort_row is not None else 0
             cursor = connection.execute(
-                "INSERT INTO result_images (order_test_id, image_data, mime_type, caption, sort_order) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO result_images (order_test_id, image_data, mime_type, caption, sort_order, created_at) VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))",
                 (order_test_id, sqlite3.Binary(image_data), mime_type or "image/png", (caption or "").strip() or None, next_sort),
             )
             self._refresh_image_result_summary(connection, order_test_id)
@@ -1157,18 +1157,18 @@ class ResultsMixin:
         ).fetchone()
         if existing:
             connection.execute(
-                "UPDATE results SET result_value = ?, flag = 'none', entered_at = CURRENT_TIMESTAMP WHERE order_test_id = ?",
+                "UPDATE results SET result_value = ?, flag = 'none', entered_at = datetime('now','localtime') WHERE order_test_id = ?",
                 (summary or None, order_test_id),
             )
         else:
             connection.execute(
-                "INSERT INTO results (order_test_id, result_value, flag, entered_at) VALUES (?, ?, 'none', CURRENT_TIMESTAMP)",
+                "INSERT INTO results (order_test_id, result_value, flag, entered_at) VALUES (?, ?, 'none', datetime('now','localtime'))",
                 (order_test_id, summary or None),
             )
         new_status = "entered" if count else "pending"
         connection.execute("UPDATE order_tests SET status = ? WHERE id = ?", (new_status, order_test_id))
         connection.execute(
-            "UPDATE orders SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT order_id FROM order_tests WHERE id = ?)",
+            "UPDATE orders SET status = 'in_progress', updated_at = datetime('now','localtime') WHERE id = (SELECT order_id FROM order_tests WHERE id = ?)",
             (order_test_id,),
         )
 
@@ -1358,12 +1358,12 @@ def _recalculate_formula_tests(connection: sqlite3.Connection, order_id: int) ->
         existing = connection.execute("SELECT id FROM results WHERE order_test_id = ?", (formula_test_id,)).fetchone()
         if existing:
             connection.execute(
-                "UPDATE results SET result_value = ?, flag = 'none', entered_at = CURRENT_TIMESTAMP WHERE order_test_id = ?",
+                "UPDATE results SET result_value = ?, flag = 'none', entered_at = datetime('now','localtime') WHERE order_test_id = ?",
                 (result_str, formula_test_id),
             )
         else:
             connection.execute(
-                "INSERT INTO results (order_test_id, result_value, flag, entered_at) VALUES (?, ?, 'none', CURRENT_TIMESTAMP)",
+                "INSERT INTO results (order_test_id, result_value, flag, entered_at) VALUES (?, ?, 'none', datetime('now','localtime'))",
                 (formula_test_id, result_str),
             )
         connection.execute("UPDATE order_tests SET status = 'entered' WHERE id = ?", (formula_test_id,))

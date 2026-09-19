@@ -40,9 +40,9 @@ class TestsMixin:
                 connection.execute(
                     """
                     INSERT INTO client_test_prices (client_id, test_id, price, updated_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, datetime('now','localtime'))
                     ON CONFLICT(client_id, test_id)
-                    DO UPDATE SET price = excluded.price, updated_at = CURRENT_TIMESTAMP
+                    DO UPDATE SET price = excluded.price, updated_at = datetime('now','localtime')
                     """,
                     (client_id, test_id, float(price)),
                 )
