@@ -182,6 +182,18 @@ def list_report_order_choices(
 _PANEL_META_CODES = ('__PANEL_HEADING__', '__PANEL_COMMENT__')
 
 
+def printed_result_value(entry: dict[str, Any]) -> str | None:
+    """What a test row prints on the report.
+
+    A test nobody typed into still prints what the catalog says it normally is -
+    "Color: Amarillo", "Cristales: Ausentes" - which is what the results editor
+    shows and what local mode has always printed. The preview used to read the
+    stored result alone, so on a server-mode report those rows came out blank
+    although the editor showed them filled in.
+    """
+    return entry.get('value_text') or entry.get('default_result_value')
+
+
 @router.get('/results-workflow', response_model=list[ResultsWorkflowOrderOut])
 def list_results_workflow_orders(
     db: Session = Depends(get_db),
@@ -509,6 +521,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
             TestCatalog.name.label('test_name'),
             TestCatalog.code.label('test_code'),
             TestCatalog.result_kind.label('result_kind'),
+            TestCatalog.default_result_value,
             Result.value_text,
             Result.unit,
             Result.reference_text,
@@ -541,6 +554,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                 'test_name': row.test_name,
                 'test_code': row.test_code,
                 'result_kind': row.result_kind,
+                'default_result_value': row.default_result_value,
                 'value_text': row.value_text,
                 'unit': row.unit,
                 'reference_text': row.reference_text,
@@ -629,7 +643,7 @@ def _build_live_preview(order_id: UUID, request: Request, db: Session) -> Report
                 # doing it here put "Glucosa serica (GLU)" on server-rendered
                 # reports only.
                 test_name=str(entry.get('test_name') or ''),
-                result_value=entry.get('value_text'),
+                result_value=printed_result_value(entry),
                 unit=unit,
                 reference_text=reference_text,
                 lower_value=lower_value,
