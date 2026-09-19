@@ -6,7 +6,6 @@ import operator as _operator
 import re as _re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -496,7 +495,7 @@ def import_instrument_results(payload: InstrumentImportIn, db: Session = Depends
             unmatched_codes.append(obs.instrument_test_code or obs.mapped_lis_test_id or 'unknown')
             continue
         order_item, test = matched
-        _upsert_instrument_result(db, order, order_item, test, obs, actor, payload.result)
+        _upsert_instrument_result(db, order, order_item, test, obs, actor)
         imported_count += 1
 
     if imported_count == 0:
@@ -614,7 +613,6 @@ def _upsert_instrument_result(
     test: TestCatalog,
     obs: InstrumentObservationIn,
     actor_id: UUID,
-    payload: InstrumentResultIn,
 ) -> None:
     result = db.scalars(select(Result).where(Result.order_item_id == order_item.id)).first()
     result_kind = (test.result_kind or 'text').strip().lower()
@@ -623,7 +621,6 @@ def _upsert_instrument_result(
     lower_value = None
     upper_value = None
     reference_text = None
-    comments = _instrument_result_comment(obs, payload)
     flag = _calculate_flag(result_kind, result_value, lower_value, upper_value)
     numeric_value = obs.value_numeric if result_kind == 'numeric' else None
 
@@ -642,7 +639,11 @@ def _upsert_instrument_result(
     result.lower_value_text = lower_value
     result.upper_value_text = upper_value
     result.reference_text = reference_text
-    result.comments = comments
+    # Nothing is written to comments. The capture, profile, device and codes
+    # used to be stored here as a JSON trace, but comments print on the report
+    # as a line under the result, so every imported result carried that trace
+    # onto the patient's report. The same detail is in the audit log below, and
+    # a comment a technician typed is left alone.
     result.flag = flag
     result.entered_by = actor_id
     result.status = 'draft'
@@ -658,25 +659,6 @@ def _instrument_result_value(obs: InstrumentObservationIn, result_kind: str) -> 
     if obs.value_numeric is not None:
         return format(obs.value_numeric, 'g')
     return ''
-
-
-def _instrument_result_comment(obs: InstrumentObservationIn, payload: InstrumentResultIn) -> str | None:
-    detail: dict[str, str] = {}
-    if (payload.capture_id or '').strip():
-        detail['capture_id'] = payload.capture_id.strip()
-    if (payload.message.source_profile_id or '').strip():
-        detail['profile'] = payload.message.source_profile_id.strip()
-    if (payload.message.source_device_id or '').strip():
-        detail['device'] = payload.message.source_device_id.strip()
-    if (obs.instrument_test_code or '').strip():
-        detail['instrument_code'] = obs.instrument_test_code.strip()
-    if (obs.mapped_lis_test_id or '').strip():
-        detail['mapped_code'] = obs.mapped_lis_test_id.strip()
-    if (obs.abnormal_flag or '').strip():
-        detail['instrument_flag'] = obs.abnormal_flag.strip()
-    if not detail:
-        return None
-    return json.dumps(detail, ensure_ascii=True)
 
 
 _FORMULA_OPS: dict = {
