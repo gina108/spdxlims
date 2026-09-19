@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast as _ast
 import base64
+import json
 import operator as _operator
 import re as _re
 from datetime import datetime
@@ -560,6 +561,28 @@ def _calculate_flag(result_kind: str, result_value: str, lower_value: str | None
     if lower_decimal is not None or upper_decimal is not None:
         return 'normal'
     return 'none'
+
+
+def _deserialize_select_options(raw_value: str | None) -> list[str]:
+    """Selectable options for a 'select' test, as stored by the catalog.
+
+    Mirrors the desktop's Database.deserialize_select_options, including the
+    fallback for rows written before the value was JSON: those hold one option
+    per line, and dropping them would reject every result for an older test.
+
+    This was called at save_order_item_result but never defined, so saving a
+    result for any select-kind test raised NameError and reached the client as
+    a bare "internal server error".
+    """
+    if not raw_value:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+    except (json.JSONDecodeError, TypeError):
+        return [line.strip() for line in str(raw_value).splitlines() if line.strip()]
+    if not isinstance(parsed, list):
+        return []
+    return [str(option).strip() for option in parsed if str(option).strip()]
 
 
 def _match_order_for_instrument(
