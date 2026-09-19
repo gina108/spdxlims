@@ -180,6 +180,8 @@ class PortalImportService:
                 age_value="" if order.patient_age is None else str(order.patient_age),
                 age_unit="a",
                 order_number=order_number,
+                # A workstation cannot reach the engine; the backend relays.
+                deployment_service=self.deployment_service,
             )
         except Exception:  # noqa: BLE001 - broadcast is best-effort
             pass

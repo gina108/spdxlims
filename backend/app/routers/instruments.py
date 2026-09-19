@@ -83,6 +83,25 @@ def captures(
     return _engine_request(f"/api/v1/captures?{urllib.parse.urlencode(query)}")
 
 
+@router.post("/orders/pending")
+def push_pending_order(payload: dict = Body(...), _user=Depends(get_current_user)):
+    """Hand a worklist entry to the engine on behalf of a workstation.
+
+    The one write in this router, and a deliberate exception to its read-only
+    rule. Registering an order is ordinary clinical work that a workstation must
+    be able to do - the engine writes the CM250's .ANA file and can answer an
+    ASTM host query for that sample. Without it, orders placed on a workstation
+    silently never reached the analyzer.
+
+    It stays narrow on purpose: this adds work for a sample, it does not open,
+    close or reconfigure a session. Deciding which machine owns an analyzer is
+    still not something a workstation can do from here.
+    """
+    if not str(payload.get("sample_id") or "").strip():
+        raise HTTPException(status_code=400, detail="sample_id is required")
+    return _engine_request("/api/v1/orders/pending", method="POST", body=payload)
+
+
 @router.post("/replay")
 def replay(payload: dict = Body(...), _user=Depends(get_current_user)):
     """Re-parse a stored capture. Touches no hardware - it reads a saved file."""

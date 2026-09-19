@@ -1811,6 +1811,8 @@ class OrdersPage(DataAwarePage):
                 age_unit=str(patient.age_unit or "a") if patient else "a",
                 doctor_name=doctor_name,
                 order_number=order_number,
+                # A workstation cannot reach the engine; the backend relays.
+                deployment_service=self.deployment_service,
             )
         except Exception:
             pass

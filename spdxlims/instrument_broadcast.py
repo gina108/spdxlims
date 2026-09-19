@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from spdxlims.engine_identity import owns_hardware
+from spdxlims.engine_identity import is_remote_client, owns_hardware
 
 _log = logging.getLogger(__name__)
 
@@ -214,6 +214,18 @@ def owns_instrument_hardware() -> bool:
     return owns_hardware(_engine_data_dir())
 
 
+def may_push_orders() -> bool:
+    """Whether this install may put a sample on an analyzer's worklist.
+
+    Two installs legitimately may: the machine wired to the analyzers, and a
+    workstation, whose push is relayed by the backend. The one that must not is
+    a second checkout sitting beside production on the same machine - it can
+    reach the live share directly and would write real .ANA files from a test
+    environment.
+    """
+    return owns_instrument_hardware() or is_remote_client()
+
+
 _ENGINE_URL = get_engine_url()
 
 
@@ -228,11 +240,17 @@ def push_pending_order_to_engine(
     doctor_name: str = "",
     profile_id: str = "",
     timeout: float = 5.0,
+    deployment_service: Any = None,
 ) -> None:
     """Push a pending order to the Go engine so it can answer ASTM host queries.
 
     tests must be a list of {"test_code": "...", "test_name": "..."} dicts using
     the instrument's own test codes (not LIMS codes).
+
+    On a workstation the engine is unreachable - it binds loopback on the PC
+    wired to the analyzers - so the push is relayed by the backend, exactly as
+    capture reads are. Without that, an order placed on a workstation never
+    produced a CM250 .ANA file and no one was told.
 
     Raises RuntimeError if the engine is unreachable or returns an error.
     """
@@ -246,6 +264,11 @@ def push_pending_order_to_engine(
         "tests": tests,
         "profile_id": profile_id,
     }
+    if deployment_service is not None and is_remote_client():
+        response = deployment_service.request_json("POST", "/api/instruments/orders/pending", payload)
+        if response is None:
+            raise RuntimeError("The server did not accept the instrument order.")
+        return
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{_ENGINE_URL}/api/v1/orders/pending",
@@ -273,6 +296,7 @@ def broadcast_order_to_instruments(
     age_unit: str = "a",
     doctor_name: str = "",
     order_number: str = "",
+    deployment_service: Any = None,
 ) -> None:
     """Push or broadcast a newly created order to every bidirectional-enabled
     instrument profile. Per-instrument errors are swallowed so a failed broadcast
@@ -287,11 +311,12 @@ def broadcast_order_to_instruments(
     ``database`` must expose ``list_instrument_order_match_configs`` and
     ``list_instrument_result_mappings`` (the SQLite and server backends both do).
     """
-    if not owns_instrument_hardware():
-        # A checkout that does not own the analyzers is a read-only consumer of
-        # the engine. Pushing from here would write a real .ANA worklist to the
-        # live share and answer real Q-records on behalf of the lab.
-        _log.debug("This checkout does not own the analyzers; skipping order broadcast")
+    if not may_push_orders():
+        # A second checkout beside production can reach the live share directly,
+        # so a push from there would write a real .ANA worklist and answer real
+        # Q-records from what is a test environment. A workstation is fine: its
+        # push is relayed by the backend.
+        _log.debug("This checkout may not push orders to the analyzers; skipping broadcast")
         return
     try:
         configs = database.list_instrument_order_match_configs()
@@ -361,6 +386,7 @@ def broadcast_order_to_instruments(
                     sex=sex if bool(cfg.broadcast_sex) else "",
                     doctor_name=doctor_name if bool(cfg.broadcast_doctor) else "",
                     profile_id=cfg.instrument_profile,
+                    deployment_service=deployment_service,
                 )
             else:
                 broadcast_order(
