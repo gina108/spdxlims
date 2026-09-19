@@ -6,6 +6,19 @@ from typing import Any
 from urllib import error, parse, request
 
 
+class ServerAuthError(RuntimeError):
+    """The server rejected the token (HTTP 401).
+
+    Subclasses RuntimeError so every existing ``except RuntimeError`` handler
+    keeps catching it. It exists so the caller can tell "your token expired,
+    log in again" from any other failure - tokens last 8 hours, and an app left
+    open across a shift used to keep presenting a dead one until restarted.
+
+    403 is deliberately NOT this: that means authenticated but not permitted,
+    and logging in again would only hide a real permissions problem.
+    """
+
+
 @dataclass(slots=True)
 class ServerHealthResult:
     ok: bool
@@ -113,7 +126,10 @@ class ServerClient:
             if allow_404 and exc.code == 404:
                 return None
             detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(self._format_http_error(exc.code, detail)) from exc
+            message = self._format_http_error(exc.code, detail)
+            if exc.code == 401:
+                raise ServerAuthError(message) from exc
+            raise RuntimeError(message) from exc
         except error.URLError as exc:
             reason = getattr(exc, "reason", exc)
             raise RuntimeError(f"Could not reach server: {reason}") from exc

@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from spdxlims.server_client import LoginResult, ServerClient, ServerHealthResult
+from spdxlims.server_client import LoginResult, ServerAuthError, ServerClient, ServerHealthResult
 
 
 @dataclass(slots=True)
@@ -116,13 +116,30 @@ class DeploymentService:
     def request_json(self, method: str, path: str, body: dict[str, object] | None = None, *, allow_404: bool = False):
         config = self.load()
         if config.mode == "server" and not self._access_token:
-            return None
-        return self._client.request_json(
-            config.server_url,
-            method,
-            path,
-            token=self._access_token,
-            json_body=body,
-            timeout_seconds=config.api_timeout_seconds,
-            allow_404=allow_404,
-        )
+            # No token yet, or the last re-login failed. Try before giving up,
+            # so a transient outage cannot leave the app permanently silent.
+            if not self.try_auto_login():
+                return None
+
+        def _send():
+            return self._client.request_json(
+                config.server_url,
+                method,
+                path,
+                token=self._access_token,
+                json_body=body,
+                timeout_seconds=config.api_timeout_seconds,
+                allow_404=allow_404,
+            )
+
+        try:
+            return _send()
+        except ServerAuthError:
+            # Tokens last 8 hours. is_authenticated() only checks that a token
+            # string exists, so an app left open across a shift kept presenting
+            # an expired one and every page failed until someone restarted it.
+            # Drop it, log in again, and retry once.
+            self.logout()
+            if not self.try_auto_login():
+                raise
+            return _send()
