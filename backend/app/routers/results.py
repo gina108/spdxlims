@@ -5,7 +5,7 @@ import base64
 import json
 import operator as _operator
 import re as _re
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
@@ -16,7 +16,16 @@ from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
 from app.db.session import get_db
-from app.models.models import LabOrder, OrderItem, Patient, Provider, Result, ResultImage, TestCatalog
+from app.models.models import (
+    InstrumentCaptureLink,
+    LabOrder,
+    OrderItem,
+    Patient,
+    Provider,
+    Result,
+    ResultImage,
+    TestCatalog,
+)
 from app.routers.common import (
     actor_from_header,
     age_to_days,
@@ -131,6 +140,13 @@ class InstrumentImportOut(BaseModel):
     matched_by: str
     imported_count: int
     unmatched_codes: list[str] = []
+
+
+class InstrumentCaptureLinkOut(BaseModel):
+    capture_id: str
+    order_id: str
+    order_number: str = ''
+    linked_at: str | None = None
 
 
 @router.get('/orders/{order_id}/entries', response_model=list[ResultEntryOut])
@@ -485,6 +501,44 @@ def _refresh_image_result_summary(db: Session, order_item: OrderItem, actor: UUI
         result.status = 'draft'
 
 
+def _record_capture_link(db: Session, capture_id: str | None, order_id: UUID, actor: UUID | None) -> None:
+    """Remember that this capture has been imported, for every workstation.
+
+    Re-linking the same capture to another order overwrites the row: a capture
+    came off one analyzer run and belongs to one order, and two answers would
+    leave the lists disagreeing about which.
+    """
+    normalized = (capture_id or '').strip()
+    if not normalized:
+        # A replayed or hand-built payload need not carry one; the import still
+        # stands, there is just nothing to mark as used.
+        return
+    link = db.get(InstrumentCaptureLink, normalized)
+    if link is None:
+        db.add(InstrumentCaptureLink(capture_id=normalized, order_id=order_id, linked_by=actor))
+        return
+    link.order_id = order_id
+    link.linked_by = actor
+    link.linked_at = datetime.now(timezone.utc)
+
+
+@router.get('/instrument-capture-links', response_model=list[InstrumentCaptureLinkOut])
+def instrument_capture_links(db: Session = Depends(get_db), _actor: UUID | None = Depends(actor_from_header)):
+    rows = db.execute(
+        select(InstrumentCaptureLink, LabOrder.order_number)
+        .join(LabOrder, LabOrder.id == InstrumentCaptureLink.order_id)
+    ).all()
+    return [
+        InstrumentCaptureLinkOut(
+            capture_id=link.capture_id,
+            order_id=str(link.order_id),
+            order_number=order_number or '',
+            linked_at=link.linked_at.isoformat() if link.linked_at else None,
+        )
+        for link, order_number in rows
+    ]
+
+
 @router.post('/import-instrument', response_model=InstrumentImportOut)
 def import_instrument_results(payload: InstrumentImportIn, db: Session = Depends(get_db), actor: UUID | None = Depends(actor_from_header)):
     order, matched_by = _resolve_instrument_order(payload, db)
@@ -522,6 +576,7 @@ def import_instrument_results(payload: InstrumentImportIn, db: Session = Depends
 
     if order.status == 'registered':
         order.status = 'in_lab'
+    _record_capture_link(db, payload.result.capture_id, order.id, actor)
     log_audit(
         db,
         actor_user_id=actor,

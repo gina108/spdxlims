@@ -217,6 +217,21 @@ class Result(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
+class InstrumentCaptureLink(Base):
+    """Which analyzer capture has already been imported, and into which order.
+
+    Shared on purpose. Each app used to record this in its own SQLite, so a
+    capture linked on one workstation still looked pending on the next one.
+    """
+
+    __tablename__ = "instrument_capture_link"
+
+    capture_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("lab_order.id", ondelete="CASCADE"), nullable=False, index=True)
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    linked_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("app_user.id"))
+
+
 class ResultImage(Base):
     __tablename__ = "result_image"
 

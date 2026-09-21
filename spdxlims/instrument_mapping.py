@@ -219,6 +219,21 @@ def _trim_decimal(value: Decimal) -> str:
     return formatted
 
 
+def _with_capture_id(result: dict[str, Any], capture: dict[str, Any]) -> dict[str, Any]:
+    """Carry the engine's capture id into the payload sent to the server.
+
+    A value already on the result wins: a replayed payload names the capture it
+    came from, and the capture dict around it may be a different wrapper.
+    """
+    existing = str(result.get("capture_id") or "").strip()
+    if existing:
+        return result
+    capture_id = str(capture.get("id") or "").strip()
+    if not capture_id:
+        return result
+    return {**result, "capture_id": capture_id}
+
+
 def resolve_payload(
     database: Database,
     capture: dict[str, Any],
@@ -226,6 +241,12 @@ def resolve_payload(
     entries: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """Return the capture's parsed result with its observations mapped for the server."""
+    # The parsed capture body carries no id of its own, so every import reached
+    # the server with capture_id null - the audit trail recorded it as null and
+    # the server had no way to remember which capture had been used. Stamped
+    # here because all three senders (manual link, auto-import, and the headless
+    # importer) build their payload through this function.
+    result = _with_capture_id(result, capture)
     message = result.get("message")
     if not isinstance(message, dict):
         return result

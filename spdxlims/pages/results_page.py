@@ -901,6 +901,9 @@ class ResultsPage(DataAwarePage):
         self.previewed_orders: set[int] = set()
         self.instrument_captures: list[dict[str, object]] = []
         self._instrument_captures_cache: dict[str, dict[str, object]] = self.database.load_instrument_captures_cache()
+        # Last known capture->order links, so a momentary server hiccup does not
+        # repaint every linked capture as available.
+        self._linked_captures_cache: dict[str, dict] = {}
         self.instrument_result: dict[str, object] | None = None
         self.instrument_order_entries: list[ResultEntryRecord] = []
         # One source of truth: data\instrument-engine\engine.json. This used to
@@ -1170,6 +1173,10 @@ class ResultsPage(DataAwarePage):
         query = "/api/v1/captures?limit=500"
         if profile_id:
             query += f"&profile_id={quote(profile_id)}"
+        # Whose captures are already spoken for. In server mode this comes from
+        # the server, so a capture linked on another workstation shows as
+        # imported here too.
+        self._reload_linked_captures()
         try:
             fresh = self._instrument_request_json(query)
         except Exception as exc:
@@ -1969,24 +1976,33 @@ class ResultsPage(DataAwarePage):
         except json.JSONDecodeError as exc:
             raise RuntimeError(tr("Instrument engine returned invalid JSON.")) from exc
 
+    def _reload_linked_captures(self) -> None:
+        """Re-read which captures are already used. One request in server mode.
+
+        Kept separate from the accessor below because that one is called per
+        table row and on every selection change; going to the server there put
+        an HTTP round trip behind each click.
+        """
+        try:
+            self._linked_captures_cache = dict(self.result_service.linked_instrument_captures())
+        except RuntimeError:
+            # Keep the last answer. Showing everything as unlinked would invite
+            # a second import over results someone has already corrected.
+            pass
+
     def _linked_instrument_captures(self) -> dict[str, dict]:
-        return {
-            str(k): v
-            for k, v in self.database.get_order_ui_scope("instrument_capture").items()
-            if isinstance(v, dict)
-        }
+        return dict(self._linked_captures_cache)
 
     def _linked_instrument_capture_ids(self) -> set[str]:
         return set(self._linked_instrument_captures().keys())
 
-    def _mark_instrument_capture_linked(self, capture_id: str, order_id: int) -> None:
+    def _mark_instrument_capture_linked(self, capture_id: str, order_id: int | str) -> None:
         if not capture_id:
             return
-        self.database.set_order_ui_value(
-            "instrument_capture",
-            capture_id,
-            {"order_id": order_id, "linked_at": datetime.now().isoformat(timespec="seconds")},
-        )
+        linked_at = datetime.now().isoformat(timespec="seconds")
+        self.result_service.mark_instrument_capture_linked(capture_id, order_id, linked_at)
+        # Keep the list right until the next refresh reads the server back.
+        self._linked_captures_cache[str(capture_id)] = {"order_id": order_id, "linked_at": linked_at}
 
     @staticmethod
     def _capture_preview(capture: dict[str, object]) -> str:
