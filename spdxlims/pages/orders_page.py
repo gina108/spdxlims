@@ -1044,11 +1044,76 @@ class OrdersPage(DataAwarePage):
                 + str(printed) + " etiqueta(s).",
             )
 
-    def _silent_print_labels_niimbot(self, order_id: int, prefs: dict[str, str]) -> None:
+    def _server_label_details(
+        self, patient_id: int | str, order_number: str
+    ) -> tuple[dict[str, object], list[str]]:
+        """The label row and panel list for an order that lives on the server.
+
+        Built from the form rather than the database: a server order has no row
+        in local SQLite, which is why "Guardar e imprimir etiquetas" printed
+        nothing at all in server mode. Must be called before clear_order_form().
+        """
+        patient_name = ""
+        patient_sex = None
+        age_value = None
+        age_unit = None
+        try:
+            patient = self.patient_service.get_patient(patient_id)
+        except Exception:
+            patient = None
+        if patient:
+            patient_name = " ".join(
+                part
+                for part in (
+                    str(patient.get("first_name") or "").strip(),
+                    str(patient.get("last_name") or "").strip(),
+                    str(patient.get("middle_name") or "").strip(),
+                )
+                if part
+            )
+            patient_sex = patient.get("sex")
+            age_value = patient.get("age_value")
+            age_unit = patient.get("age_unit")
+        label_row: dict[str, object] = {
+            "order_number": order_number,
+            "accession_id": None,
+            "sample_id": None,
+            "client_id": self.client_combo.currentData(),
+            "patient_name": patient_name,
+            "patient_sex": patient_sex,
+            "age_value": age_value,
+            "age_unit": age_unit,
+            "test_name": "",
+            "specimen_type": "",
+            "test_code": "",
+            "item_type": "test",
+            # The local column is written as datetime('now','localtime').
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "group_label": "",
+        }
+        # get_order_panel_codes reads source_label; on the form that is the same
+        # panel name, and panel_extra_copies is keyed by it.
+        panel_codes = sorted({
+            str(item.get("source") or "").strip()
+            for item in self.selected_items
+            if str(item.get("item_type") or "test") == "test" and str(item.get("source") or "").strip()
+        })
+        return label_row, panel_codes
+
+    def _silent_print_labels_niimbot(
+        self,
+        order_id: int | str | None,
+        prefs: dict[str, str],
+        *,
+        label_row: dict[str, object] | None = None,
+        panel_codes: list[str] | None = None,
+    ) -> None:
         client = LabelPrinterClient()
         printer_pref = str(prefs.get("printer") or "niimbot:B1")
         try:
-            self._print_order_label_silent(order_id, prefs, client, printer_pref)
+            self._print_order_label_silent(
+                order_id, prefs, client, printer_pref, label_row=label_row, panel_codes=panel_codes
+            )
         except LabelPrinterError as exc:
             QMessageBox.warning(self, tr("Print Failed"), str(exc))
 
@@ -1090,15 +1155,22 @@ class OrdersPage(DataAwarePage):
 
     def _print_order_label_silent(
         self,
-        order_id: int,
+        order_id: int | str | None,
         prefs: dict[str, str],
         client: LabelPrinterClient,
         printer_id: str,
+        *,
+        label_row: dict[str, object] | None = None,
+        panel_codes: list[str] | None = None,
     ) -> None:
-        label_rows = self.database.get_order_label_entries(order_id)
-        if not label_rows:
-            return
-        base_row = dict(label_rows[0])
+        # A server-mode order has no row in local SQLite, so the caller hands the
+        # label's details over instead of us reading them back.
+        if label_row is None:
+            label_rows = self.database.get_order_label_entries(order_id)
+            if not label_rows:
+                return
+            label_row = label_rows[0]
+        base_row = dict(label_row)
         base_row["test_name"] = ""
         base_row["specimen_type"] = ""
         base_row["group_label"] = ""
@@ -1106,7 +1178,8 @@ class OrdersPage(DataAwarePage):
         payload_key = str(prefs.get("payload") or "order_only")
         copies = max(1, int(str(prefs.get("copies") or "1")))
         density = max(1, min(5, int(str(prefs.get("density") or "4"))))
-        panel_codes = self.database.get_order_panel_codes(order_id)
+        if panel_codes is None:
+            panel_codes = self.database.get_order_panel_codes(order_id)
         if panel_codes:
             panel_extra_copies = self.database.get_panel_extra_copies()
             copies += sum(panel_extra_copies.get(code, 0) for code in panel_codes)
@@ -1679,14 +1752,20 @@ class OrdersPage(DataAwarePage):
             if result is None:
                 return
             patient_id, order_id, _message, order_number = result
+            # A server order has no local id, so its label has to be described
+            # from the form - and the form is about to be cleared.
+            label_row: dict[str, object] | None = None
+            panel_codes: list[str] | None = None
+            if order_id is None:
+                label_row, panel_codes = self._server_label_details(patient_id, order_number or "")
             self._maybe_broadcast_order(patient_id, order_id, order_number_override=order_number)
             self.clear_order_form()
             self.refresh_recent_orders()
             self.notify_data_changed()
-            if order_id is None:
+            if order_id is None and not label_row:
                 return
             prefs = self.database.get_label_print_preferences()
-            self._silent_print_labels_niimbot(order_id, prefs)
+            self._silent_print_labels_niimbot(order_id, prefs, label_row=label_row, panel_codes=panel_codes)
 
     def print_order_receipt(self) -> None:
         if self.edit_order_id is not None:
