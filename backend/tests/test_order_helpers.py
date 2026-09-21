@@ -59,16 +59,30 @@ def test_normalize_order_items_keeps_heading_and_comment_items():
     ]
 
 
-def test_normalize_order_items_rejects_missing_or_inactive_tests():
+def test_normalize_order_items_rejects_a_test_that_is_not_in_the_catalog():
     test_id = uuid4()
-    db = FakeDb({(CatalogModel, test_id): CatalogModel(id=test_id, code="OLD", name="Old", active=False)})
     payload = OrderCreateIn(patient_id=str(uuid4()), test_ids=[str(test_id)])
 
     with pytest.raises(HTTPException) as exc_info:
-        _normalize_order_items(payload, db)
+        _normalize_order_items(payload, FakeDb({}))
 
     assert exc_info.value.status_code == 404
-    assert exc_info.value.detail == "test not found"
+    # Naming it: the bare "test not found" left nobody able to tell which of the
+    # panel's tests the order died on.
+    assert exc_info.value.detail == f"test not found: {test_id}"
+
+
+def test_normalize_order_items_accepts_an_archived_test_a_panel_still_lists():
+    """Anti-doping 5 listed CAN/ANF/METAN after they were archived in favour of
+    THC/ANFE/META, and the 404 made the whole order unplaceable in server mode
+    while local mode saved it fine."""
+    test_id = uuid4()
+    db = FakeDb({(CatalogModel, test_id): CatalogModel(id=test_id, code="CAN", name="Canabinoides", active=False)})
+    payload = OrderCreateIn(patient_id=str(uuid4()), test_ids=[str(test_id)])
+
+    assert _normalize_order_items(payload, db) == [
+        {"item_type": "test", "test_id": test_id, "label": None, "source": ""}
+    ]
 
 
 def test_parse_provider_id_allows_empty_provider():

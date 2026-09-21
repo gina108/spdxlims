@@ -647,8 +647,14 @@ def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str
         if test_id in seen:
             continue
         test = db.get(TestCatalog, test_id)
-        if test is None or not test.active:
-            raise HTTPException(status_code=404, detail="test not found")
+        if test is None:
+            raise HTTPException(status_code=404, detail=f"test not found: {test_id}")
+        # An archived test is still allowed onto the order. The picker only
+        # offers active tests, so the only way one gets here is a panel that
+        # still lists a test somebody archived later - and rejecting the whole
+        # order over that left the front desk unable to place an Anti-doping
+        # order at all, with nothing on screen saying which test was at fault.
+        # Local mode has always accepted these, so this is also parity.
         seen.add(test_id)
         normalized.append({"item_type": "test", "test_id": test_id, "label": None, "source": (item.source or "").strip()})
     return normalized
