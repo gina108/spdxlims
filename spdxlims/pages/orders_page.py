@@ -1556,7 +1556,16 @@ class OrdersPage(DataAwarePage):
                         client_id=self.client_combo.currentData(),
                     )
                     message = tr("Order updated: {order_number}").format(order_number=updated.order_number)
-                    return (patient_id, int(self.edit_order_id), message, None)
+                    # Not int(self.edit_order_id): in server mode that is the
+                    # order's UUID, and int() raised ValueError right after a
+                    # successful save. Nothing caught it (the handler below only
+                    # takes RuntimeError) and pythonw has no console, so the
+                    # order was updated on the server while the app swallowed
+                    # the "Orden actualizada" confirmation and left the form as
+                    # it was. There is no local id for a server order, so this
+                    # returns None like the create branch does and hands the
+                    # order number over for the instrument broadcast.
+                    return (patient_id, None, message, updated.order_number)
                 else:
                     created = self.order_service.create_simple_order(
                         patient_id=patient_id,
@@ -1681,6 +1690,11 @@ class OrdersPage(DataAwarePage):
 
     def print_order_receipt(self) -> None:
         if self.edit_order_id is not None:
+            if self.order_service.uses_server_backend():
+                # Same trap as the update path: the id is a UUID here, and the
+                # receipt is built from the local database anyway.
+                QMessageBox.warning(self, tr("Not Available"), tr("Receipt printing is not available for server-mode orders."))
+                return
             order_id = int(self.edit_order_id)
         else:
             result = self._save_current_order()
