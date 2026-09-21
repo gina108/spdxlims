@@ -8,16 +8,18 @@ from spdxlims.database import OrderBrowserRecord, OrderSummaryRecord
 from spdxlims.service_base import ServiceBase
 
 
-def _build_order_item_payload(items: list[dict[str, Any]] | None) -> list[dict[str, str | None]]:
-    payload_items: list[dict[str, str | None]] = []
+def _build_order_item_payload(items: list[dict[str, Any]] | None) -> list[dict[str, str | int | None]]:
+    payload_items: list[dict[str, str | int | None]] = []
     for item in items or []:
         item_type = str(item.get("item_type") or "test")
+        is_outsourced = 1 if item.get("is_outsourced") else 0
         if item_type in ("heading", "comment"):
             payload_items.append(
                 {
                     "item_type": item_type,
                     "label": str(item.get("label") or ""),
                     "source": str(item.get("source") or ""),
+                    "is_outsourced": is_outsourced,
                 }
             )
             continue
@@ -29,6 +31,7 @@ def _build_order_item_payload(items: list[dict[str, Any]] | None) -> list[dict[s
                 "item_type": "test",
                 "test_id": str(test_id),
                 "source": str(item.get("source") or ""),
+                "is_outsourced": is_outsourced,
             }
         )
     return payload_items
@@ -46,7 +49,7 @@ class ServerOrderDetail:
     status: str
     notes: str | None
     is_preallocated: int
-    items: list[dict[str, str | None]]
+    items: list[dict[str, str | int | None]]
 
 
 @dataclass(slots=True)
@@ -264,7 +267,7 @@ class OrderService(ServiceBase):
         if not isinstance(payload, dict) or not payload.get("id"):
             raise RuntimeError("Server did not return a valid order detail.")
         raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
-        items: list[dict[str, str | None]] = []
+        items: list[dict[str, str | int | None]] = []
         for item in raw_items:
             if not isinstance(item, dict):
                 continue
@@ -274,6 +277,8 @@ class OrderService(ServiceBase):
                     "test_id": str(item.get("test_id")) if item.get("test_id") is not None else None,
                     "label": str(item.get("label") or ""),
                     "source": str(item.get("source") or ""),
+                    # Reopening the order has to show the Subrogado tick still on.
+                    "is_outsourced": 1 if item.get("is_outsourced") else 0,
                 }
             )
         return ServerOrderDetail(

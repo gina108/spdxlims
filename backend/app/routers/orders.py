@@ -5,14 +5,24 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import Integer, and_, case, delete, func, or_, select
+from sqlalchemy import Integer, and_, case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.core.audit import log_audit
 from app.core.config import settings
 from app.db.session import get_db
-from app.models.models import LabOrder, OrderItem, PanelCatalog, PanelCatalogItem, Patient, Provider, Result, TestCatalog
+from app.models.models import (
+    LabOrder,
+    OrderItem,
+    PanelCatalog,
+    PanelCatalogItem,
+    Patient,
+    Provider,
+    ReportSnapshot,
+    Result,
+    TestCatalog,
+)
 from app.routers.common import actor_from_header
 
 router = APIRouter()
@@ -109,6 +119,9 @@ class OrderItemIn(BaseModel):
     test_id: str | None = None
     label: str | None = None
     source: str | None = None
+    # The "Subrogado" tick on the order form. Sent per item because the desktop
+    # applies it to a whole panel at a time.
+    is_outsourced: int = 0
 
 
 class OrderCreateIn(BaseModel):
@@ -128,6 +141,7 @@ class OrderItemOut(BaseModel):
     test_id: str | None = None
     label: str
     source: str = ""
+    is_outsourced: int = 0
 
 
 class OrderDetailOut(BaseModel):
@@ -444,6 +458,7 @@ def _build_order_detail(order: LabOrder, db: Session) -> OrderDetailOut:
                 test_id=str(test.id) if test is not None else None,
                 label=f"{test.name} ({test.code})" if test is not None else (_item.display_name or ""),
                 source=_item.group_label or "",
+                is_outsourced=1 if _item.is_outsourced else 0,
             )
             for _item, test in items
         ],
@@ -506,18 +521,7 @@ def update_order(order_id: str, payload: OrderCreateIn, db: Session = Depends(ge
     order.notes = (payload.notes or '').strip() or None
     order.status = payload.status
 
-    db.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
-    db.flush()
-    for index, requested in enumerate(requested_items):
-        db.add(OrderItem(
-            order_id=order.id,
-            test_id=requested['test_id'],
-            group_label=requested['source'],
-            sort_order=index,
-            priority='routine',
-            item_type=requested['item_type'],
-            display_name=requested.get('label'),
-        ))
+    _reconcile_order_items(order, requested_items, db)
 
     db.flush()
     log_audit(
@@ -595,6 +599,8 @@ def create_order(payload: OrderCreateIn, db: Session = Depends(get_db), actor: U
             priority="routine",
             item_type=requested["item_type"],
             display_name=requested.get("label"),
+            is_outsourced=bool(requested.get("is_outsourced")),
+            source_label=requested["source"] or None,
         ))
 
     db.flush()
@@ -631,6 +637,78 @@ def _parse_uuid(raw_value: str, *, field_name: str) -> UUID:
         raise HTTPException(status_code=400, detail=f"invalid {field_name}") from exc
 
 
+def _reconcile_order_items(order: LabOrder, requested_items: list[dict[str, object]], db: Session) -> None:
+    """Bring an order's items in line with the submitted list, in place.
+
+    The old version deleted every order_item and re-inserted, which had two
+    faults. Results and result images hang off order_item with ON DELETE
+    CASCADE, so any edit silently wiped every result already typed for the
+    order; and report_item_snapshot holds a plain FK to order_item, so once a
+    report had been finalized the delete raised a ForeignKeyViolation and the
+    order could not be edited at all - which is how "subrogar PERFIL TIROIDEO"
+    on an already-reported order turned into a 500.
+
+    So: reuse the row a test or note already has (keeping its result), add only
+    what is new, and delete only what the new list drops. This mirrors the
+    desktop's update_order in spdxlims/db/orders.py.
+    """
+    # The finalized report is rendered from these rows and would no longer match
+    # the order; the desktop drops it here too, and it can be reissued from the
+    # Reports page once the edit is saved.
+    for snapshot in db.scalars(select(ReportSnapshot).where(ReportSnapshot.order_id == order.id)).all():
+        db.delete(snapshot)
+    db.flush()
+
+    existing = db.scalars(
+        select(OrderItem)
+        .where(OrderItem.order_id == order.id)
+        .order_by(OrderItem.sort_order.asc(), OrderItem.id.asc())
+    ).all()
+    # A test is identified by its catalog id. Headings and notes have no test, so
+    # they are matched by their text - a re-save then reuses the same row and the
+    # note typed under a panel survives.
+    by_test: dict[UUID, OrderItem] = {}
+    structural: dict[tuple[str, str], list[OrderItem]] = {}
+    for item in existing:
+        if item.item_type == 'test' and item.test_id is not None:
+            by_test.setdefault(item.test_id, item)
+        else:
+            structural.setdefault((item.item_type, item.display_name or ''), []).append(item)
+
+    kept: set[UUID] = set()
+    for index, requested in enumerate(requested_items):
+        source = str(requested['source'] or '')
+        outsourced = bool(requested.get('is_outsourced'))
+        if requested['item_type'] == 'test':
+            row = by_test.get(requested['test_id'])
+        else:
+            pool = structural.get((str(requested['item_type']), str(requested.get('label') or '')))
+            row = pool.pop(0) if pool else None
+        if row is None:
+            db.add(OrderItem(
+                order_id=order.id,
+                test_id=requested['test_id'],
+                group_label=source,
+                sort_order=index,
+                priority='routine',
+                item_type=requested['item_type'],
+                display_name=requested.get('label'),
+                is_outsourced=outsourced,
+                source_label=source or None,
+            ))
+            continue
+        row.sort_order = index
+        row.group_label = source
+        row.is_outsourced = outsourced
+        row.source_label = source or None
+        kept.add(row.id)
+
+    for item in existing:
+        if item.id not in kept:
+            db.delete(item)
+    db.flush()
+
+
 def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str, object]]:
     raw_items = payload.items or [OrderItemIn(test_id=test_id, source="") for test_id in payload.test_ids]
     normalized: list[dict[str, object]] = []
@@ -641,7 +719,13 @@ def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str
             label = (item.label or "").strip()
             if not label:
                 continue
-            normalized.append({"item_type": item_type, "test_id": None, "label": label, "source": (item.source or "").strip()})
+            normalized.append({
+                "item_type": item_type,
+                "test_id": None,
+                "label": label,
+                "source": (item.source or "").strip(),
+                "is_outsourced": bool(item.is_outsourced),
+            })
             continue
         test_id = _parse_uuid(item.test_id, field_name="test_id")
         if test_id in seen:
@@ -656,7 +740,13 @@ def _normalize_order_items(payload: OrderCreateIn, db: Session) -> list[dict[str
         # order at all, with nothing on screen saying which test was at fault.
         # Local mode has always accepted these, so this is also parity.
         seen.add(test_id)
-        normalized.append({"item_type": "test", "test_id": test_id, "label": None, "source": (item.source or "").strip()})
+        normalized.append({
+            "item_type": "test",
+            "test_id": test_id,
+            "label": None,
+            "source": (item.source or "").strip(),
+            "is_outsourced": bool(item.is_outsourced),
+        })
     return normalized
 
 

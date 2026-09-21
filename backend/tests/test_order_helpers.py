@@ -34,7 +34,9 @@ def test_normalize_order_items_deduplicates_tests_and_preserves_source():
 
     result = _normalize_order_items(payload, db)
 
-    assert result == [{"item_type": "test", "test_id": test_id, "label": None, "source": "Panel A"}]
+    assert result == [
+        {"item_type": "test", "test_id": test_id, "label": None, "source": "Panel A", "is_outsourced": False}
+    ]
 
 
 def test_normalize_order_items_keeps_heading_and_comment_items():
@@ -53,9 +55,9 @@ def test_normalize_order_items_keeps_heading_and_comment_items():
     result = _normalize_order_items(payload, db)
 
     assert result == [
-        {"item_type": "heading", "test_id": None, "label": "Formula Roja", "source": "Panel A"},
-        {"item_type": "test", "test_id": test_id, "label": None, "source": "Panel A"},
-        {"item_type": "comment", "test_id": None, "label": "Observaciones", "source": "Panel A"},
+        {"item_type": "heading", "test_id": None, "label": "Formula Roja", "source": "Panel A", "is_outsourced": False},
+        {"item_type": "test", "test_id": test_id, "label": None, "source": "Panel A", "is_outsourced": False},
+        {"item_type": "comment", "test_id": None, "label": "Observaciones", "source": "Panel A", "is_outsourced": False},
     ]
 
 
@@ -81,7 +83,7 @@ def test_normalize_order_items_accepts_an_archived_test_a_panel_still_lists():
     payload = OrderCreateIn(patient_id=str(uuid4()), test_ids=[str(test_id)])
 
     assert _normalize_order_items(payload, db) == [
-        {"item_type": "test", "test_id": test_id, "label": None, "source": ""}
+        {"item_type": "test", "test_id": test_id, "label": None, "source": "", "is_outsourced": False}
     ]
 
 
